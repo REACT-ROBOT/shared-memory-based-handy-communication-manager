@@ -3,19 +3,22 @@
 ## Abstruct
 
 SHM is short for "Shared-memory based Handy-communication Manager".
-This provides ROS(Robot Operating System)-like internal communication such as Topic, Service and Action with shared memory.
+This provides ROS(Robot Operating System)-like interprocess communication such as Topic, Service and Action with shared memory.
 This is based on the library developed by Dr. Prof. Koichi Ozaki for his laboratory.
 
 ## Requirements
 
 - POSIX shared memory system
+
   SHM use POSIX shared memory system.
   The system is included in Linux such as Ubuntu.
 
 - Python3 (optional)
+
   SHM support the usecase with Python.
 
 - Boost.Python (optional)
+
   This library is required for support the usecase with Python.
 
 ## How to build
@@ -26,9 +29,11 @@ Below is how to introduce and build SHM.
 1. clone or add for submodule this repository.
    ```
    $ cd <Your_cmake_ws>/src
-   $ git clone 
+   $ git clone https://github.com/ir-utsunomiya/shared-memory-based-handy-communication-manager.git
    or
-   $ git submodule add
+   $ git submodule add https://github.com/ir-utsunomiya/shared-memory-based-handy-communication-manager.git
+   $ gedit CMakeLists.txt
+   add "add_subdirectory(shared-memory-based-handy-communication-manager)"
    ```
 
 2. build programs.
