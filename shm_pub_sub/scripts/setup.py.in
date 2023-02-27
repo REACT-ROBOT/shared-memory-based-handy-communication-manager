@@ -1,0 +1,99 @@
+# Reference: https://stackoverflow.com/questions/42585210/extending-setuptools-extension-to-use-cmake-in-setup-py
+import os
+import glob
+import pathlib
+import shutil
+from setuptools import find_packages, setup, Extension
+from setuptools.command.install_lib import install_lib
+
+PACKAGE_NAME = "@PACKAGE_NAME@"
+
+class CMakeExtension(Extension):
+    """
+    An extension to run the cmake build
+
+    This simply overrides the base extension class so that setuptools
+    doesn't try to build your sources for you
+    """
+
+    def __init__(self, name, sources=[]):
+        super().__init__(name = name, sources = sources)
+
+class InstallCMakeLibs(install_lib):
+    """
+    Get the libraries from the parent distribution, use those as the outfiles
+
+    Skip building anything; everything is already built, forward libraries to
+    the installation step
+    """
+
+    def run(self):
+        """
+        Copy libraries from the bin directory and place them as appropriate
+        """
+
+        # We have already built the libraries in the previous build_ext step
+
+        self.skip_build = True
+
+        # Depending on the files that are generated from your cmake
+        # build chain, you may need to change the below code, such that
+        # your files are moved to the appropriate location when the installation
+        # is run
+
+        os.makedirs(self.build_dir, exist_ok=True)
+        os.makedirs(self.install_dir, exist_ok=True)
+        print("build_dir = " + self.build_dir)
+        print("install_dir = " + self.install_dir)
+
+        lib = pathlib.Path("@LIBRARY_PATH@");
+        default_libs = glob.glob(self.build_dir + "/*.so")
+        shutil.copy2(lib, default_libs[0])
+
+        # Mark the libs for installation, adding them to 
+        # distribution.data_files seems to ensure that setuptools' record 
+        # writer appends them to installed-files.txt in the package's Egg-info
+        #
+        # Also tried adding the libraries to the distribution.libraries list, 
+        # but that never seemed to add them to the installed-files.txt in the 
+        # Egg-info, and the online recommendation seems to be adding libraries 
+        # into eager_resources in the call to setup(), which I think puts them 
+        # in data_files anyways. 
+        # 
+        # What is the best way?
+
+        # These are the additional installation files that should be
+        # included in the package, but are resultant of the cmake build
+        # step; depending on the files that are generated from your cmake
+        # build chain, you may need to modify the below code
+
+        # Must be forced to run after adding the libs to data_files
+
+        super().run()
+        
+setup(
+    name=PACKAGE_NAME,
+    version="0.0.0",
+    packages=find_packages(),
+    ext_modules=[CMakeExtension(name=PACKAGE_NAME)],
+    description='An example cmake extension module',
+    author="Masaaki HIJIKATA",
+    #long_description=open("./README.md", 'r').read(),
+    long_description_content_type="text/markdown",
+    keywords="test, cmake, extension",
+    classifiers=["Intended Audience :: Developers",
+                 "License :: OSI Approved :: "
+                 "GNU Lesser General Public License v3 (LGPLv3)",
+                 "Natural Language :: English",
+                 "Programming Language :: C",
+                 "Programming Language :: C++",
+                 "Programming Language :: Python",
+                 "Programming Language :: Python :: 3.6",
+                 "Programming Language :: Python :: Implementation :: CPython"],
+    license='GPL-3.0',
+    zip_safe=False,
+    cmdclass={
+        'install_lib': InstallCMakeLibs,
+        }
+    )
+
