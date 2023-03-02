@@ -22,21 +22,6 @@ general_usage()
 }
 
 void
-list_usage()
-{
-  std::cout << "Usage: " << progname << " list [options]" << std::endl;
-  std::cout << "options:" << std::endl;
-  printf("\t-i [ID]\t\tshared memory ID (default: 1000)\n");
-  printf("\t-x [ID]\t\toutput by the XYZ format\n");
-  printf("\t-y [ID]\t\toutput by the YCbCr ormat\n");
-  printf("\t-S [dir]\tsaving mode (arg. is a saved directory)\n");
-  printf("\t-p [time]\tsampling time (time unit is ms)\n");
-  printf("\t-n [num]\tnumber of frames (default: 3 frames)\n");
-  printf("\t-V \t\tshow version\n");
-  printf("\t-h\t\tthis message\n");
-}
-
-void
 remove_usage()
 {
   std::cout << "Usage: " << progname << " remove <shm_name>" << std::endl;
@@ -116,42 +101,6 @@ main(int argc, char *argv[])
     break;
   default:
     general_usage();
-  }
-
-  while ( ( opt = getopt(argc, argv, "i:S:s:p:n:yx8r:g:b:h?") ) > 0) {
-    switch (opt) {
-    case 'i':
-      //shm_id = optarg;
-      break;
-    case 'S':
-      //save_flag = 1;
-      //dir = optarg;
-      break;
-    case 's':
-      //sscanf(optarg, "%dx%d", &width, &height);
-      break;
-    case 'p':
-      //sample_time_ms = atoi(optarg)/* ms */;
-      break;
-    case 'n':
-      //frame_num = atoi(optarg);
-      break;
-    case 'y':
-      //mode = irlab::YUV_MODE;
-      break;
-    case 'x':
-      //mode = irlab::XYZ_MODE;
-      break;
-    case '8':
-      //mode = irlab::GRAY8;
-      break;
-    case 'h':
-    case '?':
-    default:
-      general_usage();
-      return 1;
-    }
-
   }
 
   return 0;
