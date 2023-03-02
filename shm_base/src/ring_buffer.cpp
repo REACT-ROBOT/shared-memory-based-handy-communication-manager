@@ -1,4 +1,5 @@
 #include <shm_base.hpp>
+#include <condition_variable>
 
 namespace irlab
 {
