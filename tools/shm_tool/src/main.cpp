@@ -58,7 +58,6 @@ main(int argc, char *argv[])
   {
   case LIST_MODE:
     fp = popen("ls -l /dev/shm/", "r");
-    fgets(buf, sizeof(buf), fp);
     std::cout << "Permission Hard-link\tUser\tGroup\tSize\tTimestamp\tShared memory name" << std::endl;
     while (1) 
     {
@@ -74,6 +73,10 @@ main(int argc, char *argv[])
         break;
       }
       buf_str = buf;
+      if (buf_str.find("shm_") == std::string::npos)
+      {
+        continue;
+      }
       buf_str = regex_replace(buf_str, std::regex("shm_"), "");
       {
         auto offset = std::string::size_type(0);
