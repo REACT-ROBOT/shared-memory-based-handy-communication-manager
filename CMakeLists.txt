@@ -7,6 +7,7 @@ add_subdirectory(shm_base)
 add_subdirectory(shm_pub_sub)
 add_subdirectory(shm_service)
 add_subdirectory(shm_action)
+add_subdirectory(tools)
 
 FIND_PACKAGE(Doxygen)
 IF(DOXYGEN_FOUND)

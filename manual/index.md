@@ -57,8 +57,10 @@ SHM (Shared-memory based Handy-communication Manager)の目的は，異なるプ
       db -->>- sv : select結果
       sv -->>- cl : データ取得要求結果
 </div>
-<script src="https://unpkg.com/mermaid/dist/mermaid.min.js"></script>
-<script>mermaid.initialize({startOnLoad:true});</script>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
 @endhtmlonly
 
 # 参照
