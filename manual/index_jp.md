@@ -1,5 +1,5 @@
 # SHM 仕様書 {#mainpage}
-English pages are [HERE](shared-memory-based-handy-communication-manager/index.html)
+English pages are [HERE](index.html)
 
 \tableofcontents
 

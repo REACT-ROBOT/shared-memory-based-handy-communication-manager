@@ -1,5 +1,5 @@
 # SHM Specification {#mainpage}
-Japanese pages are [HERE](shared-memory-based-handy-communication-manager/docs_jp/index.html)
+Japanese pages are [HERE](docs_jp/index.html)
 
 \tableofcontents
 
