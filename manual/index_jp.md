@@ -4,7 +4,7 @@ English pages are [HERE](../docs/index.html)
 \tableofcontents
 
 # SHMの目的
-SHM (Shared-memory based Handy-communication Manager)の目的は，異なるプロセス間でできるだけ安全かつ高速な通信を行うことである．また、学生が使用しやすいように、考慮して設計した……はずである．インストール方法などは，README.mdを参照すること．
+SHM (Shared-memory based Handy-communication Manager)の目的は，異なるプロセス間でできるだけ安全かつ高速な通信を行うことである．また、学生が使用しやすいように、考慮して設計したはずである．インストール方法などは，README.mdを参照すること．
 
 # SHMの概要
 ## フレームワークのコンテクスト
