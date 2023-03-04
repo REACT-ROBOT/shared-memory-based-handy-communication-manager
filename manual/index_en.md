@@ -34,7 +34,7 @@ Local memory is a virtual storage area that can be accessed within a process. It
 ### Shared memory
 Shared memory is a storage area that can be used commonly among processes. Shared memory is a memory area allocated by special means and can be implemented in various ways. This time, POSIX file-mapped memory is used. This is a method in which data to be stored in shared memory is treated as a file, and the memory area allocated directly under /dev/shm can be confirmed in Linux.
 
-## Standard layout type
+### Standard layout type
 If a class or structure does not contain specific C++ language features such as virtual functions not found in C, and all members have the same access control, it is a standard layout type. memcpy is possible and the layout is clearly defined for use in C programs. The standard layout type is a user-defined layout type. Standard layout types can have special user-defined member functions. In addition, standard layout types have the following characteristics
 - No virtual functions or virtual base classes
 - All non-static data members have the same access control

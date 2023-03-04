@@ -62,7 +62,7 @@ writing(std::string name)
     {
       std::cout << "write: test.c[" << index << "] =\t" << test.c[index] << std::endl;
     }
-  
+
     for (int vector_index = 0; vector_index < 3; vector_index++)
     {
       std::cout << "write: test_vector[" << vector_index << "].a =\t" << test_vector[vector_index].a << std::endl;
@@ -87,7 +87,7 @@ reading(std::string name)
   irlab::shm::Subscriber<ClassTest> sub(name);
   irlab::shm::Subscriber<std::vector<ClassTest>> sub_vector("test_vector");
 
-  for (int i = 0; i < 10; i++)
+  for (int i = 0; i < 5; i++)
   {
     bool is_success;
     sub.waitFor(2000000); /* 2.0[sec]*/

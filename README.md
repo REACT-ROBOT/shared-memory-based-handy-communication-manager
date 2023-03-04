@@ -6,6 +6,19 @@ SHM is short for "Shared-memory based Handy-communication Manager".
 This provides ROS(Robot Operating System)-like interprocess communication such as Topic, Service and Action with shared memory.
 This is based on the library developed by Dr. Prof. Koichi Ozaki for his laboratory.
 
+## DEMO
+
+![Pub/Sub demonstration](./manual/figs/shm_movie.webm)
+This is Publisher/Subscriber model communication demo.
+Left terminal publish class user made.
+Right terminal subscribe class.
+
+## Features
+
+- High-speed interprocess communication (expectation)
+- If the class you made is fixed size, the class can be used with nothing.
+- Access restrictions can be set up with POSIX shared memory permission.
+
 ## Requirements
 
 - POSIX shared memory system
@@ -43,20 +56,10 @@ Below is how to introduce and build SHM.
    $ make
    ```
 
-## How to use
+## Manuals / Tutorials
 
-SHM is separated 4 parts.
+TODO: We will add manuals and tutorials to [Github Pages](https://ir-utsunomiya.github.io/shared-memory-based-handy-communication-manager/index.html)
 
-  - shm_base
-    This library include common class such as how to access shared memory.
+# License
 
-  - shm_pub_sub
-    This is the library that enables publisher/subscriber communication by topic.
-
-  - shm_service
-    This is the library that enables service communication.
-
-  - shm_action
-    This is the library that enables action communication.
-
-The details are written in each library.
+SHM is under [Apache 2.0 License](https://www.apache.org/licenses/LICENSE-2.0).
