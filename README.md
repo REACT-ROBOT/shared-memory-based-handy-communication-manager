@@ -8,7 +8,8 @@ This is based on the library developed by Dr. Prof. Koichi Ozaki for his laborat
 
 ## DEMO
 
-![Pub/Sub demonstration](./manual/figs/shm_movie.webm)
+![shm_movie](https://user-images.githubusercontent.com/30435850/222885743-e069eb7a-e07d-4f8c-89e5-f71b443fc39e.gif)
+
 This is Publisher/Subscriber model communication demo.
 Left terminal publish class user made.
 Right terminal subscribe class.
