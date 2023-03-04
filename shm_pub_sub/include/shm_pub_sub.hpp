@@ -116,12 +116,18 @@ private:
 // （テンプレートクラス内の関数の定義はコンパイル時に実体化するのでヘッダに書く）
 // ****************************************************************************
 
-//! @brief コンストラクタ
-//! @param [in] name 共有メモリ名
-//! @param [in] buffer_num バッファ数
-//! @param [in] perm 権限情報
-//! @return なし
-//! @details 共有メモリオブジェクトの生成、mutexや条件変数の初期化を行う．
+//! @brief \~english     Constructor
+//!        \~japanese-en コンストラクタ
+//! @param [in] name       \~english     Shared-memory name
+//!                        \~japanese-en 共有メモリ名
+//! @param [in] buffer_num \~english     Number of Buffers
+//!                        \~japanese-en バッファ数
+//! @param [in] perm       \~english     Permission infomation
+//!                        \~japanese-en 権限情報
+//! @return                \~english     None
+//!                        \~japanese-en なし
+//! @details \~english     Create shared memory objects and initialize mutex and condition variables.
+//!          \~japanese-en 共有メモリオブジェクトの生成、mutexや条件変数の初期化を行う．
 template <typename T>
 Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm, bool legacy)
 : shm_name(name)
@@ -168,11 +174,12 @@ Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm, bool legacy
 }
 
 
-//! @brief デストラクタ
-//! @return なし
-//! @details 終了時の処理として共有メモリの切断を行う．
-//! 
-//! 
+//! @brief \~english     Destructor
+//!        \~japanese-en デストラクタ
+//! @return \~english     None
+//!         \~japanese-en なし
+//! @details \~english     
+//!          \~japanese-en 終了時の処理として共有メモリの切断を行う．
 template <typename T>
 Publisher<T>::~Publisher()
 {
@@ -186,12 +193,15 @@ Publisher<T>::~Publisher()
   }
 }
 
-//! @brief トピックの書き込み
+//! @brief \~english     Publish a topic
+//!        \~japanese-en トピックの書き込み
 //! @param [in] data
-//! @return なし
-//! @details タイムスタンプが最も古いバッファにトピックを書き込み、タイムスタンプを更新する．
-//! また、pthreadの条件変数を介して、待機中のプロセスに再開信号を送る．
-//! @note python対応のために、boostを使用しているので、boostの条件変数でも良いかもしれない。
+//! @return  \~english     None
+//!          \~japanese-en なし
+//! @details \~english     Writes the topic to the buffer with the oldest timestamp and updates the timestamp.
+//!          \~english     It also sends a resume signal to the waiting process via a pthread condition variable.
+//!          \~japanese-en タイムスタンプが最も古いバッファにトピックを書き込み、タイムスタンプを更新する．
+//!          \~japanese-en また、pthreadの条件変数を介して、待機中のプロセスに再開信号を送る．
 template <typename T>
 void
 Publisher<T>::publish(const T& data)
@@ -225,10 +235,14 @@ Publisher<T>::publish(const T& data)
 }
 
 
-//! @brief コンストラクタ
-//! @param [in] 共有メモリ名
-//! @return なし
-//! @details 共有メモリへのアクセスを行う．
+//! @brief \~english     Constructor
+//!        \~japanese-en コンストラクタ
+//! @param [in] name \~english     Shared-memory name
+//!                  \~japanese-en 共有メモリ名
+//! @return  \~english     None
+//!          \~japanese-en なし
+//! @details \~english     Access to shared memory.
+//!          \~japanese-en 共有メモリへのアクセスを行う．
 template <typename T>
 Subscriber<T>::Subscriber(std::string name, bool legacy)
 : shm_name(name)
@@ -253,6 +267,12 @@ Subscriber<T>::Subscriber(std::string name, bool legacy)
 }
 
 
+//! @brief \~english     Destructor
+//!        \~japanese-en デストラクタ
+//! @return \~english     None
+//!         \~japanese-en なし
+//! @details \~english     Release the secured local members.
+//!          \~japanese-en 確保したローカルのメンバーを開放する．
 template <typename T>
 Subscriber<T>::~Subscriber()
 {
@@ -267,11 +287,15 @@ Subscriber<T>::~Subscriber()
 }
 
 
-//! @brief トピックを読み込む
-//! @param なし
-//! @return const T& 読み込んだトピックへのconst参照
-//! @details タイムスタンプが最も新しいトピックを読み込む．
-//! 後々可変長なクラスに拡張できるように、メモリへの直接的な参照を返すので、コピーコンストラクタや代入によってデータを複製することを推奨する．
+//! @brief \~english     Subscribe a topic
+//!        \~japanese-en トピックを読み込む
+//! @param None \~japanese-en なし
+//! @return const T& \~english     Const reference to the loaded topic.
+//!                  \~japanese-en 読み込んだトピックへのconst参照
+//! @details         \~english     The topic with the most recent timestamp is loaded.
+//!                  \~english     It is recommended to duplicate the data by copy constructor or assignment, since it returns a direct reference to memory so that it can be later extended to variable-length classes.
+//!                  \~japanese-en タイムスタンプが最も新しいトピックを読み込む．
+//!                  \~japanese-en 後々可変長なクラスに拡張できるように、メモリへの直接的な参照を返すので、コピーコンストラクタや代入によってデータを複製することを推奨する．
 template <typename T>
 const T
 Subscriber<T>::subscribe(bool *is_success)
