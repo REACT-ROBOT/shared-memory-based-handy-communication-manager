@@ -1,9 +1,9 @@
 //!
-//! @file shm_ps_python.cpp
+//! @file shm_pub_sub_python.cpp
 //! @brief メモリの格納方法を規定するクラスの実装
-//! @note 記法はROSに準拠する
-//!       http://wiki.ros.org/ja/CppStyleGuide
-//! 
+//! @note \~english     The notation is complianted ROS Cpp style guide.
+//!       \~japanese-en 記法はROSに準拠する
+//!       \~            http://wiki.ros.org/ja/CppStyleGuide
 //!
 
 #include <iostream>

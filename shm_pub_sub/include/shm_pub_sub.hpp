@@ -1,8 +1,10 @@
 //!
-//! @file shm_ps.hpp
-//! @brief メモリの格納方法を規定するクラスの定義
-//! @note 記法はROSに準拠する
-//!       http://wiki.ros.org/ja/CppStyleGuide
+//! @file shm_pub_sub.hpp
+//! @brief \~english     Class definitions for topic communication with publisher/subscriber model.
+//!        \~japanese-en 出版/購読モデルによるトピック通信を規定するクラスの定義
+//! @note \~english     The notation is complianted ROS Cpp style guide.
+//!       \~japanese-en 記法はROSに準拠する
+//!       \~            http://wiki.ros.org/ja/CppStyleGuide
 //! 
 //! @example test1.hpp
 //! 共有メモリに関するテスト
@@ -40,16 +42,18 @@ namespace shm
 
 // ****************************************************************************
 //! @class Publisher
-//! @brief 共有メモリにトピックを出力する出版者を表現するクラス
-//! @details template classとして与えられた型またはクラスをトピックとして出力するためのクラスである．
-//! sizeofによってメモリの使用量が把握できる型およびクラスに対応している．
-//! また、特殊なものはtemplate classを特殊化して対応する．
+//! @brief   \~english     Class representing a publisher that outputs topics to shared memory
+//!          \~japanese-en 共有メモリにトピックを出力する出版者を表現するクラス
+//! @details \~english     This class is used to output the type or class given as template class as a topic.
+//!          \~japanese-en template classとして与えられた型またはクラスをトピックとして出力するためのクラスである．
+//!          \~japanese-en sizeofによってメモリの使用量が把握できる型およびクラスに対応している．
+//!          \~japanese-en また、特殊なものはtemplate classを特殊化して対応する．
 //!  
-//! @note 通常であれば、生成された共有メモリはデストラクタで破棄されるべきだと考えるのが自然であるが、
-//! 意図せずプログラムが再起動したような場合に共有メモリが破棄されてしまうと、値の更新が読み取れなかったり
-//! 以前に送っていた指令が読み取れなくなったりするなどの問題が生じる可能性があるため、あえて破棄していない．
-//! 一度確保した共有メモリにサイズの異なるデータを格納しようとするとデータが破損するため、
-//! システムを再度立ち上げ直す際には共有メモリを破棄する操作を行うことを推奨する．
+//! @note \~japanese-en 通常であれば、生成された共有メモリはデストラクタで破棄されるべきだと考えるのが自然であるが、
+//!       \~japanese-en 意図せずプログラムが再起動したような場合に共有メモリが破棄されてしまうと、値の更新が読み取れなかったり
+//!       \~japanese-en 以前に送っていた指令が読み取れなくなったりするなどの問題が生じる可能性があるため、あえて破棄していない．
+//!       \~japanese-en 一度確保した共有メモリにサイズの異なるデータを格納しようとするとデータが破損するため、
+//!       \~japanese-en システムを再度立ち上げ直す際には共有メモリを破棄する操作を行うことを推奨する．
 // ****************************************************************************
 template <typename T>
 class Publisher
@@ -76,9 +80,12 @@ private:
 
 // ****************************************************************************
 //! @class Subscriber
-//! @brief 共有メモリからトピックを取得する購読者を表現するクラス
-//! @details template classとして与えられた型またはクラスをトピックとして読み込むためのクラスである．
-//! また、トピックが更新されるまで待機するAPIを持つ．
+//! @brief   \~english     Class representing a subscriber that retrieves topics from shared memory
+//!          \~japanese-en 共有メモリからトピックを取得する購読者を表現するクラス
+//! @details \~english     This class is used to load a type or class given as template class as a topic.
+//!          \~english     It also has an API that waits until the topic is updated.
+//!          \~japanese-en template classとして与えられた型またはクラスをトピックとして読み込むためのクラスである．
+//!          \~japanese-en また、トピックが更新されるまで待機するAPIを持つ．
 // ****************************************************************************
 template <typename T>
 class Subscriber
@@ -104,6 +111,7 @@ private:
 };
 
 // ****************************************************************************
+// Function Definications
 // 関数定義
 // （テンプレートクラス内の関数の定義はコンパイル時に実体化するのでヘッダに書く）
 // ****************************************************************************
