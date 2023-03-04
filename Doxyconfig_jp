@@ -915,6 +915,7 @@ RECURSIVE              = YES
 EXCLUDE                = ../third-party \
                          ../build \
                          ./README.md \
+                         ./docs \
                          ./shm_pub_sub/test \
                          ./shm_pub_sub/samples \
                          ./shm_service/test \

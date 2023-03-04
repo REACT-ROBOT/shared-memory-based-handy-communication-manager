@@ -70,149 +70,157 @@ $(function() {
 <div class="title">shm_base.hpp</div>  </div>
 </div><!--header-->
 <div class="contents">
-<div class="fragment"><div class="line"><a name="l00001"></a><span class="lineno">    1</span>&#160; </div>
-<div class="line"><a name="l00013"></a><span class="lineno">   13</span>&#160;<span class="preprocessor">#ifndef __SHM_BASE_LIB_H__</span></div>
-<div class="line"><a name="l00014"></a><span class="lineno">   14</span>&#160;<span class="preprocessor">#define __SHM_BASE_LIB_H__</span></div>
-<div class="line"><a name="l00015"></a><span class="lineno">   15</span>&#160; </div>
-<div class="line"><a name="l00016"></a><span class="lineno">   16</span>&#160;<span class="preprocessor">#include &lt;iostream&gt;</span></div>
-<div class="line"><a name="l00017"></a><span class="lineno">   17</span>&#160;<span class="preprocessor">#include &lt;limits&gt;</span></div>
-<div class="line"><a name="l00018"></a><span class="lineno">   18</span>&#160;<span class="preprocessor">#include &lt;string&gt;</span></div>
-<div class="line"><a name="l00019"></a><span class="lineno">   19</span>&#160;<span class="preprocessor">#include &lt;regex&gt;</span></div>
-<div class="line"><a name="l00020"></a><span class="lineno">   20</span>&#160;<span class="preprocessor">#include &lt;stdexcept&gt;</span></div>
-<div class="line"><a name="l00021"></a><span class="lineno">   21</span>&#160;<span class="preprocessor">#include &lt;mutex&gt;</span></div>
-<div class="line"><a name="l00022"></a><span class="lineno">   22</span>&#160;<span class="keyword">extern</span> <span class="stringliteral">&quot;C&quot;</span> {</div>
-<div class="line"><a name="l00023"></a><span class="lineno">   23</span>&#160;<span class="preprocessor">#include &lt;sys/mman.h&gt;</span></div>
-<div class="line"><a name="l00024"></a><span class="lineno">   24</span>&#160;<span class="preprocessor">#include &lt;sys/stat.h&gt;</span></div>
-<div class="line"><a name="l00025"></a><span class="lineno">   25</span>&#160;<span class="preprocessor">#include &lt;fcntl.h&gt;</span></div>
-<div class="line"><a name="l00026"></a><span class="lineno">   26</span>&#160;<span class="preprocessor">#include &lt;sys/time.h&gt;</span></div>
-<div class="line"><a name="l00027"></a><span class="lineno">   27</span>&#160;<span class="preprocessor">#include &lt;pthread.h&gt;</span></div>
-<div class="line"><a name="l00028"></a><span class="lineno">   28</span>&#160;<span class="preprocessor">#include &lt;unistd.h&gt;</span></div>
-<div class="line"><a name="l00029"></a><span class="lineno">   29</span>&#160;<span class="preprocessor">#include &lt;sys/types.h&gt;</span></div>
-<div class="line"><a name="l00030"></a><span class="lineno">   30</span>&#160;<span class="preprocessor">#include &lt;sys/ipc.h&gt;</span></div>
-<div class="line"><a name="l00031"></a><span class="lineno">   31</span>&#160;<span class="preprocessor">#include &lt;sys/shm.h&gt;</span></div>
-<div class="line"><a name="l00032"></a><span class="lineno">   32</span>&#160;}</div>
+<a href="shm__base_8hpp.html">Go to the documentation of this file.</a><div class="fragment"><div class="line"><a name="l00001"></a><span class="lineno">    1</span>&#160; </div>
+<div class="line"><a name="l00010"></a><span class="lineno">   10</span>&#160;<span class="preprocessor">#ifndef __SHM_BASE_LIB_H__</span></div>
+<div class="line"><a name="l00011"></a><span class="lineno">   11</span>&#160;<span class="preprocessor">#define __SHM_BASE_LIB_H__</span></div>
+<div class="line"><a name="l00012"></a><span class="lineno">   12</span>&#160; </div>
+<div class="line"><a name="l00013"></a><span class="lineno">   13</span>&#160;<span class="preprocessor">#include &lt;iostream&gt;</span></div>
+<div class="line"><a name="l00014"></a><span class="lineno">   14</span>&#160;<span class="preprocessor">#include &lt;limits&gt;</span></div>
+<div class="line"><a name="l00015"></a><span class="lineno">   15</span>&#160;<span class="preprocessor">#include &lt;string&gt;</span></div>
+<div class="line"><a name="l00016"></a><span class="lineno">   16</span>&#160;<span class="preprocessor">#include &lt;regex&gt;</span></div>
+<div class="line"><a name="l00017"></a><span class="lineno">   17</span>&#160;<span class="preprocessor">#include &lt;stdexcept&gt;</span></div>
+<div class="line"><a name="l00018"></a><span class="lineno">   18</span>&#160;<span class="preprocessor">#include &lt;mutex&gt;</span></div>
+<div class="line"><a name="l00019"></a><span class="lineno">   19</span>&#160;<span class="keyword">extern</span> <span class="stringliteral">&quot;C&quot;</span> {</div>
+<div class="line"><a name="l00020"></a><span class="lineno">   20</span>&#160;<span class="preprocessor">#include &lt;sys/mman.h&gt;</span></div>
+<div class="line"><a name="l00021"></a><span class="lineno">   21</span>&#160;<span class="preprocessor">#include &lt;sys/stat.h&gt;</span></div>
+<div class="line"><a name="l00022"></a><span class="lineno">   22</span>&#160;<span class="preprocessor">#include &lt;fcntl.h&gt;</span></div>
+<div class="line"><a name="l00023"></a><span class="lineno">   23</span>&#160;<span class="preprocessor">#include &lt;sys/time.h&gt;</span></div>
+<div class="line"><a name="l00024"></a><span class="lineno">   24</span>&#160;<span class="preprocessor">#include &lt;pthread.h&gt;</span></div>
+<div class="line"><a name="l00025"></a><span class="lineno">   25</span>&#160;<span class="preprocessor">#include &lt;unistd.h&gt;</span></div>
+<div class="line"><a name="l00026"></a><span class="lineno">   26</span>&#160;<span class="preprocessor">#include &lt;sys/types.h&gt;</span></div>
+<div class="line"><a name="l00027"></a><span class="lineno">   27</span>&#160;<span class="preprocessor">#include &lt;sys/ipc.h&gt;</span></div>
+<div class="line"><a name="l00028"></a><span class="lineno">   28</span>&#160;<span class="preprocessor">#include &lt;sys/shm.h&gt;</span></div>
+<div class="line"><a name="l00029"></a><span class="lineno">   29</span>&#160;}</div>
+<div class="line"><a name="l00030"></a><span class="lineno">   30</span>&#160; </div>
+<div class="line"><a name="l00031"></a><span class="lineno">   31</span>&#160;<span class="keyword">namespace </span>irlab</div>
+<div class="line"><a name="l00032"></a><span class="lineno">   32</span>&#160;{</div>
 <div class="line"><a name="l00033"></a><span class="lineno">   33</span>&#160; </div>
-<div class="line"><a name="l00034"></a><span class="lineno">   34</span>&#160;<span class="keyword">namespace </span>irlab</div>
+<div class="line"><a name="l00034"></a><span class="lineno">   34</span>&#160;<span class="keyword">namespace </span>shm</div>
 <div class="line"><a name="l00035"></a><span class="lineno">   35</span>&#160;{</div>
-<div class="line"><a name="l00036"></a><span class="lineno">   36</span>&#160; </div>
-<div class="line"><a name="l00037"></a><span class="lineno">   37</span>&#160;<span class="keyword">namespace </span>shm</div>
-<div class="line"><a name="l00038"></a><span class="lineno">   38</span>&#160;{</div>
-<div class="line"><a name="l00042"></a><span class="lineno">   42</span>&#160;  <span class="keyword">enum</span> PERM : mode_t</div>
-<div class="line"><a name="l00043"></a><span class="lineno">   43</span>&#160;  {</div>
-<div class="line"><a name="l00044"></a><span class="lineno">   44</span>&#160;    PERM_USER_READ   = S_IRUSR, </div>
-<div class="line"><a name="l00045"></a><span class="lineno">   45</span>&#160;    PERM_USER_WRITE  = S_IWUSR, </div>
-<div class="line"><a name="l00046"></a><span class="lineno">   46</span>&#160;    PERM_GROUP_READ  = S_IRGRP, </div>
-<div class="line"><a name="l00047"></a><span class="lineno">   47</span>&#160;    PERM_GROUP_WRITE = S_IWGRP, </div>
-<div class="line"><a name="l00048"></a><span class="lineno">   48</span>&#160;    PERM_OTHER_READ  = S_IROTH, </div>
-<div class="line"><a name="l00049"></a><span class="lineno">   49</span>&#160;    PERM_OTHER_WRITE = S_IWOTH, </div>
-<div class="line"><a name="l00050"></a><span class="lineno">   50</span>&#160;  };</div>
-<div class="line"><a name="l00051"></a><span class="lineno">   51</span>&#160;  <span class="keyword">const</span> PERM DEFAULT_PERM = <span class="keyword">static_cast&lt;</span>PERM<span class="keyword">&gt;</span>(PERM_USER_READ | PERM_USER_WRITE | PERM_GROUP_READ | PERM_GROUP_WRITE | PERM_OTHER_READ | PERM_OTHER_WRITE);</div>
-<div class="line"><a name="l00052"></a><span class="lineno">   52</span>&#160; </div>
-<div class="line"><a name="l00053"></a><span class="lineno">   53</span>&#160; </div>
-<div class="line"><a name="l00054"></a><span class="lineno">   54</span>&#160;<span class="comment">// ****************************************************************************</span></div>
-<div class="line"><a name="l00055"></a><span class="lineno">   55</span>&#160;<span class="comment">// 関数宣言</span></div>
-<div class="line"><a name="l00056"></a><span class="lineno">   56</span>&#160;<span class="comment">// ****************************************************************************</span></div>
-<div class="line"><a name="l00057"></a><span class="lineno">   57</span>&#160; </div>
-<div class="line"><a name="l00058"></a><span class="lineno">   58</span>&#160;<span class="keywordtype">int</span> disconnectMemory(std::string name);</div>
-<div class="line"><a name="l00059"></a><span class="lineno">   59</span>&#160;<span class="keywordtype">int</span> disconnectMemory(<span class="keywordtype">int</span> <span class="keywordtype">id</span>);</div>
-<div class="line"><a name="l00060"></a><span class="lineno">   60</span>&#160; </div>
-<div class="line"><a name="l00061"></a><span class="lineno">   61</span>&#160;<span class="comment">// ****************************************************************************</span></div>
-<div class="line"><a name="l00065"></a><span class="lineno">   65</span>&#160;<span class="comment"></span><span class="comment">// ****************************************************************************</span></div>
-<div class="line"><a name="l00066"></a><span class="lineno"><a class="line" href="classirlab_1_1shm_1_1_shared_memory.html">   66</a></span>&#160;<span class="keyword">class </span><a class="code" href="classirlab_1_1shm_1_1_shared_memory.html">SharedMemory</a></div>
-<div class="line"><a name="l00067"></a><span class="lineno">   67</span>&#160;{</div>
-<div class="line"><a name="l00068"></a><span class="lineno">   68</span>&#160;<span class="keyword">public</span>:</div>
-<div class="line"><a name="l00069"></a><span class="lineno">   69</span>&#160;  <a class="code" href="classirlab_1_1shm_1_1_shared_memory.html">SharedMemory</a>(<span class="keywordtype">int</span> oflag, PERM perm);</div>
-<div class="line"><a name="l00070"></a><span class="lineno">   70</span>&#160;  ~<a class="code" href="classirlab_1_1shm_1_1_shared_memory.html">SharedMemory</a>();</div>
-<div class="line"><a name="l00071"></a><span class="lineno">   71</span>&#160; </div>
-<div class="line"><a name="l00072"></a><span class="lineno">   72</span>&#160;  <span class="keyword">virtual</span> <span class="keywordtype">bool</span> connect(<span class="keywordtype">size_t</span> size = 0) = 0;</div>
-<div class="line"><a name="l00073"></a><span class="lineno">   73</span>&#160;  <span class="keyword">virtual</span> <span class="keywordtype">int</span> disconnect() = 0;</div>
-<div class="line"><a name="l00074"></a><span class="lineno">   74</span>&#160;  <span class="keywordtype">size_t</span> getSize() <span class="keyword">const</span>;</div>
-<div class="line"><a name="l00075"></a><span class="lineno">   75</span>&#160;  <span class="keywordtype">unsigned</span> <span class="keywordtype">char</span>* getPtr();</div>
-<div class="line"><a name="l00076"></a><span class="lineno">   76</span>&#160; </div>
-<div class="line"><a name="l00077"></a><span class="lineno">   77</span>&#160;  <span class="keyword">virtual</span> <span class="keywordtype">bool</span> isDisconnected() <span class="keyword">const</span> = 0;</div>
-<div class="line"><a name="l00078"></a><span class="lineno">   78</span>&#160; </div>
-<div class="line"><a name="l00079"></a><span class="lineno">   79</span>&#160;<span class="keyword">protected</span>:</div>
-<div class="line"><a name="l00080"></a><span class="lineno">   80</span>&#160;  <span class="keywordtype">int</span> shm_fd;</div>
-<div class="line"><a name="l00081"></a><span class="lineno">   81</span>&#160;  <span class="keywordtype">int</span> shm_oflag;</div>
-<div class="line"><a name="l00082"></a><span class="lineno">   82</span>&#160;  PERM shm_perm;</div>
-<div class="line"><a name="l00083"></a><span class="lineno">   83</span>&#160;  <span class="keywordtype">size_t</span> shm_size;</div>
-<div class="line"><a name="l00084"></a><span class="lineno">   84</span>&#160;  <span class="keywordtype">unsigned</span> <span class="keywordtype">char</span> *shm_ptr;</div>
-<div class="line"><a name="l00085"></a><span class="lineno">   85</span>&#160;};</div>
-<div class="line"><a name="l00086"></a><span class="lineno">   86</span>&#160; </div>
-<div class="line"><a name="l00087"></a><span class="lineno">   87</span>&#160; </div>
-<div class="line"><a name="l00088"></a><span class="lineno">   88</span>&#160;<span class="comment">// ****************************************************************************</span></div>
-<div class="line"><a name="l00092"></a><span class="lineno">   92</span>&#160;<span class="comment"></span><span class="comment">// ****************************************************************************</span></div>
-<div class="line"><a name="l00093"></a><span class="lineno"><a class="line" href="classirlab_1_1shm_1_1_shared_memory_posix.html">   93</a></span>&#160;<span class="keyword">class </span><a class="code" href="classirlab_1_1shm_1_1_shared_memory_posix.html">SharedMemoryPosix</a> : <span class="keyword">public</span> <a class="code" href="classirlab_1_1shm_1_1_shared_memory.html">SharedMemory</a></div>
-<div class="line"><a name="l00094"></a><span class="lineno">   94</span>&#160;{</div>
-<div class="line"><a name="l00095"></a><span class="lineno">   95</span>&#160;<span class="keyword">public</span>:</div>
-<div class="line"><a name="l00096"></a><span class="lineno">   96</span>&#160;  <a class="code" href="classirlab_1_1shm_1_1_shared_memory_posix.html">SharedMemoryPosix</a>(std::string name, <span class="keywordtype">int</span> oflag, PERM perm);</div>
-<div class="line"><a name="l00097"></a><span class="lineno">   97</span>&#160;  ~<a class="code" href="classirlab_1_1shm_1_1_shared_memory_posix.html">SharedMemoryPosix</a>();</div>
-<div class="line"><a name="l00098"></a><span class="lineno">   98</span>&#160; </div>
-<div class="line"><a name="l00099"></a><span class="lineno">   99</span>&#160;  <span class="keyword">virtual</span> <span class="keywordtype">bool</span> connect(<span class="keywordtype">size_t</span> size = 0);</div>
-<div class="line"><a name="l00100"></a><span class="lineno">  100</span>&#160;  <span class="keyword">virtual</span> <span class="keywordtype">int</span> disconnect();</div>
-<div class="line"><a name="l00101"></a><span class="lineno">  101</span>&#160;  </div>
-<div class="line"><a name="l00102"></a><span class="lineno">  102</span>&#160;  <span class="keyword">virtual</span> <span class="keywordtype">bool</span> isDisconnected() <span class="keyword">const</span>;</div>
-<div class="line"><a name="l00103"></a><span class="lineno">  103</span>&#160; </div>
-<div class="line"><a name="l00104"></a><span class="lineno">  104</span>&#160;<span class="keyword">protected</span>:</div>
-<div class="line"><a name="l00105"></a><span class="lineno">  105</span>&#160;  std::string shm_name;</div>
-<div class="line"><a name="l00106"></a><span class="lineno">  106</span>&#160;};</div>
-<div class="line"><a name="l00107"></a><span class="lineno">  107</span>&#160; </div>
-<div class="line"><a name="l00108"></a><span class="lineno">  108</span>&#160; </div>
-<div class="line"><a name="l00109"></a><span class="lineno">  109</span>&#160; </div>
-<div class="line"><a name="l00110"></a><span class="lineno">  110</span>&#160;<span class="comment">// ****************************************************************************</span></div>
-<div class="line"><a name="l00114"></a><span class="lineno">  114</span>&#160;<span class="comment"></span><span class="comment">// ****************************************************************************</span></div>
-<div class="line"><a name="l00115"></a><span class="lineno"><a class="line" href="classirlab_1_1shm_1_1_ring_buffer.html">  115</a></span>&#160;<span class="keyword">class </span><a class="code" href="classirlab_1_1shm_1_1_ring_buffer.html">RingBuffer</a></div>
-<div class="line"><a name="l00116"></a><span class="lineno">  116</span>&#160;{</div>
-<div class="line"><a name="l00117"></a><span class="lineno">  117</span>&#160;<span class="keyword">public</span>:</div>
-<div class="line"><a name="l00118"></a><span class="lineno">  118</span>&#160;  <span class="keyword">static</span> <span class="keywordtype">size_t</span> getSize(<span class="keywordtype">size_t</span> element_size, <span class="keywordtype">int</span> buffer_num);</div>
-<div class="line"><a name="l00119"></a><span class="lineno">  119</span>&#160; </div>
-<div class="line"><a name="l00120"></a><span class="lineno">  120</span>&#160;  <a class="code" href="classirlab_1_1shm_1_1_ring_buffer.html#a6eb24ddc1eb6b7d5a1610d6862cdbbe5">RingBuffer</a>(<span class="keywordtype">unsigned</span> <span class="keywordtype">char</span>* first_ptr, <span class="keywordtype">size_t</span> size = 0, <span class="keywordtype">int</span> buffer_num = 0);</div>
-<div class="line"><a name="l00121"></a><span class="lineno">  121</span>&#160;  ~<a class="code" href="classirlab_1_1shm_1_1_ring_buffer.html">RingBuffer</a>();</div>
-<div class="line"><a name="l00122"></a><span class="lineno">  122</span>&#160;  </div>
-<div class="line"><a name="l00123"></a><span class="lineno">  123</span>&#160;  <span class="keyword">const</span> uint64_t <a class="code" href="classirlab_1_1shm_1_1_ring_buffer.html#a34fe90b547161731c3a5e73f256bb08e">getTimestamp_us</a>() <span class="keyword">const</span>;</div>
-<div class="line"><a name="l00124"></a><span class="lineno">  124</span>&#160;  <span class="keywordtype">void</span> <a class="code" href="classirlab_1_1shm_1_1_ring_buffer.html#a74822660242a6bf38add330876ef3fa6">setTimestamp_us</a>(uint64_t input_time_us, <span class="keywordtype">int</span> buffer_num);</div>
-<div class="line"><a name="l00125"></a><span class="lineno">  125</span>&#160;  <span class="keywordtype">int</span> getNewestBufferNum();</div>
-<div class="line"><a name="l00126"></a><span class="lineno">  126</span>&#160;  <span class="keywordtype">int</span> getOldestBufferNum();</div>
-<div class="line"><a name="l00127"></a><span class="lineno">  127</span>&#160;  <span class="keywordtype">size_t</span> getElementSize() <span class="keyword">const</span>;</div>
-<div class="line"><a name="l00128"></a><span class="lineno">  128</span>&#160;  <span class="keywordtype">unsigned</span> <span class="keywordtype">char</span>* getDataList();</div>
-<div class="line"><a name="l00129"></a><span class="lineno">  129</span>&#160;  <span class="keywordtype">void</span> signal();</div>
-<div class="line"><a name="l00130"></a><span class="lineno">  130</span>&#160;  <span class="keywordtype">bool</span> <a class="code" href="classirlab_1_1shm_1_1_ring_buffer.html#af8fef59dd1e3852617def3e906c83fb4">waitFor</a>(uint64_t timeout_usec);</div>
-<div class="line"><a name="l00131"></a><span class="lineno">  131</span>&#160;  <span class="keywordtype">bool</span> <a class="code" href="classirlab_1_1shm_1_1_ring_buffer.html#a48cffb6d4f17c8b1a3e6bbfbe160010a">isUpdated</a>() <span class="keyword">const</span>;</div>
-<div class="line"><a name="l00132"></a><span class="lineno">  132</span>&#160;  <span class="keywordtype">void</span> setDataExpiryTime_us(uint64_t time_us);</div>
-<div class="line"><a name="l00133"></a><span class="lineno">  133</span>&#160;  </div>
-<div class="line"><a name="l00134"></a><span class="lineno">  134</span>&#160;<span class="keyword">private</span>:</div>
-<div class="line"><a name="l00135"></a><span class="lineno">  135</span>&#160;  <span class="keywordtype">void</span> initializeExclusiveAccess();</div>
-<div class="line"><a name="l00136"></a><span class="lineno">  136</span>&#160;  </div>
-<div class="line"><a name="l00137"></a><span class="lineno">  137</span>&#160;  <span class="keywordtype">unsigned</span> <span class="keywordtype">char</span> *memory_ptr;</div>
-<div class="line"><a name="l00138"></a><span class="lineno">  138</span>&#160; </div>
-<div class="line"><a name="l00139"></a><span class="lineno">  139</span>&#160;  pthread_mutex_t *mutex;</div>
-<div class="line"><a name="l00140"></a><span class="lineno">  140</span>&#160;  pthread_cond_t *condition;</div>
-<div class="line"><a name="l00141"></a><span class="lineno">  141</span>&#160;  <span class="keywordtype">size_t</span> *element_size;</div>
-<div class="line"><a name="l00142"></a><span class="lineno">  142</span>&#160;  <span class="keywordtype">int</span> *buf_num;</div>
-<div class="line"><a name="l00143"></a><span class="lineno">  143</span>&#160;  uint64_t *timestamp_list;</div>
-<div class="line"><a name="l00144"></a><span class="lineno">  144</span>&#160;  <span class="keywordtype">unsigned</span> <span class="keywordtype">char</span> *data_list;</div>
-<div class="line"><a name="l00145"></a><span class="lineno">  145</span>&#160;  </div>
-<div class="line"><a name="l00146"></a><span class="lineno">  146</span>&#160;  uint64_t timestamp_us;</div>
-<div class="line"><a name="l00147"></a><span class="lineno">  147</span>&#160;  uint64_t data_expiry_time_us;</div>
-<div class="line"><a name="l00148"></a><span class="lineno">  148</span>&#160;};</div>
-<div class="line"><a name="l00149"></a><span class="lineno">  149</span>&#160; </div>
-<div class="line"><a name="l00150"></a><span class="lineno">  150</span>&#160;}</div>
-<div class="line"><a name="l00151"></a><span class="lineno">  151</span>&#160; </div>
-<div class="line"><a name="l00152"></a><span class="lineno">  152</span>&#160;}</div>
-<div class="line"><a name="l00153"></a><span class="lineno">  153</span>&#160; </div>
-<div class="line"><a name="l00154"></a><span class="lineno">  154</span>&#160;<span class="preprocessor">#endif </span><span class="comment">/* __SHM_BASE_LIB_H__ */</span><span class="preprocessor"></span></div>
-<div class="ttc" id="aclassirlab_1_1shm_1_1_ring_buffer_html"><div class="ttname"><a href="classirlab_1_1shm_1_1_ring_buffer.html">irlab::shm::RingBuffer</a></div><div class="ttdoc">共有メモリでリングバッファを実現する基本動作を記述したクラス</div><div class="ttdef"><b>Definition:</b> <a href="shm__base_8hpp_source.html#l00115">shm_base.hpp:116</a></div></div>
+<div class="line"><a name="l00040"></a><span class="lineno"><a class="line" href="shm__base_8hpp.html#a45150f846959f085ca860d96a492d2c5">   40</a></span>&#160;  <span class="keyword">enum</span> <a class="code" href="shm__base_8hpp.html#a45150f846959f085ca860d96a492d2c5">PERM</a> : mode_t</div>
+<div class="line"><a name="l00041"></a><span class="lineno">   41</span>&#160;  {</div>
+<div class="line"><a name="l00042"></a><span class="lineno">   42</span>&#160;    <a class="code" href="shm__base_8hpp.html#a45150f846959f085ca860d96a492d2c5aaf3de92be35d7bb87ee8732e68e5e9ba">PERM_USER_READ</a>   = S_IRUSR, </div>
+<div class="line"><a name="l00046"></a><span class="lineno">   46</span>&#160;    <a class="code" href="shm__base_8hpp.html#a45150f846959f085ca860d96a492d2c5a50bcd47aab30a47a7e0efbb8a69d9a82">PERM_USER_WRITE</a>  = S_IWUSR, </div>
+<div class="line"><a name="l00050"></a><span class="lineno">   50</span>&#160;    <a class="code" href="shm__base_8hpp.html#a45150f846959f085ca860d96a492d2c5a691c67f674124c6da1672de75cad6b6f">PERM_GROUP_READ</a>  = S_IRGRP, </div>
+<div class="line"><a name="l00054"></a><span class="lineno">   54</span>&#160;    <a class="code" href="shm__base_8hpp.html#a45150f846959f085ca860d96a492d2c5ac62120c2d6b59f44cdad3eb857040a65">PERM_GROUP_WRITE</a> = S_IWGRP, </div>
+<div class="line"><a name="l00058"></a><span class="lineno">   58</span>&#160;    <a class="code" href="shm__base_8hpp.html#a45150f846959f085ca860d96a492d2c5a732f469e36a0a6f84d46f48745b64825">PERM_OTHER_READ</a>  = S_IROTH, </div>
+<div class="line"><a name="l00062"></a><span class="lineno">   62</span>&#160;    <a class="code" href="shm__base_8hpp.html#a45150f846959f085ca860d96a492d2c5a16d7f9f3891a3794fde48f85168a3108">PERM_OTHER_WRITE</a> = S_IWOTH, </div>
+<div class="line"><a name="l00066"></a><span class="lineno">   66</span>&#160;  };</div>
+<div class="line"><a name="l00067"></a><span class="lineno">   67</span>&#160;  <span class="keyword">const</span> PERM DEFAULT_PERM = <span class="keyword">static_cast&lt;</span>PERM<span class="keyword">&gt;</span>(PERM_USER_READ | PERM_USER_WRITE | PERM_GROUP_READ | PERM_GROUP_WRITE | PERM_OTHER_READ | PERM_OTHER_WRITE);</div>
+<div class="line"><a name="l00068"></a><span class="lineno">   68</span>&#160; </div>
+<div class="line"><a name="l00069"></a><span class="lineno">   69</span>&#160; </div>
+<div class="line"><a name="l00070"></a><span class="lineno">   70</span>&#160;<span class="comment">// ****************************************************************************</span></div>
+<div class="line"><a name="l00071"></a><span class="lineno">   71</span>&#160;<span class="comment">// Function Declarations</span></div>
+<div class="line"><a name="l00072"></a><span class="lineno">   72</span>&#160;<span class="comment">// 関数宣言</span></div>
+<div class="line"><a name="l00073"></a><span class="lineno">   73</span>&#160;<span class="comment">// ****************************************************************************</span></div>
+<div class="line"><a name="l00074"></a><span class="lineno">   74</span>&#160; </div>
+<div class="line"><a name="l00075"></a><span class="lineno">   75</span>&#160;<span class="keywordtype">int</span> disconnectMemory(std::string name);</div>
+<div class="line"><a name="l00076"></a><span class="lineno">   76</span>&#160;<span class="keywordtype">int</span> disconnectMemory(<span class="keywordtype">int</span> <span class="keywordtype">id</span>);</div>
+<div class="line"><a name="l00077"></a><span class="lineno">   77</span>&#160; </div>
+<div class="line"><a name="l00078"></a><span class="lineno">   78</span>&#160;<span class="comment">// ****************************************************************************</span></div>
+<div class="line"><a name="l00083"></a><span class="lineno">   83</span>&#160;<span class="comment"></span><span class="comment">// ****************************************************************************</span></div>
+<div class="line"><a name="l00084"></a><span class="lineno"><a class="line" href="classirlab_1_1shm_1_1_shared_memory.html">   84</a></span>&#160;<span class="keyword">class </span><a class="code" href="classirlab_1_1shm_1_1_shared_memory.html">SharedMemory</a></div>
+<div class="line"><a name="l00085"></a><span class="lineno">   85</span>&#160;{</div>
+<div class="line"><a name="l00086"></a><span class="lineno">   86</span>&#160;<span class="keyword">public</span>:</div>
+<div class="line"><a name="l00087"></a><span class="lineno">   87</span>&#160;  <a class="code" href="classirlab_1_1shm_1_1_shared_memory.html">SharedMemory</a>(<span class="keywordtype">int</span> oflag, <a class="code" href="shm__base_8hpp.html#a45150f846959f085ca860d96a492d2c5">PERM</a> perm);</div>
+<div class="line"><a name="l00088"></a><span class="lineno">   88</span>&#160;  ~<a class="code" href="classirlab_1_1shm_1_1_shared_memory.html">SharedMemory</a>();</div>
+<div class="line"><a name="l00089"></a><span class="lineno">   89</span>&#160; </div>
+<div class="line"><a name="l00090"></a><span class="lineno">   90</span>&#160;  <span class="keyword">virtual</span> <span class="keywordtype">bool</span> connect(<span class="keywordtype">size_t</span> size = 0) = 0;</div>
+<div class="line"><a name="l00091"></a><span class="lineno">   91</span>&#160;  <span class="keyword">virtual</span> <span class="keywordtype">int</span> disconnect() = 0;</div>
+<div class="line"><a name="l00092"></a><span class="lineno">   92</span>&#160;  <span class="keywordtype">size_t</span> getSize() <span class="keyword">const</span>;</div>
+<div class="line"><a name="l00093"></a><span class="lineno">   93</span>&#160;  <span class="keywordtype">unsigned</span> <span class="keywordtype">char</span>* getPtr();</div>
+<div class="line"><a name="l00094"></a><span class="lineno">   94</span>&#160; </div>
+<div class="line"><a name="l00095"></a><span class="lineno">   95</span>&#160;  <span class="keyword">virtual</span> <span class="keywordtype">bool</span> isDisconnected() <span class="keyword">const</span> = 0;</div>
+<div class="line"><a name="l00096"></a><span class="lineno">   96</span>&#160; </div>
+<div class="line"><a name="l00097"></a><span class="lineno">   97</span>&#160;<span class="keyword">protected</span>:</div>
+<div class="line"><a name="l00098"></a><span class="lineno">   98</span>&#160;  <span class="keywordtype">int</span> shm_fd;</div>
+<div class="line"><a name="l00099"></a><span class="lineno">   99</span>&#160;  <span class="keywordtype">int</span> shm_oflag;</div>
+<div class="line"><a name="l00100"></a><span class="lineno">  100</span>&#160;  <a class="code" href="shm__base_8hpp.html#a45150f846959f085ca860d96a492d2c5">PERM</a> shm_perm;</div>
+<div class="line"><a name="l00101"></a><span class="lineno">  101</span>&#160;  <span class="keywordtype">size_t</span> shm_size;</div>
+<div class="line"><a name="l00102"></a><span class="lineno">  102</span>&#160;  <span class="keywordtype">unsigned</span> <span class="keywordtype">char</span> *shm_ptr;</div>
+<div class="line"><a name="l00103"></a><span class="lineno">  103</span>&#160;};</div>
+<div class="line"><a name="l00104"></a><span class="lineno">  104</span>&#160; </div>
+<div class="line"><a name="l00105"></a><span class="lineno">  105</span>&#160; </div>
+<div class="line"><a name="l00106"></a><span class="lineno">  106</span>&#160;<span class="comment">// ****************************************************************************</span></div>
+<div class="line"><a name="l00111"></a><span class="lineno">  111</span>&#160;<span class="comment"></span><span class="comment">// ****************************************************************************</span></div>
+<div class="line"><a name="l00112"></a><span class="lineno"><a class="line" href="classirlab_1_1shm_1_1_shared_memory_posix.html">  112</a></span>&#160;<span class="keyword">class </span><a class="code" href="classirlab_1_1shm_1_1_shared_memory_posix.html">SharedMemoryPosix</a> : <span class="keyword">public</span> <a class="code" href="classirlab_1_1shm_1_1_shared_memory.html">SharedMemory</a></div>
+<div class="line"><a name="l00113"></a><span class="lineno">  113</span>&#160;{</div>
+<div class="line"><a name="l00114"></a><span class="lineno">  114</span>&#160;<span class="keyword">public</span>:</div>
+<div class="line"><a name="l00115"></a><span class="lineno">  115</span>&#160;  <a class="code" href="classirlab_1_1shm_1_1_shared_memory_posix.html">SharedMemoryPosix</a>(std::string name, <span class="keywordtype">int</span> oflag, <a class="code" href="shm__base_8hpp.html#a45150f846959f085ca860d96a492d2c5">PERM</a> perm);</div>
+<div class="line"><a name="l00116"></a><span class="lineno">  116</span>&#160;  ~<a class="code" href="classirlab_1_1shm_1_1_shared_memory_posix.html">SharedMemoryPosix</a>();</div>
+<div class="line"><a name="l00117"></a><span class="lineno">  117</span>&#160; </div>
+<div class="line"><a name="l00118"></a><span class="lineno">  118</span>&#160;  <span class="keyword">virtual</span> <span class="keywordtype">bool</span> connect(<span class="keywordtype">size_t</span> size = 0);</div>
+<div class="line"><a name="l00119"></a><span class="lineno">  119</span>&#160;  <span class="keyword">virtual</span> <span class="keywordtype">int</span> disconnect();</div>
+<div class="line"><a name="l00120"></a><span class="lineno">  120</span>&#160;  </div>
+<div class="line"><a name="l00121"></a><span class="lineno">  121</span>&#160;  <span class="keyword">virtual</span> <span class="keywordtype">bool</span> isDisconnected() <span class="keyword">const</span>;</div>
+<div class="line"><a name="l00122"></a><span class="lineno">  122</span>&#160; </div>
+<div class="line"><a name="l00123"></a><span class="lineno">  123</span>&#160;<span class="keyword">protected</span>:</div>
+<div class="line"><a name="l00124"></a><span class="lineno">  124</span>&#160;  std::string shm_name;</div>
+<div class="line"><a name="l00125"></a><span class="lineno">  125</span>&#160;};</div>
+<div class="line"><a name="l00126"></a><span class="lineno">  126</span>&#160; </div>
+<div class="line"><a name="l00127"></a><span class="lineno">  127</span>&#160; </div>
+<div class="line"><a name="l00128"></a><span class="lineno">  128</span>&#160; </div>
+<div class="line"><a name="l00129"></a><span class="lineno">  129</span>&#160;<span class="comment">// ****************************************************************************</span></div>
+<div class="line"><a name="l00134"></a><span class="lineno">  134</span>&#160;<span class="comment"></span><span class="comment">// ****************************************************************************</span></div>
+<div class="line"><a name="l00135"></a><span class="lineno"><a class="line" href="classirlab_1_1shm_1_1_ring_buffer.html">  135</a></span>&#160;<span class="keyword">class </span><a class="code" href="classirlab_1_1shm_1_1_ring_buffer.html">RingBuffer</a></div>
+<div class="line"><a name="l00136"></a><span class="lineno">  136</span>&#160;{</div>
+<div class="line"><a name="l00137"></a><span class="lineno">  137</span>&#160;<span class="keyword">public</span>:</div>
+<div class="line"><a name="l00138"></a><span class="lineno">  138</span>&#160;  <span class="keyword">static</span> <span class="keywordtype">size_t</span> getSize(<span class="keywordtype">size_t</span> element_size, <span class="keywordtype">int</span> buffer_num);</div>
+<div class="line"><a name="l00139"></a><span class="lineno">  139</span>&#160; </div>
+<div class="line"><a name="l00140"></a><span class="lineno">  140</span>&#160;  <a class="code" href="classirlab_1_1shm_1_1_ring_buffer.html#a6eb24ddc1eb6b7d5a1610d6862cdbbe5">RingBuffer</a>(<span class="keywordtype">unsigned</span> <span class="keywordtype">char</span>* first_ptr, <span class="keywordtype">size_t</span> size = 0, <span class="keywordtype">int</span> buffer_num = 0);</div>
+<div class="line"><a name="l00141"></a><span class="lineno">  141</span>&#160;  ~<a class="code" href="classirlab_1_1shm_1_1_ring_buffer.html">RingBuffer</a>();</div>
+<div class="line"><a name="l00142"></a><span class="lineno">  142</span>&#160;  </div>
+<div class="line"><a name="l00143"></a><span class="lineno">  143</span>&#160;  <span class="keyword">const</span> uint64_t <a class="code" href="classirlab_1_1shm_1_1_ring_buffer.html#a34fe90b547161731c3a5e73f256bb08e">getTimestamp_us</a>() <span class="keyword">const</span>;</div>
+<div class="line"><a name="l00144"></a><span class="lineno">  144</span>&#160;  <span class="keywordtype">void</span> <a class="code" href="classirlab_1_1shm_1_1_ring_buffer.html#a74822660242a6bf38add330876ef3fa6">setTimestamp_us</a>(uint64_t input_time_us, <span class="keywordtype">int</span> buffer_num);</div>
+<div class="line"><a name="l00145"></a><span class="lineno">  145</span>&#160;  <span class="keywordtype">int</span> getNewestBufferNum();</div>
+<div class="line"><a name="l00146"></a><span class="lineno">  146</span>&#160;  <span class="keywordtype">int</span> getOldestBufferNum();</div>
+<div class="line"><a name="l00147"></a><span class="lineno">  147</span>&#160;  <span class="keywordtype">size_t</span> getElementSize() <span class="keyword">const</span>;</div>
+<div class="line"><a name="l00148"></a><span class="lineno">  148</span>&#160;  <span class="keywordtype">unsigned</span> <span class="keywordtype">char</span>* getDataList();</div>
+<div class="line"><a name="l00149"></a><span class="lineno">  149</span>&#160;  <span class="keywordtype">void</span> signal();</div>
+<div class="line"><a name="l00150"></a><span class="lineno">  150</span>&#160;  <span class="keywordtype">bool</span> <a class="code" href="classirlab_1_1shm_1_1_ring_buffer.html#af8fef59dd1e3852617def3e906c83fb4">waitFor</a>(uint64_t timeout_usec);</div>
+<div class="line"><a name="l00151"></a><span class="lineno">  151</span>&#160;  <span class="keywordtype">bool</span> <a class="code" href="classirlab_1_1shm_1_1_ring_buffer.html#a48cffb6d4f17c8b1a3e6bbfbe160010a">isUpdated</a>() <span class="keyword">const</span>;</div>
+<div class="line"><a name="l00152"></a><span class="lineno">  152</span>&#160;  <span class="keywordtype">void</span> setDataExpiryTime_us(uint64_t time_us);</div>
+<div class="line"><a name="l00153"></a><span class="lineno">  153</span>&#160;  </div>
+<div class="line"><a name="l00154"></a><span class="lineno">  154</span>&#160;<span class="keyword">private</span>:</div>
+<div class="line"><a name="l00155"></a><span class="lineno">  155</span>&#160;  <span class="keywordtype">void</span> initializeExclusiveAccess();</div>
+<div class="line"><a name="l00156"></a><span class="lineno">  156</span>&#160;  </div>
+<div class="line"><a name="l00157"></a><span class="lineno">  157</span>&#160;  <span class="keywordtype">unsigned</span> <span class="keywordtype">char</span> *memory_ptr;</div>
+<div class="line"><a name="l00158"></a><span class="lineno">  158</span>&#160; </div>
+<div class="line"><a name="l00159"></a><span class="lineno">  159</span>&#160;  pthread_mutex_t *mutex;</div>
+<div class="line"><a name="l00160"></a><span class="lineno">  160</span>&#160;  pthread_cond_t *condition;</div>
+<div class="line"><a name="l00161"></a><span class="lineno">  161</span>&#160;  <span class="keywordtype">size_t</span> *element_size;</div>
+<div class="line"><a name="l00162"></a><span class="lineno">  162</span>&#160;  <span class="keywordtype">int</span> *buf_num;</div>
+<div class="line"><a name="l00163"></a><span class="lineno">  163</span>&#160;  uint64_t *timestamp_list;</div>
+<div class="line"><a name="l00164"></a><span class="lineno">  164</span>&#160;  <span class="keywordtype">unsigned</span> <span class="keywordtype">char</span> *data_list;</div>
+<div class="line"><a name="l00165"></a><span class="lineno">  165</span>&#160;  </div>
+<div class="line"><a name="l00166"></a><span class="lineno">  166</span>&#160;  uint64_t timestamp_us;</div>
+<div class="line"><a name="l00167"></a><span class="lineno">  167</span>&#160;  uint64_t data_expiry_time_us;</div>
+<div class="line"><a name="l00168"></a><span class="lineno">  168</span>&#160;};</div>
+<div class="line"><a name="l00169"></a><span class="lineno">  169</span>&#160; </div>
+<div class="line"><a name="l00170"></a><span class="lineno">  170</span>&#160;}</div>
+<div class="line"><a name="l00171"></a><span class="lineno">  171</span>&#160; </div>
+<div class="line"><a name="l00172"></a><span class="lineno">  172</span>&#160;}</div>
+<div class="line"><a name="l00173"></a><span class="lineno">  173</span>&#160; </div>
+<div class="line"><a name="l00174"></a><span class="lineno">  174</span>&#160;<span class="preprocessor">#endif </span><span class="comment">/* __SHM_BASE_LIB_H__ */</span><span class="preprocessor"></span></div>
+<div class="ttc" id="aclassirlab_1_1shm_1_1_ring_buffer_html"><div class="ttname"><a href="classirlab_1_1shm_1_1_ring_buffer.html">irlab::shm::RingBuffer</a></div><div class="ttdoc">Class that is described ring-buffer used for shared memory.</div><div class="ttdef"><b>Definition:</b> <a href="shm__base_8hpp_source.html#l00135">shm_base.hpp:136</a></div></div>
 <div class="ttc" id="aclassirlab_1_1shm_1_1_ring_buffer_html_a34fe90b547161731c3a5e73f256bb08e"><div class="ttname"><a href="classirlab_1_1shm_1_1_ring_buffer.html#a34fe90b547161731c3a5e73f256bb08e">irlab::shm::RingBuffer::getTimestamp_us</a></div><div class="ttdeci">const uint64_t getTimestamp_us() const</div><div class="ttdoc">タイムスタンプ取得</div><div class="ttdef"><b>Definition:</b> <a href="ring__buffer_8cpp_source.html#l00091">ring_buffer.cpp:91</a></div></div>
 <div class="ttc" id="aclassirlab_1_1shm_1_1_ring_buffer_html_a48cffb6d4f17c8b1a3e6bbfbe160010a"><div class="ttname"><a href="classirlab_1_1shm_1_1_ring_buffer.html#a48cffb6d4f17c8b1a3e6bbfbe160010a">irlab::shm::RingBuffer::isUpdated</a></div><div class="ttdeci">bool isUpdated() const</div><div class="ttdoc">共有メモリの更新確認</div><div class="ttdef"><b>Definition:</b> <a href="ring__buffer_8cpp_source.html#l00205">ring_buffer.cpp:205</a></div></div>
 <div class="ttc" id="aclassirlab_1_1shm_1_1_ring_buffer_html_a6eb24ddc1eb6b7d5a1610d6862cdbbe5"><div class="ttname"><a href="classirlab_1_1shm_1_1_ring_buffer.html#a6eb24ddc1eb6b7d5a1610d6862cdbbe5">irlab::shm::RingBuffer::RingBuffer</a></div><div class="ttdeci">RingBuffer(unsigned char *first_ptr, size_t size=0, int buffer_num=0)</div><div class="ttdoc">コンストラクタ</div><div class="ttdef"><b>Definition:</b> <a href="ring__buffer_8cpp_source.html#l00020">ring_buffer.cpp:20</a></div></div>
 <div class="ttc" id="aclassirlab_1_1shm_1_1_ring_buffer_html_a74822660242a6bf38add330876ef3fa6"><div class="ttname"><a href="classirlab_1_1shm_1_1_ring_buffer.html#a74822660242a6bf38add330876ef3fa6">irlab::shm::RingBuffer::setTimestamp_us</a></div><div class="ttdeci">void setTimestamp_us(uint64_t input_time_us, int buffer_num)</div><div class="ttdoc">タイムスタンプ取得</div><div class="ttdef"><b>Definition:</b> <a href="ring__buffer_8cpp_source.html#l00102">ring_buffer.cpp:102</a></div></div>
 <div class="ttc" id="aclassirlab_1_1shm_1_1_ring_buffer_html_af8fef59dd1e3852617def3e906c83fb4"><div class="ttname"><a href="classirlab_1_1shm_1_1_ring_buffer.html#af8fef59dd1e3852617def3e906c83fb4">irlab::shm::RingBuffer::waitFor</a></div><div class="ttdeci">bool waitFor(uint64_t timeout_usec)</div><div class="ttdoc">トピックの更新待ち</div><div class="ttdef"><b>Definition:</b> <a href="ring__buffer_8cpp_source.html#l00169">ring_buffer.cpp:169</a></div></div>
-<div class="ttc" id="aclassirlab_1_1shm_1_1_shared_memory_html"><div class="ttname"><a href="classirlab_1_1shm_1_1_shared_memory.html">irlab::shm::SharedMemory</a></div><div class="ttdoc">共有メモリの確保などを記述したクラス</div><div class="ttdef"><b>Definition:</b> <a href="shm__base_8hpp_source.html#l00066">shm_base.hpp:67</a></div></div>
-<div class="ttc" id="aclassirlab_1_1shm_1_1_shared_memory_posix_html"><div class="ttname"><a href="classirlab_1_1shm_1_1_shared_memory_posix.html">irlab::shm::SharedMemoryPosix</a></div><div class="ttdoc">Posix方式の共有メモリの確保などを記述したクラス</div><div class="ttdef"><b>Definition:</b> <a href="shm__base_8hpp_source.html#l00093">shm_base.hpp:94</a></div></div>
+<div class="ttc" id="aclassirlab_1_1shm_1_1_shared_memory_html"><div class="ttname"><a href="classirlab_1_1shm_1_1_shared_memory.html">irlab::shm::SharedMemory</a></div><div class="ttdoc">Class that abstracts the method of accessing shared memory.</div><div class="ttdef"><b>Definition:</b> <a href="shm__base_8hpp_source.html#l00084">shm_base.hpp:85</a></div></div>
+<div class="ttc" id="aclassirlab_1_1shm_1_1_shared_memory_posix_html"><div class="ttname"><a href="classirlab_1_1shm_1_1_shared_memory_posix.html">irlab::shm::SharedMemoryPosix</a></div><div class="ttdoc">Class that is described the method of accessing POSIX shared memory.</div><div class="ttdef"><b>Definition:</b> <a href="shm__base_8hpp_source.html#l00112">shm_base.hpp:113</a></div></div>
+<div class="ttc" id="ashm__base_8hpp_html_a45150f846959f085ca860d96a492d2c5"><div class="ttname"><a href="shm__base_8hpp.html#a45150f846959f085ca860d96a492d2c5">irlab::shm::PERM</a></div><div class="ttdeci">PERM</div><div class="ttdef"><b>Definition:</b> <a href="shm__base_8hpp_source.html#l00040">shm_base.hpp:41</a></div></div>
+<div class="ttc" id="ashm__base_8hpp_html_a45150f846959f085ca860d96a492d2c5a16d7f9f3891a3794fde48f85168a3108"><div class="ttname"><a href="shm__base_8hpp.html#a45150f846959f085ca860d96a492d2c5a16d7f9f3891a3794fde48f85168a3108">irlab::shm::PERM_OTHER_WRITE</a></div><div class="ttdeci">@ PERM_OTHER_WRITE</div><div class="ttdef"><b>Definition:</b> <a href="shm__base_8hpp_source.html#l00065">shm_base.hpp:62</a></div></div>
+<div class="ttc" id="ashm__base_8hpp_html_a45150f846959f085ca860d96a492d2c5a50bcd47aab30a47a7e0efbb8a69d9a82"><div class="ttname"><a href="shm__base_8hpp.html#a45150f846959f085ca860d96a492d2c5a50bcd47aab30a47a7e0efbb8a69d9a82">irlab::shm::PERM_USER_WRITE</a></div><div class="ttdeci">@ PERM_USER_WRITE</div><div class="ttdef"><b>Definition:</b> <a href="shm__base_8hpp_source.html#l00049">shm_base.hpp:46</a></div></div>
+<div class="ttc" id="ashm__base_8hpp_html_a45150f846959f085ca860d96a492d2c5a691c67f674124c6da1672de75cad6b6f"><div class="ttname"><a href="shm__base_8hpp.html#a45150f846959f085ca860d96a492d2c5a691c67f674124c6da1672de75cad6b6f">irlab::shm::PERM_GROUP_READ</a></div><div class="ttdeci">@ PERM_GROUP_READ</div><div class="ttdef"><b>Definition:</b> <a href="shm__base_8hpp_source.html#l00053">shm_base.hpp:50</a></div></div>
+<div class="ttc" id="ashm__base_8hpp_html_a45150f846959f085ca860d96a492d2c5a732f469e36a0a6f84d46f48745b64825"><div class="ttname"><a href="shm__base_8hpp.html#a45150f846959f085ca860d96a492d2c5a732f469e36a0a6f84d46f48745b64825">irlab::shm::PERM_OTHER_READ</a></div><div class="ttdeci">@ PERM_OTHER_READ</div><div class="ttdef"><b>Definition:</b> <a href="shm__base_8hpp_source.html#l00061">shm_base.hpp:58</a></div></div>
+<div class="ttc" id="ashm__base_8hpp_html_a45150f846959f085ca860d96a492d2c5aaf3de92be35d7bb87ee8732e68e5e9ba"><div class="ttname"><a href="shm__base_8hpp.html#a45150f846959f085ca860d96a492d2c5aaf3de92be35d7bb87ee8732e68e5e9ba">irlab::shm::PERM_USER_READ</a></div><div class="ttdeci">@ PERM_USER_READ</div><div class="ttdef"><b>Definition:</b> <a href="shm__base_8hpp_source.html#l00045">shm_base.hpp:42</a></div></div>
+<div class="ttc" id="ashm__base_8hpp_html_a45150f846959f085ca860d96a492d2c5ac62120c2d6b59f44cdad3eb857040a65"><div class="ttname"><a href="shm__base_8hpp.html#a45150f846959f085ca860d96a492d2c5ac62120c2d6b59f44cdad3eb857040a65">irlab::shm::PERM_GROUP_WRITE</a></div><div class="ttdeci">@ PERM_GROUP_WRITE</div><div class="ttdef"><b>Definition:</b> <a href="shm__base_8hpp_source.html#l00057">shm_base.hpp:54</a></div></div>
 </div><!-- fragment --></div><!-- contents -->
 <!-- start footer part -->
 <hr class="footer"/><address class="footer"><small>
-Generated on Fri Mar 3 2023 13:04:57 for SHM by&#160;<a href="https://www.doxygen.org/index.html"><img class="footer" src="doxygen.svg" width="104" height="31" alt="doxygen"/></a> 1.9.1
+Generated on Sat Mar 4 2023 13:38:57 for SHM by&#160;<a href="https://www.doxygen.org/index.html"><img class="footer" src="doxygen.svg" width="104" height="31" alt="doxygen"/></a> 1.9.1
 </small></address>
 </body>
 </html>

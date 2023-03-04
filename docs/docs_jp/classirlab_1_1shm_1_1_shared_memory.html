@@ -75,7 +75,7 @@ $(function() {
 </div><!--header-->
 <div class="contents">
 
-<p>共有メモリの確保などを記述したクラス  
+<p>共有メモリへのアクセス方法を抽象化したクラス  
  <a href="classirlab_1_1shm_1_1_shared_memory.html#details">More...</a></p>
 
 <p><code>#include &lt;<a class="el" href="shm__base_8hpp_source.html">shm_base.hpp</a>&gt;</code></p>
@@ -85,14 +85,14 @@ Inheritance diagram for irlab::shm::SharedMemory:</div>
  <div class="center">
   <img src="classirlab_1_1shm_1_1_shared_memory.png" usemap="#irlab::shm::SharedMemory_map" alt=""/>
   <map id="irlab::shm::SharedMemory_map" name="irlab::shm::SharedMemory_map">
-<area href="classirlab_1_1shm_1_1_shared_memory_posix.html" title="Posix方式の共有メモリの確保などを記述したクラス" alt="irlab::shm::SharedMemoryPosix" shape="rect" coords="0,56,188,80"/>
+<area href="classirlab_1_1shm_1_1_shared_memory_posix.html" title="Posix方式の共有メモリのアクセス方法を記述したクラス" alt="irlab::shm::SharedMemoryPosix" shape="rect" coords="0,56,188,80"/>
   </map>
 </div></div>
 <table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 class="groupheader"><a name="pub-methods"></a>
 Public Member Functions</h2></td></tr>
 <tr class="memitem:a5b714bf5749f8c8e926ffda952c24728"><td class="memItemLeft" align="right" valign="top"><a id="a5b714bf5749f8c8e926ffda952c24728"></a>
-&#160;</td><td class="memItemRight" valign="bottom"><b>SharedMemory</b> (int oflag, PERM perm)</td></tr>
+&#160;</td><td class="memItemRight" valign="bottom"><b>SharedMemory</b> (int oflag, <a class="el" href="shm__base_8hpp.html#a45150f846959f085ca860d96a492d2c5">PERM</a> perm)</td></tr>
 <tr class="separator:a5b714bf5749f8c8e926ffda952c24728"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="memitem:aeceaee6fa7668124cc6b20425e31d740"><td class="memItemLeft" align="right" valign="top"><a id="aeceaee6fa7668124cc6b20425e31d740"></a>
 virtual bool&#160;</td><td class="memItemRight" valign="bottom"><b>connect</b> (size_t size=0)=0</td></tr>
@@ -119,7 +119,7 @@ int&#160;</td><td class="memItemRight" valign="bottom"><b>shm_fd</b></td></tr>
 int&#160;</td><td class="memItemRight" valign="bottom"><b>shm_oflag</b></td></tr>
 <tr class="separator:a620b4ad87aba2ec31fd6c406cd7b1125"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="memitem:a3eb14642e6d0c951b1f5abe9aaadf9b1"><td class="memItemLeft" align="right" valign="top"><a id="a3eb14642e6d0c951b1f5abe9aaadf9b1"></a>
-PERM&#160;</td><td class="memItemRight" valign="bottom"><b>shm_perm</b></td></tr>
+<a class="el" href="shm__base_8hpp.html#a45150f846959f085ca860d96a492d2c5">PERM</a>&#160;</td><td class="memItemRight" valign="bottom"><b>shm_perm</b></td></tr>
 <tr class="separator:a3eb14642e6d0c951b1f5abe9aaadf9b1"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="memitem:a9a8c3882588db6194ccd05b18b4df55a"><td class="memItemLeft" align="right" valign="top"><a id="a9a8c3882588db6194ccd05b18b4df55a"></a>
 size_t&#160;</td><td class="memItemRight" valign="bottom"><b>shm_size</b></td></tr>
@@ -129,11 +129,11 @@ unsigned char *&#160;</td><td class="memItemRight" valign="bottom"><b>shm_ptr</b
 <tr class="separator:a92c98998975fdece0964b0401938dc2c"><td class="memSeparator" colspan="2">&#160;</td></tr>
 </table>
 <a name="details" id="details"></a><h2 class="groupheader">Detailed Description</h2>
-<div class="textblock"><p>共有メモリの確保などを記述したクラス </p>
+<div class="textblock"><p>共有メモリへのアクセス方法を抽象化したクラス </p>
 <p><br  />
  </p>
 
-<p class="definition">Definition at line <a class="el" href="shm__base_8hpp_source.html#l00066">66</a> of file <a class="el" href="shm__base_8hpp_source.html">shm_base.hpp</a>.</p>
+<p class="definition">Definition at line <a class="el" href="shm__base_8hpp_source.html#l00084">84</a> of file <a class="el" href="shm__base_8hpp_source.html">shm_base.hpp</a>.</p>
 </div><hr/>The documentation for this class was generated from the following files:<ul>
 <li>shm_base/include/<a class="el" href="shm__base_8hpp_source.html">shm_base.hpp</a></li>
 <li>shm_base/src/<a class="el" href="shared__memory_8cpp_source.html">shared_memory.cpp</a></li>
@@ -141,7 +141,7 @@ unsigned char *&#160;</td><td class="memItemRight" valign="bottom"><b>shm_ptr</b
 </div><!-- contents -->
 <!-- start footer part -->
 <hr class="footer"/><address class="footer"><small>
-Generated on Fri Mar 3 2023 13:24:09 for SHM by&#160;<a href="https://www.doxygen.org/index.html"><img class="footer" src="doxygen.svg" width="104" height="31" alt="doxygen"/></a> 1.9.1
+Generated on Sat Mar 4 2023 13:39:00 for SHM by&#160;<a href="https://www.doxygen.org/index.html"><img class="footer" src="doxygen.svg" width="104" height="31" alt="doxygen"/></a> 1.9.1
 </small></address>
 </body>
 </html>

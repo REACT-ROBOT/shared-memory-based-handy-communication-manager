@@ -29,32 +29,6 @@ disconnectMemory(std::string name)
 }
 
 
-//! @brief 共有メモリを破棄する(SystemV版)
-//! @param [in] name 共有メモリ名
-//! @return なし
-//! @details この関数では、引数で与えられた共有メモリ名の共有メモリを破棄する.
-//! 破棄すると言ってもファイルの削除と同様に、すでにプログラムで展開されている場合は、
-//! 破棄された共有メモリにアクセスし続けることができる．
-//! 破棄後に同名の共有メモリを作成した場合、新しいアドレスが生成されるため、
-//! 再度サブスクライバを生成しないと新しい共有メモリにアクセスできない．
-//! ファイルディスクリプタを保持し、inodeのカウントを監視することで、
-//! 共有メモリの破棄を検知することができるが、むやみに共有メモリを破棄することがないことを前提として、
-//! 余計な処理を加えないためにあえて共有メモリの監視はしていない。
-int
-disconnectMemory(int id)
-{
-/*
-  if (name[0] == '/')
-  {
-    name = name.erase(0, 1);
-  }
-  std::string str_buf = "/shm_" + regex_replace(name, std::regex("/"), "_");
-  return shm_unlink(str_buf.c_str());
-*/
-  return 0;
-}
-
-
 SharedMemory::SharedMemory(int oflag, PERM perm)
 : shm_fd(-1)
 , shm_oflag(oflag)

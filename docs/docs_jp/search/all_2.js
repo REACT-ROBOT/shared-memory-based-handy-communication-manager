@@ -1,4 +1,4 @@
 var searchData=
 [
-  ['gettimestamp_5fus_3',['getTimestamp_us',['../classirlab_1_1shm_1_1_ring_buffer.html#a34fe90b547161731c3a5e73f256bb08e',1,'irlab::shm::RingBuffer']]]
+  ['disconnectmemory_3',['disconnectMemory',['../shm__base_8hpp.html#a384457ef41082d1070742bd58477df94',1,'irlab::shm']]]
 ];
