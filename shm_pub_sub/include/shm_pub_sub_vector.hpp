@@ -253,7 +253,7 @@ Subscriber<std::vector<T>>::subscribe(bool *is_success)
   *is_success = true;
   current_reading_buffer = newest_buffer;
   T * first_ptr = &((reinterpret_cast<T*>(ring_buffer->getDataList()))[newest_buffer*vector_size]);
-  T * last_ptr  = &((reinterpret_cast<T*>(ring_buffer->getDataList()))[newest_buffer*vector_size + vector_size]);
+  T * last_ptr  = &((reinterpret_cast<T*>(ring_buffer->getDataList()))[newest_buffer*vector_size + vector_size - 1]);
   return std::vector<T>(first_ptr, last_ptr);
 }
 
