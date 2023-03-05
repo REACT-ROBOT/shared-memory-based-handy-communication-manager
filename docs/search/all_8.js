@@ -1,4 +1,5 @@
 var searchData=
 [
-  ['waitfor_44',['waitFor',['../classirlab_1_1shm_1_1_ring_buffer.html#af8fef59dd1e3852617def3e906c83fb4',1,'irlab::shm::RingBuffer']]]
+  ['tutorials_5fen_47',['tutorials_en',['../md_manual_tutorials_en.html',1,'']]],
+  ['tutorials_5fpython_5fen_48',['tutorials_python_en',['../md_manual_tutorials_python_en.html',1,'']]]
 ];
