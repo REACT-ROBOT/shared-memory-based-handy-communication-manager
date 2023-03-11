@@ -25,9 +25,22 @@ irlab::shm::Publisher<int> pub = irlab::shm::Publisher<int>("test");
 
 ## Automatic shared-memory management
 
-## Support for user-defined classes
+In SHM, classes automatically allocate and release shared memory.
+
+On the other hand, classes that can be used in standard communication for automatic management are limited to those whose exact size can be obtained with the sizeof function.
+For example, classes that handle variable length data such as Vector are not supported by the standard.
+However, it is possible to deal with variable-length data by making specializations as appropriate.
+For example, shm_pub_sub, a communication library based on the publisher/subscriber model, provides shm_pub_sub_vector.hpp, which can handle the Vecotor class.
+
+The shared memory API obtains the top address of allocated memory by a void pointer.
+Since C++ uses safer type conversion, it is not possible to convert the void pointer to an arbitrary type under normal circumstances.
+Therefore, to utilize memory allocated by the shared memory API, a forced type conversion called reinterpret_cast must be performed.
+Hiding this dangerous operation is important to avoid creating strange habits in beginning students.
 
 ## Implement various communication models
+
+SHM implements various communication models with reference to ROS to ensure reliable communication.
+Users can use the following communication models as needed.
 
 ### Publisher/subscriber model
 

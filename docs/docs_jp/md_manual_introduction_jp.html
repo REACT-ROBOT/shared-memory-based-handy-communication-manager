@@ -79,21 +79,23 @@ irlab::shm 名前空間</h2>
 <div class="line">...</div>
 </div><!-- fragment --><h2><a class="anchor" id="autotoc_md4"></a>
 共有メモリの自動管理</h2>
+<p>SHMでは、共有メモリの確保と開放をクラスが自動的に行う。</p>
+<p>一方で、自動的な管理を行うために標準で通信に利用できるクラスはsizeof関数で正確なサイズが取得できるものに限られる。 例えば、Vectorのような可変長なデータを扱うクラスは標準でサポートされていない。 しかし、可変長なデータに対しても適宜特殊化を行うことで、対処することは可能である。 例えば、出版者/購読者モデルによる通信ライブラリであるshm_pub_subでは、Vecotorクラスを扱えるshm_pub_sub_vector.hppが用意されている。</p>
+<p>共有メモリAPIは確保したメモリの先頭アドレスをvoidポインタで取得する。 C++はより安全な型変換を用いるため、通常ではvoidポインタを任意の型に変換することができない。 そのため、共有メモリAPIで確保したメモリを活用するには、reinterpret_castという強制的な型変換を行う必要がある。 この危険な操作を隠蔽することは、初学者に変な癖をつけないために重要なことである。</p>
 <h2><a class="anchor" id="autotoc_md5"></a>
-ユーザ定義クラスへの対応</h2>
-<h2><a class="anchor" id="autotoc_md6"></a>
 様々な通信モデルの実装</h2>
-<h3><a class="anchor" id="autotoc_md7"></a>
+<p>SHMでは、信頼性の高い通信ができるようにROSを参考にした様々な通信モデルを実装している。 ユーザは必要に応じて以下の通信モデルを使い分けることができる。</p>
+<h3><a class="anchor" id="autotoc_md6"></a>
 出版者/購読者 モデル</h3>
-<h3><a class="anchor" id="autotoc_md8"></a>
+<h3><a class="anchor" id="autotoc_md7"></a>
 サーバー/クライアント モデル(シンプル)</h3>
-<h3><a class="anchor" id="autotoc_md9"></a>
+<h3><a class="anchor" id="autotoc_md8"></a>
 サーバー/クライアント モデル(高機能版)</h3>
 </div></div><!-- contents -->
 </div><!-- PageDoc -->
 <!-- start footer part -->
 <hr class="footer"/><address class="footer"><small>
-Generated on Sat Mar 11 2023 18:19:22 for SHM by &#160;<a href="http://www.doxygen.org/index.html">
+Generated on Sat Mar 11 2023 20:23:31 for SHM by &#160;<a href="http://www.doxygen.org/index.html">
 <img class="footer" src="doxygen.png" alt="doxygen"/>
 </a> 1.8.17
 </small></address>
