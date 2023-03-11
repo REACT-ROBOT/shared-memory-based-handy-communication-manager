@@ -1,8 +1,27 @@
 # イントロダクション
 
+SHM(Shared-memory based Handy-communication Manager)は、共有メモリを用いたプロセス間通信を手軽に行うためのライブラリである。
+このライブラリは、尾崎功一教授が自身の研究室でのロボット開発のためにC言語で作ったライブラリを基にしている。
+基のライブラリは、シンプルなAPIによってプログラミング初学者でも簡単にプロセス間通信を記述することができた。
+このライブラリでは、基のライブラリで培ってきたノウハウに加えて、C++のクラスによるオブジェクト指向なプログラムが実現できるように工夫を行っている。
+また、通信の信頼性や機能性を向上させるために、fuRom<sup>[1]</sup>やROS(Robot Operating System)<sup>[2]</sup>の通信を参考にリングバッファや条件変数を取り入れている。
+
+[1] 入江清. "ROS との相互運用性に配慮した共有メモリによる低遅延プロセス間通信フレームワーク." 第 35 回日本ロボット学会学術講演会予稿集, RSJ2017AC2B2-01 (2017).
+    <https://furo.org/irie/papers/rsj2017_irie.pdf>
+
+[2] Open Robotics, "ROS.org", <http://wiki.ros.org/ja/>
+
 # API コンセプト
 
 ## irlab::shm 名前空間
+
+すべてのSHMのクラスと関数はirlab::shm名前空間内に置かれている。これは、ROSなどの他の類似したライブラリと競合しないようにするために必要である。
+```
+#include "shm_pub_sub.hpp"
+...
+irlab::shm::Publisher<int> pub = irlab::shm::Publisher<int>("test");
+...
+```
 
 ## 共有メモリの自動管理
 
