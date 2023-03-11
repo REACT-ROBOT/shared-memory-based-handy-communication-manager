@@ -1,4 +1,5 @@
 # SHM Specification
+[English | [日本語](docs_jp/md_manual_spec_jp.html)]
 
 \tableofcontents
 

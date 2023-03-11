@@ -1,4 +1,5 @@
 # イントロダクション
+[[English](../md_manual_introduction_en.html) | 日本語]
 
 SHM(Shared-memory based Handy-communication Manager)は、共有メモリを用いたプロセス間通信を手軽に行うためのライブラリである。
 このライブラリは、尾崎功一教授が自身の研究室でのロボット開発のためにC言語で作ったライブラリを基にしている。

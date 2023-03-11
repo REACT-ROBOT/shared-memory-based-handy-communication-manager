@@ -1,5 +1,5 @@
 # SHM {#mainpage}
-English pages are [HERE](../index.html)
+[[English](../index.html) | 日本語]
 
 ## 概要
 SHMとは、Shared-memory based Handy-communication Managerの略である。

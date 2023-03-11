@@ -1,4 +1,5 @@
 # SHM 仕様書
+[[English](../md_manual_spec_en.html) | 日本語]
 
 \tableofcontents
 

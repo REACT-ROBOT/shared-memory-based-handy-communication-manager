@@ -1,5 +1,5 @@
 # SHM {#mainpage}
-Japanese pages are [HERE](docs_jp/index.html)
+[English | [日本語](docs_jp/index.html)]
 
 ## About
 SHM is short for "Shared-memory based Handy-communication Manager".

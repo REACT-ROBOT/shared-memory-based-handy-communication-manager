@@ -1,4 +1,5 @@
 # Introduction
+[English | [日本語](docs_jp/md_manual_introduction_jp.html)]
 
 SHM (Shared-memory based Handy-communication Manager) is a library for easy inter-process communication using shared memory.
 This library is based on a library created by Professor Koichi Ozaki in C for robot development in his laboratory.
