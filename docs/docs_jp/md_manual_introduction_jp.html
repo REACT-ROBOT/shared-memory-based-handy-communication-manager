@@ -87,15 +87,18 @@ irlab::shm 名前空間</h2>
 <p>SHMでは、信頼性の高い通信ができるようにROSを参考にした様々な通信モデルを実装している。 ユーザは必要に応じて以下の通信モデルを使い分けることができる。</p>
 <h3><a class="anchor" id="autotoc_md6"></a>
 出版者/購読者 モデル</h3>
+<p>出版者/購読者モデルは、一つのプロセスが複数のプロセスに向かって情報を発信するためのモデルである。</p>
 <h3><a class="anchor" id="autotoc_md7"></a>
 サーバー/クライアント モデル(シンプル)</h3>
+<p>このモデルは、ROSではServiceと呼ばれる単純な呼び出しと応答を行うモデルである。</p>
 <h3><a class="anchor" id="autotoc_md8"></a>
 サーバー/クライアント モデル(高機能版)</h3>
+<p>Service通信はサーバーが応答するまでクライアントが待つ必要がある。 しかし、処理に時間がかかる場合には、クライアントが現在の状態を監視したりキャンセル要求を送りたい場合がある。 そのような処理を行うために、ROSではActionと呼ばれるモデルが用いられる。 便宜上、ROSに倣ってそのような通信モデルをActionと呼ぶこととする。 ただし、SHMのActionモデルは完全なROSのActionモデルではないことに注意すること。 </p>
 </div></div><!-- contents -->
 </div><!-- PageDoc -->
 <!-- start footer part -->
 <hr class="footer"/><address class="footer"><small>
-Generated on Sat Mar 11 2023 20:23:31 for SHM by &#160;<a href="http://www.doxygen.org/index.html">
+Generated on Sun Mar 12 2023 06:57:50 for SHM by &#160;<a href="http://www.doxygen.org/index.html">
 <img class="footer" src="doxygen.png" alt="doxygen"/>
 </a> 1.8.17
 </small></address>

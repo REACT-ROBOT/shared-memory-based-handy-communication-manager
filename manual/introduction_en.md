@@ -44,6 +44,16 @@ Users can use the following communication models as needed.
 
 ### Publisher/subscriber model
 
+The publisher/subscriber model is a model for one process to disseminate information toward multiple processes.
+
 ### Server/Client model (simple)
 
+This model is a simple call-and-response model, called Service in ROS.
+
 ### Server/Client model (high functionality version)
+
+Service communication requires the client to wait until the server responds.
+However, if the process takes a long time, the client may want to monitor the current status or send a cancellation request.
+To perform such processing, a model called Action is used in ROS.
+For convenience, we will call such a communication model Action, following ROS.
+Note that SHM's Action model is not the complete ROS Action model.
