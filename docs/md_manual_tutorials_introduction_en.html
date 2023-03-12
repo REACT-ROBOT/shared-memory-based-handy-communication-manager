@@ -85,10 +85,17 @@ Development environment construction</h1>
 </div><!-- fragment --></li>
 <li><p class="startli">create CMakeLists.txt directly under workspace. </p><div class="fragment"><div class="line">cd {where you created the workspace}/cmake_ws/</div>
 <div class="line">gedit CMakeLists.txt</div>
-</div><!-- fragment --><p class="startli">Copy the following text into the editor you opened and save it. ``` cmake_minimum_required(VERSION 3.16) cmake_policy(SET CMP0060 NEW)</p>
-<p class="startli">project(MobileRobot_cmake) set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_BINARY_DIR}/cmake) set(CMAKE_INSTALL_PREFIX ${CMAKE_BINARY_DIR}) set(CMAKE_PREFIX_PATH ${CMAKE_BINARY_DIR}) SET(CMAKE_INSTALL_RPATH ${CMAKE_BINARY_DIR}/lib)</p>
-<p class="startli">add_subdirectory(src) ````</p>
-</li>
+</div><!-- fragment --><p class="startli">Copy the following text into the editor you opened and save it. </p><div class="fragment"><div class="line">cmake_minimum_required(VERSION 3.16)</div>
+<div class="line">cmake_policy(SET CMP0060 NEW)</div>
+<div class="line"> </div>
+<div class="line">project(MobileRobot_cmake)</div>
+<div class="line">set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_BINARY_DIR}/cmake)</div>
+<div class="line">set(CMAKE_INSTALL_PREFIX ${CMAKE_BINARY_DIR})</div>
+<div class="line">set(CMAKE_PREFIX_PATH ${CMAKE_BINARY_DIR})</div>
+<div class="line">SET(CMAKE_INSTALL_RPATH ${CMAKE_BINARY_DIR}/lib)</div>
+<div class="line"> </div>
+<div class="line">add_subdirectory(src)</div>
+</div><!-- fragment --></li>
 <li><p class="startli">Create CMakeLists.txt in src directory. </p><div class="fragment"><div class="line">cd {where you created your workspace}/cmake_ws/src/</div>
 <div class="line">gedit CMakeLists.txt</div>
 </div><!-- fragment --><p class="startli">Copy the following text into the editor you opened and save it. </p><div class="fragment"><div class="line">cmake_minimum_required(VERSION 3.16)</div>
@@ -112,7 +119,7 @@ Build</h1>
 </div><!-- PageDoc -->
 <!-- start footer part -->
 <hr class="footer"/><address class="footer"><small>
-Generated on Sun Mar 12 2023 14:51:52 for SHM by &#160;<a href="http://www.doxygen.org/index.html">
+Generated on Sun Mar 12 2023 14:59:20 for SHM by &#160;<a href="http://www.doxygen.org/index.html">
 <img class="footer" src="doxygen.png" alt="doxygen"/>
 </a> 1.8.17
 </small></address>

@@ -51,7 +51,7 @@ For example, on CentOS, it is necessary to replace apt with yum and make other c
    SET(CMAKE_INSTALL_RPATH ${CMAKE_BINARY_DIR}/lib)
 
    add_subdirectory(src)
-   ````
+   ```
 
 7. Create CMakeLists.txt in src directory.
    ```
