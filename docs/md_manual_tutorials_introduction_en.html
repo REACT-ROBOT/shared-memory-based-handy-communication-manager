@@ -66,12 +66,53 @@ $(function() {
 <div class="title">Introduction to SHM </div>  </div>
 </div><!--header-->
 <div class="contents">
-<div class="textblock"><p>[English | <a href="docs_jp/md_manual_tutorials_introduction_jp.html">日本語</a>] </p>
+<div class="textblock"><p>[English | <a href="docs_jp/md_manual_tutorials_introduction_jp.html">日本語</a>]</p>
+<h1><a class="anchor" id="autotoc_md28"></a>
+Development environment construction</h1>
+<p>This library is intended for POSIX-compliant operating systems (mainly Linux). The following shows the procedure for building a development environment on Ubuntu. For example, on CentOS, it is necessary to replace apt with yum and make other changes as necessary.</p>
+<ol type="1">
+<li>install C++ compiler and build tools <div class="fragment"><div class="line">sudo apt update &amp;&amp; sudo apt install build-essential</div>
+</div><!-- fragment --></li>
+<li>install CMake and Git <div class="fragment"><div class="line">sudo apt install cmake git</div>
+</div><!-- fragment --></li>
+<li>install Python and Boost.Python (optional) <div class="fragment"><div class="line">sudo apt install python3-dev libboost-python-dev</div>
+</div><!-- fragment --></li>
+<li>Create a workspace. <div class="fragment"><div class="line">cd {where you want to create the workspace}</div>
+<div class="line">mkdir -p cmake_ws/src</div>
+</div><!-- fragment --></li>
+<li>clone SHM <div class="fragment"><div class="line">cd cmake_ws/src/</div>
+<div class="line">git clone https://github.com/ir-utsunomiya/shared-memory-based-handy-communication-manager.git</div>
+</div><!-- fragment --></li>
+<li><p class="startli">create CMakeLists.txt directly under workspace. </p><div class="fragment"><div class="line">cd {where you created the workspace}/cmake_ws/</div>
+<div class="line">gedit CMakeLists.txt</div>
+</div><!-- fragment --><p class="startli">Copy the following text into the editor you opened and save it. ``` cmake_minimum_required(VERSION 3.16) cmake_policy(SET CMP0060 NEW)</p>
+<p class="startli">project(MobileRobot_cmake) set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_BINARY_DIR}/cmake) set(CMAKE_INSTALL_PREFIX ${CMAKE_BINARY_DIR}) set(CMAKE_PREFIX_PATH ${CMAKE_BINARY_DIR}) SET(CMAKE_INSTALL_RPATH ${CMAKE_BINARY_DIR}/lib)</p>
+<p class="startli">add_subdirectory(src) ````</p>
+</li>
+<li><p class="startli">Create CMakeLists.txt in src directory. </p><div class="fragment"><div class="line">cd {where you created your workspace}/cmake_ws/src/</div>
+<div class="line">gedit CMakeLists.txt</div>
+</div><!-- fragment --><p class="startli">Copy the following text into the editor you opened and save it. </p><div class="fragment"><div class="line">cmake_minimum_required(VERSION 3.16)</div>
+<div class="line"> </div>
+<div class="line">add_subdirectory(shared-memory-based-handy-communication-manager)</div>
+</div><!-- fragment --></li>
+</ol>
+<h1><a class="anchor" id="autotoc_md29"></a>
+Build</h1>
+<ol type="1">
+<li>create build directory <div class="fragment"><div class="line">cd {where you created workspace}/cmake_ws</div>
+<div class="line">mkdir build</div>
+</div><!-- fragment --></li>
+<li>run cmake <div class="fragment"><div class="line">cd build</div>
+<div class="line">cmake ..</div>
+</div><!-- fragment --></li>
+<li>run make. <div class="fragment"><div class="line">make</div>
+</div><!-- fragment --> </li>
+</ol>
 </div></div><!-- contents -->
 </div><!-- PageDoc -->
 <!-- start footer part -->
 <hr class="footer"/><address class="footer"><small>
-Generated on Sun Mar 12 2023 08:15:25 for SHM by &#160;<a href="http://www.doxygen.org/index.html">
+Generated on Sun Mar 12 2023 14:51:52 for SHM by &#160;<a href="http://www.doxygen.org/index.html">
 <img class="footer" src="doxygen.png" alt="doxygen"/>
 </a> 1.8.17
 </small></address>

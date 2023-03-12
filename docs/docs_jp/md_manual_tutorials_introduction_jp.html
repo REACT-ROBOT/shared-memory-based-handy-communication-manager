@@ -66,12 +66,60 @@ $(function() {
 <div class="title">SHMの導入 </div>  </div>
 </div><!--header-->
 <div class="contents">
-<div class="textblock"><p>[<a href="../md_manual_tutorials_introduction_en.html">English</a> | 日本語] </p>
+<div class="textblock"><p>[<a href="../md_manual_tutorials_introduction_en.html">English</a> | 日本語]</p>
+<h1><a class="anchor" id="autotoc_md28"></a>
+開発環境構築</h1>
+<p>このライブラリはPOSIXに準拠したOS（主にLinux）を対象としている。 以下ではUbuntuで行った開発環境の構築手順を示す。 例えば、CentOSなどではaptをyumに置き換えるなど適宜変更が必要である。</p>
+<ol type="1">
+<li>C++コンパイラとビルドツールのインストール <div class="fragment"><div class="line">sudo apt update &amp;&amp; sudo apt install build-essential</div>
+</div><!-- fragment --></li>
+<li>CMakeとGitのインストール <div class="fragment"><div class="line">sudo apt install cmake git</div>
+</div><!-- fragment --></li>
+<li>PythonおよびBoost.Pythonのインストール(オプション) <div class="fragment"><div class="line">sudo apt install python3-dev libboost-python-dev</div>
+</div><!-- fragment --></li>
+<li>ワークスペースの作成 <div class="fragment"><div class="line">cd {ワークスペースを作成したい場所}</div>
+<div class="line">mkdir -p cmake_ws/src</div>
+</div><!-- fragment --></li>
+<li>SHMのクローン <div class="fragment"><div class="line">cd cmake_ws/src/</div>
+<div class="line">git clone https://github.com/ir-utsunomiya/shared-memory-based-handy-communication-manager.git</div>
+</div><!-- fragment --></li>
+<li><p class="startli">ワークスペース直下のCMakeLists.txtの作成 </p><div class="fragment"><div class="line">cd {ワークスペースを作成した場所}/cmake_ws/</div>
+<div class="line">gedit CMakeLists.txt</div>
+</div><!-- fragment --><p class="startli">開いたエディタに以下のテキストをコピーして保存 </p><div class="fragment"><div class="line">cmake_minimum_required(VERSION 3.16)</div>
+<div class="line">cmake_policy(SET CMP0060 NEW)</div>
+<div class="line"> </div>
+<div class="line">project(MobileRobot_cmake)</div>
+<div class="line">set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_BINARY_DIR}/cmake)</div>
+<div class="line">set(CMAKE_INSTALL_PREFIX ${CMAKE_BINARY_DIR})</div>
+<div class="line">set(CMAKE_PREFIX_PATH ${CMAKE_BINARY_DIR})</div>
+<div class="line">SET(CMAKE_INSTALL_RPATH ${CMAKE_BINARY_DIR}/lib)</div>
+<div class="line"> </div>
+<div class="line">add_subdirectory(src)</div>
+</div><!-- fragment --></li>
+<li><p class="startli">srcディレクトリのCMakeLists.txtの作成 </p><div class="fragment"><div class="line">cd {ワークスペースを作成した場所}/cmake_ws/src/</div>
+<div class="line">gedit CMakeLists.txt</div>
+</div><!-- fragment --><p class="startli">開いたエディタに以下のテキストをコピーして保存 </p><div class="fragment"><div class="line">cmake_minimum_required(VERSION 3.16)</div>
+<div class="line"> </div>
+<div class="line">add_subdirectory(shared-memory-based-handy-communication-manager)</div>
+</div><!-- fragment --></li>
+</ol>
+<h1><a class="anchor" id="autotoc_md29"></a>
+ビルド</h1>
+<ol type="1">
+<li>buildディレクトリの作成 <div class="fragment"><div class="line">cd {ワークスペースを作成した場所}/cmake_ws</div>
+<div class="line">mkdir build</div>
+</div><!-- fragment --></li>
+<li>cmakeの実行 <div class="fragment"><div class="line">cd build</div>
+<div class="line">cmake ..</div>
+</div><!-- fragment --></li>
+<li>makeの実行 <div class="fragment"><div class="line">make</div>
+</div><!-- fragment --> </li>
+</ol>
 </div></div><!-- contents -->
 </div><!-- PageDoc -->
 <!-- start footer part -->
 <hr class="footer"/><address class="footer"><small>
-Generated on Sun Mar 12 2023 08:15:26 for SHM by &#160;<a href="http://www.doxygen.org/index.html">
+Generated on Sun Mar 12 2023 14:51:56 for SHM by &#160;<a href="http://www.doxygen.org/index.html">
 <img class="footer" src="doxygen.png" alt="doxygen"/>
 </a> 1.8.17
 </small></address>
