@@ -219,6 +219,15 @@ Publisher<T>::publish(const T& data)
   if (!is_legacy)
   {
     int oldest_buffer = ring_buffer->getOldestBufferNum();
+    for (size_t i = 0; i < 10; i++)
+    {
+      if (ring_buffer->allocateBuffer(oldest_buffer))
+      {
+        break;
+      }
+      usleep(1000); // Wait for 1ms
+      oldest_buffer = ring_buffer->getOldestBufferNum();
+    }
 
     (reinterpret_cast<T *>(ring_buffer->getDataList()))[oldest_buffer] = data;
 

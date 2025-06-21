@@ -1,5 +1,6 @@
 #include <shm_base.hpp>
 #include <condition_variable>
+#include <limits>
 
 namespace irlab
 {
@@ -10,7 +11,7 @@ namespace shm
 size_t
 RingBuffer::getSize(size_t element_size, int buffer_num)
 {
-  return (sizeof(size_t) + sizeof(std::mutex) + sizeof(std::condition_variable) + sizeof(int) + (sizeof(uint64_t)+element_size)*buffer_num);
+  return (sizeof(size_t) + sizeof(std::mutex) + sizeof(std::condition_variable) + sizeof(size_t) + (sizeof(std::atomic<uint64_t>)+element_size)*buffer_num);
 }
 
 //! @brief コンストラクタ
@@ -33,14 +34,14 @@ RingBuffer::RingBuffer(unsigned char* first_ptr, size_t size, int buffer_num)
     *element_size = size;
   }
   temp_ptr      += sizeof(size_t);
-  buf_num        = reinterpret_cast<int *>(temp_ptr);
+  buf_num        = reinterpret_cast<size_t *>(temp_ptr);
   if (buffer_num != 0)
   {
     *buf_num = buffer_num;
   }
-  temp_ptr      += sizeof(int);
-  timestamp_list = reinterpret_cast<uint64_t *>(temp_ptr);
-  temp_ptr += sizeof(uint64_t) * *buf_num;
+  temp_ptr      += sizeof(size_t);
+  timestamp_list = reinterpret_cast<std::atomic<uint64_t> *>(temp_ptr);
+  temp_ptr += sizeof(std::atomic<uint64_t>) * *buf_num;
   data_list      = temp_ptr;
 
   if (buffer_num != 0)
@@ -110,9 +111,9 @@ RingBuffer::getNewestBufferNum()
 {
   uint64_t timestamp_buf = 0;
   size_t newest_buffer = -1;
-  for (int i = 0; i < *buf_num; i++)
+  for (size_t i = 0; i < *buf_num; i++)
   {
-    if (timestamp_list[i] > timestamp_buf)
+    if (timestamp_list[i] != std::numeric_limits<uint64_t>::max() && timestamp_list[i] > timestamp_buf)
     {
       timestamp_buf = timestamp_list[i];
       newest_buffer = i;
@@ -140,7 +141,7 @@ RingBuffer::getOldestBufferNum()
   }
   uint64_t timestamp_buf = timestamp_list[0];
   size_t oldest_buffer = 0;
-  for (int i = 0; i < *buf_num; i++)
+  for (size_t i = 0; i < *buf_num; i++)
   {
     if (timestamp_list[i] < timestamp_buf)
     {
@@ -153,6 +154,19 @@ RingBuffer::getOldestBufferNum()
   return oldest_buffer;
 }
 
+
+bool
+RingBuffer::allocateBuffer(int buffer_num)
+{
+  if (buffer_num < 0 || buffer_num >= *buf_num)
+  {
+    return false;
+  }
+  uint64_t temp_buffer_timestamp = timestamp_list[buffer_num].load(std::memory_order_acquire);
+  return timestamp_list[buffer_num].compare_exchange_weak(temp_buffer_timestamp,
+                                                          std::numeric_limits<uint64_t>::max(),
+                                                          std::memory_order_relaxed);
+}
 
 void
 RingBuffer::signal()
@@ -204,7 +218,7 @@ RingBuffer::waitFor(uint64_t timeout_usec)
 bool
 RingBuffer::isUpdated() const
 {
-  for (int i; i < *buf_num; i++)
+  for (size_t i = 0; i < *buf_num; i++)
   {
     if (timestamp_us < timestamp_list[i])
     {

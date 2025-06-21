@@ -16,6 +16,7 @@
 #include <regex>
 #include <stdexcept>
 #include <mutex>
+#include <atomic>
 extern "C" {
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -144,6 +145,7 @@ public:
   void setTimestamp_us(uint64_t input_time_us, int buffer_num);
   int getNewestBufferNum();
   int getOldestBufferNum();
+  bool allocateBuffer(int buffer_num);
   size_t getElementSize() const;
   unsigned char* getDataList();
   void signal();
@@ -159,8 +161,8 @@ private:
   pthread_mutex_t *mutex;
   pthread_cond_t *condition;
   size_t *element_size;
-  int *buf_num;
-  uint64_t *timestamp_list;
+  size_t *buf_num;
+  std::atomic<uint64_t> *timestamp_list;
   unsigned char *data_list;
   
   uint64_t timestamp_us;

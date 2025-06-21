@@ -161,6 +161,15 @@ Publisher<std::vector<T>>::publish(const std::vector<T>& data)
   }
   
   int oldest_buffer = ring_buffer->getOldestBufferNum();
+  for (size_t i = 0; i < 10; i++)
+  {
+    if (ring_buffer->allocateBuffer(oldest_buffer))
+    {
+      break;
+    }
+    usleep(1000); // Wait for 1ms
+    oldest_buffer = ring_buffer->getOldestBufferNum();
+  }
 
   T * first_ptr = &( (reinterpret_cast<T *>(ring_buffer->getDataList()))[oldest_buffer*vector_size] );
   memcpy(first_ptr, data.data(), sizeof(T) * vector_size);
