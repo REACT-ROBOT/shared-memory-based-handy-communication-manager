@@ -163,6 +163,11 @@ RingBuffer::allocateBuffer(int buffer_num)
     return false;
   }
   uint64_t temp_buffer_timestamp = timestamp_list[buffer_num].load(std::memory_order_acquire);
+  if (temp_buffer_timestamp == std::numeric_limits<uint64_t>::max())
+  {
+    // The buffer is already allocated
+    return false;
+  }
   return timestamp_list[buffer_num].compare_exchange_weak(temp_buffer_timestamp,
                                                           std::numeric_limits<uint64_t>::max(),
                                                           std::memory_order_relaxed);
