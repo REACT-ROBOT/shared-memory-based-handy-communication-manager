@@ -39,15 +39,6 @@ SharedMemory::SharedMemory(int oflag, PERM perm)
 }
 
 
-SharedMemory::~SharedMemory()
-{
-  if (shm_fd >= 0)
-  {
-    close(shm_fd);
-  }
-}
-
-
 size_t
 SharedMemory::getSize() const
 {
@@ -74,6 +65,10 @@ SharedMemoryPosix::SharedMemoryPosix(std::string name, int oflag, PERM perm)
 
 SharedMemoryPosix::~SharedMemoryPosix()
 {
+  if (shm_fd >= 0)
+  {
+    close(shm_fd);
+  }
 }
 
 

@@ -99,28 +99,28 @@ public:
 };
 
 BOOST_PYTHON_MODULE(shm_pub_sub) {
-  boost::python::class_<PublisherBool>("Publisher")
+  boost::python::class_<PublisherBool, boost::noncopyable>("Publisher")
     .def(boost::python::init<std::string, bool, int>())
     .def("publish",  &PublisherInt::_publish)
   ;
-  boost::python::class_<PublisherInt>("Publisher")
+  boost::python::class_<PublisherInt, boost::noncopyable>("Publisher")
     .def(boost::python::init<std::string, int, int>())
     .def("publish",  &PublisherInt::_publish)
   ;
-  boost::python::class_<PublisherFloat>("Publisher")
+  boost::python::class_<PublisherFloat, boost::noncopyable>("Publisher")
     .def(boost::python::init<std::string, float, int>())
     .def("publish", &PublisherFloat::_publish)
   ;
 
-  boost::python::class_<SubscriberBool>("Subscriber")
+  boost::python::class_<SubscriberBool, boost::noncopyable>("Subscriber")
     .def(boost::python::init<std::string, bool>())
     .def("subscribe", &SubscriberBool::_subscribe)
   ;
-  boost::python::class_<SubscriberInt>("Subscriber")
+  boost::python::class_<SubscriberInt, boost::noncopyable>("Subscriber")
     .def(boost::python::init<std::string, int>())
     .def("subscribe", &SubscriberInt::_subscribe)
   ;
-  boost::python::class_<SubscriberFloat>("Subscriber")
+  boost::python::class_<SubscriberFloat, boost::noncopyable>("Subscriber")
     .def(boost::python::init<std::string, float>())
     .def("subscribe", &SubscriberFloat::_subscribe)
   ;

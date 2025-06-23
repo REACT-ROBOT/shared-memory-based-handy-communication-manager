@@ -86,7 +86,7 @@ class SharedMemory
 {
 public:
   SharedMemory(int oflag, PERM perm);
-  ~SharedMemory();
+  virtual ~SharedMemory() noexcept = default;
 
   virtual bool connect(size_t size = 0) = 0;
   virtual int disconnect() = 0;

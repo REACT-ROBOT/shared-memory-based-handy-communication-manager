@@ -60,17 +60,24 @@ class Publisher
 {
 public:
   Publisher(std::string name = "", int buffer_num = 3, PERM perm = DEFAULT_PERM, bool legacy = false);
-  ~Publisher();
-  
+  ~Publisher() = default;
+
+    // コピーは禁止
+  Publisher(const Publisher&) = delete;
+  Publisher& operator=(const Publisher&) = delete;
+
+  // ムーブコンストラクタ：ポインタを奪い、元を nullptr に
+  Publisher(Publisher&& other) noexcept = default;
+
   void publish(const T& data);
 
 private:
   std::string shm_name;
   int shm_buf_num;
   PERM shm_perm;
-  SharedMemory *shared_memory;
-  RingBuffer *ring_buffer;
-  
+  std::unique_ptr<SharedMemory> shared_memory;
+  std::unique_ptr<RingBuffer> ring_buffer;
+
   size_t data_size;
 
   //For legacy system
@@ -92,7 +99,14 @@ class Subscriber
 {
 public:
   Subscriber(std::string name = "", bool legacy = false);
-  ~Subscriber();
+  ~Subscriber() = default;
+
+  // コピーは禁止
+  Subscriber(const Subscriber&) = delete;
+  Subscriber& operator=(const Subscriber&) = delete;
+
+  // ムーブコンストラクタ：ポインタを奪い、元を nullptr に
+  Subscriber(Subscriber&& other) noexcept = default;
   
   const T subscribe(bool *state);
   bool waitFor(uint64_t timeout_usec);
@@ -100,8 +114,8 @@ public:
   
 private:
   std::string shm_name;
-  SharedMemory *shared_memory;
-  RingBuffer *ring_buffer;
+  std::unique_ptr<SharedMemory> shared_memory;
+  std::unique_ptr<RingBuffer> ring_buffer;
   int current_reading_buffer;
   uint64_t data_expiry_time_us;
 
@@ -149,7 +163,7 @@ Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm, bool legacy
     throw std::runtime_error("shm::Publisher: Please set name!");
   }
 
-  shared_memory = new SharedMemoryPosix(shm_name, O_RDWR|O_CREAT, shm_perm);
+  shared_memory = std::make_unique<SharedMemoryPosix>(shm_name, O_RDWR | O_CREAT, shm_perm);
   if (!is_legacy)
   {
     shared_memory->connect(RingBuffer::getSize(sizeof(T), shm_buf_num));
@@ -165,7 +179,7 @@ Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm, bool legacy
 
   if (!is_legacy)
   {
-    ring_buffer = new RingBuffer(shared_memory->getPtr(), sizeof(T), shm_buf_num);
+    ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr(), sizeof(T), shm_buf_num);
   }
   else
   {
@@ -173,25 +187,6 @@ Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm, bool legacy
   }
 }
 
-
-//! @brief \~english     Destructor
-//!        \~japanese-en デストラクタ
-//! @return \~english     None
-//!         \~japanese-en なし
-//! @details \~english     
-//!          \~japanese-en 終了時の処理として共有メモリの切断を行う．
-template <typename T>
-Publisher<T>::~Publisher()
-{
-  if (ring_buffer != nullptr)
-  {
-    delete ring_buffer;
-  }
-  if (shared_memory != nullptr)
-  {
-    delete shared_memory;
-  }
-}
 
 //! @brief \~english     Publish a topic
 //!        \~japanese-en トピックの書き込み
@@ -272,27 +267,7 @@ Subscriber<T>::Subscriber(std::string name, bool legacy)
     throw std::runtime_error("shm::Subscriber: Please set name!");
   }
 
-  shared_memory = new SharedMemoryPosix(shm_name, O_RDWR, static_cast<PERM>(0));
-}
-
-
-//! @brief \~english     Destructor
-//!        \~japanese-en デストラクタ
-//! @return \~english     None
-//!         \~japanese-en なし
-//! @details \~english     Release the secured local members.
-//!          \~japanese-en 確保したローカルのメンバーを開放する．
-template <typename T>
-Subscriber<T>::~Subscriber()
-{
-  if (ring_buffer != nullptr)
-  {
-    delete ring_buffer;
-  }
-  if (shared_memory != nullptr)
-  {
-    delete shared_memory;
-  }
+  shared_memory = std::make_unique<SharedMemoryPosix>(shm_name, O_RDWR, static_cast<PERM>(0));
 }
 
 
@@ -315,8 +290,7 @@ Subscriber<T>::subscribe(bool *is_success)
     {
       if (ring_buffer != nullptr)
       {
-        delete ring_buffer;
-        ring_buffer = nullptr;
+        ring_buffer.reset();
       }
       shared_memory->connect();
       if (shared_memory->isDisconnected())
@@ -324,7 +298,7 @@ Subscriber<T>::subscribe(bool *is_success)
         *is_success = false;
         return T();
       }
-      ring_buffer = new RingBuffer(shared_memory->getPtr());
+      ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
       ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
     }
     int newest_buffer = ring_buffer->getNewestBufferNum();
@@ -368,15 +342,14 @@ Subscriber<T>::waitFor(uint64_t timeout_usec)
   {
     if (ring_buffer != nullptr)
     {
-      delete ring_buffer;
-      ring_buffer = nullptr;
+      ring_buffer.reset();
     }
     shared_memory->connect();
     if (shared_memory->isDisconnected())
     {
       return false;
     }
-    ring_buffer = new RingBuffer(shared_memory->getPtr());
+    ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
     ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
   }
 

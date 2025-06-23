@@ -46,7 +46,7 @@ class Publisher<std::vector<T>>
 {
 public:
   Publisher(std::string name = "", int buffer_num = 3, PERM perm = DEFAULT_PERM);
-  ~Publisher();
+  ~Publisher() = default;
   
   void publish(const std::vector<T>& data);
   void _publish(const std::vector<T> data);
@@ -55,8 +55,8 @@ private:
   std::string shm_name;
   int shm_buf_num;
   PERM shm_perm;
-  SharedMemory *shared_memory;
-  RingBuffer *ring_buffer;
+  std::unique_ptr<SharedMemory> shared_memory;
+  std::unique_ptr<RingBuffer> ring_buffer;
 
   size_t vector_size;
 };
@@ -71,7 +71,7 @@ class Subscriber<std::vector<T>>
 {
 public:
   Subscriber(std::string name = "");
-  ~Subscriber();
+  ~Subscriber() = default;
   
   const std::vector<T> subscribe(bool *is_success);
   bool waitFor(uint64_t timeout_usec);
@@ -79,8 +79,8 @@ public:
   
 private:
   std::string shm_name;
-  SharedMemory *shared_memory;
-  RingBuffer *ring_buffer;
+  std::unique_ptr<SharedMemory> shared_memory;
+  std::unique_ptr<RingBuffer> ring_buffer;
   int current_reading_buffer;
   uint64_t data_expiry_time_us;
 
@@ -113,33 +113,16 @@ Publisher<std::vector<T>>::Publisher(std::string name, int buffer_num, PERM perm
     throw std::runtime_error("shm::Publisher: Be setted not POD class in vector!");
   }
 
-  shared_memory = new SharedMemoryPosix(shm_name, O_RDWR|O_CREAT, shm_perm);
+  shared_memory = std::make_unique<SharedMemoryPosix>(shm_name, O_RDWR|O_CREAT, shm_perm);
   shared_memory->connect(RingBuffer::getSize(vector_size, shm_buf_num));
   if (shared_memory->isDisconnected())
   {
     throw std::runtime_error("shm::Publisher: Cannot get memory!");
   }
 
-  ring_buffer = new RingBuffer(shared_memory->getPtr(), vector_size, shm_buf_num);
+  ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr(), vector_size, shm_buf_num);
 }
 
-//! @brief デストラクタ
-//! @return なし
-//! @details 終了時の処理として共有メモリの切断を行う．
-//! 
-//! 
-template <typename T>
-Publisher<std::vector<T>>::~Publisher()
-{
-  if (ring_buffer != nullptr)
-  {
-    delete ring_buffer;
-  }
-  if (shared_memory != nullptr)
-  {
-    delete shared_memory;
-  }
-}
 
 //! @brief トピックの書き込み
 //! @param [in] data
@@ -154,10 +137,10 @@ Publisher<std::vector<T>>::publish(const std::vector<T>& data)
   if (data.size() > vector_size)
   {
     vector_size = data.size();
-    delete ring_buffer;
+    ring_buffer.reset();
     shared_memory->disconnect();
     shared_memory->connect(RingBuffer::getSize(sizeof(T)*vector_size, shm_buf_num));
-    ring_buffer = new RingBuffer(shared_memory->getPtr(), sizeof(T)*vector_size, shm_buf_num);
+    ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr(), sizeof(T)*vector_size, shm_buf_num);
   }
   
   int oldest_buffer = ring_buffer->getOldestBufferNum();
@@ -210,22 +193,8 @@ Subscriber<std::vector<T>>::Subscriber(std::string name)
   {
     throw std::runtime_error("shm::Subscriber: Be setted not POD class!");
   }
-  shared_memory = new SharedMemoryPosix(shm_name, O_RDWR, static_cast<PERM>(0));
+  shared_memory = std::make_unique<SharedMemoryPosix>(shm_name, O_RDWR, static_cast<PERM>(0));
 
-}
-
-
-template <typename T>
-Subscriber<std::vector<T>>::~Subscriber()
-{
-  if (ring_buffer != nullptr)
-  {
-    delete ring_buffer;
-  }
-  if (shared_memory != nullptr)
-  {
-    delete shared_memory;
-  }
 }
 
 
@@ -246,7 +215,7 @@ Subscriber<std::vector<T>>::subscribe(bool *is_success)
       *is_success = false;
       return std::vector<T>(0);
     }
-    ring_buffer = new RingBuffer(shared_memory->getPtr());
+    ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
     size_t element_size = ring_buffer->getElementSize();
     vector_size = element_size / sizeof(T);
   }
@@ -278,7 +247,7 @@ Subscriber<std::vector<T>>::waitFor(uint64_t timeout_usec)
     {
       return false;
     }
-    ring_buffer = new RingBuffer(shared_memory->getPtr());
+    ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
   }
 
   return ring_buffer->waitFor(timeout_usec);
