@@ -40,20 +40,19 @@ install(EXPORT shm_baseExport
 	EXPORT_LINK_INTERFACE_LIBRARIES
 )
 
-# shm_frame_cppy_test
-#include(GoogleTest)
-#include_directories(test)
-#add_executable(shm_pub_sub_test
-#    test/memory_member_test.cpp test/local_memory_base_test.cpp 
-#    test/shared_memory_base_test.cpp
-#  )
-#target_link_libraries(shm_pub_sub_test
-#  PRIVATE
-#    shm_pub_sub 
-#    # Google Testをリンクする
-#    ${GTEST_LDFLAGS}
-#  )
-#gtest_add_tests(TARGET shm_pub_sub_test)
+# shm_base_test
+include(GoogleTest)
+include_directories(test)
+add_executable(shm_base_test
+    test/shm_base_test.cpp
+  )
+target_link_libraries(shm_base_test
+  PRIVATE
+    shm_base
+    # Google Testをリンクする
+    ${GTEST_LDFLAGS}
+  )
+gtest_add_tests(TARGET shm_base_test)
 
 FIND_PACKAGE(Doxygen)
 IF(DOXYGEN_FOUND)
