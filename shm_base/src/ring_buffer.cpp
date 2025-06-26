@@ -111,12 +111,19 @@ RingBuffer::getNewestBufferNum()
 {
   uint64_t timestamp_buf = 0;
   size_t newest_buffer = -1;
-  for (size_t i = 0; i < *buf_num; i++)
+  while (timestamp_buf == 0)
   {
-    if (timestamp_list[i] != std::numeric_limits<uint64_t>::max() && timestamp_list[i] >= timestamp_buf)
+    for (size_t i = 0; i < *buf_num; i++)
     {
-      timestamp_buf = timestamp_list[i];
-      newest_buffer = i;
+      if (timestamp_list[i] != std::numeric_limits<uint64_t>::max() && timestamp_list[i] >= timestamp_buf)
+      {
+        timestamp_buf = timestamp_list[i];
+        newest_buffer = i;
+      }
+    }
+    if (timestamp_buf == std::numeric_limits<uint64_t>::max())
+    {
+      timestamp_buf = 0;
     }
   }
   timestamp_us = timestamp_buf;
