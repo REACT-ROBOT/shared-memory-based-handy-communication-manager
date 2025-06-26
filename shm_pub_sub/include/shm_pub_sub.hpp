@@ -163,7 +163,11 @@ Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm, bool legacy
     throw std::runtime_error("shm::Publisher: Please set name!");
   }
 
-  shared_memory = std::make_unique<SharedMemoryPosix>(shm_name, O_RDWR | O_CREAT, shm_perm);
+  try {
+    shared_memory = std::make_unique<SharedMemoryPosix>(shm_name, O_RDWR | O_CREAT, shm_perm);
+  } catch (const std::runtime_error& e) {
+    throw std::runtime_error("shm::Publisher: " + std::string(e.what()));
+  }
   if (!is_legacy)
   {
     shared_memory->connect(RingBuffer::getSize(sizeof(T), shm_buf_num));
@@ -267,7 +271,11 @@ Subscriber<T>::Subscriber(std::string name, bool legacy)
     throw std::runtime_error("shm::Subscriber: Please set name!");
   }
 
-  shared_memory = std::make_unique<SharedMemoryPosix>(shm_name, O_RDWR, static_cast<PERM>(0));
+  try {
+    shared_memory = std::make_unique<SharedMemoryPosix>(shm_name, O_RDWR, static_cast<PERM>(0));
+  } catch (const std::runtime_error& e) {
+    throw std::runtime_error("shm::Subscriber: " + std::string(e.what()));
+  }
 }
 
 
@@ -284,48 +292,40 @@ template <typename T>
 const T
 Subscriber<T>::subscribe(bool *is_success)
 {
-  if (!is_legacy)
+  if (shared_memory->isDisconnected())
   {
+    if (ring_buffer != nullptr)
+    {
+      ring_buffer.reset();
+    }
+    shared_memory->connect();
     if (shared_memory->isDisconnected())
     {
-      if (ring_buffer != nullptr)
-      {
-        ring_buffer.reset();
-      }
-      shared_memory->connect();
-      if (shared_memory->isDisconnected())
-      {
+      *is_success = false;
+      return T();
+    }
+    try {
+      if (shared_memory->getPtr() == nullptr) {
         *is_success = false;
         return T();
       }
       ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
-      ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
-    }
-    int newest_buffer = ring_buffer->getNewestBufferNum();
-    if (newest_buffer < 0)
+    } catch (const std::bad_alloc& e)
     {
       *is_success = false;
-      return (reinterpret_cast<T*>(ring_buffer->getDataList()))[current_reading_buffer];
+      return T();
     }
-    *is_success = true;
-    current_reading_buffer = newest_buffer;
+    ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
+  }
+  int newest_buffer = ring_buffer->getNewestBufferNum();
+  if (newest_buffer < 0)
+  {
+    *is_success = false;
     return (reinterpret_cast<T*>(ring_buffer->getDataList()))[current_reading_buffer];
   }
-  else
-  {
-    if (shared_memory->isDisconnected())
-    {
-      shared_memory->connect();
-      if (shared_memory->isDisconnected())
-      {
-        *is_success = false;
-        return T();
-      }
-      data_ptr = shared_memory->getPtr();
-    }
-    *is_success = true;
-    return *reinterpret_cast<T*>(data_ptr);
-  }
+  *is_success = true;
+  current_reading_buffer = newest_buffer;
+  return (reinterpret_cast<T*>(ring_buffer->getDataList()))[current_reading_buffer];
 }
 
 

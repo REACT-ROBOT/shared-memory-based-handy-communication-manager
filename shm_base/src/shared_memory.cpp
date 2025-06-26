@@ -106,6 +106,12 @@ SharedMemoryPosix::connect(size_t size)
           shm_fd,
             0));
 
+  if (shm_ptr == MAP_FAILED) {
+    close(shm_fd);
+    shm_fd = -1;
+    return false;
+  }
+
   return true;
 }
 
