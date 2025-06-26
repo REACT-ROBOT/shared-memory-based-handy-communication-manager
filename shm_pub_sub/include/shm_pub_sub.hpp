@@ -59,7 +59,7 @@ template <typename T>
 class Publisher
 {
 public:
-  Publisher(std::string name = "", int buffer_num = 3, PERM perm = DEFAULT_PERM, bool legacy = false);
+  Publisher(std::string name = "", int buffer_num = 3, PERM perm = DEFAULT_PERM);
   ~Publisher() = default;
 
     // コピーは禁止
@@ -79,10 +79,6 @@ private:
   std::unique_ptr<RingBuffer> ring_buffer;
 
   size_t data_size;
-
-  //For legacy system
-  uint8_t *data_ptr;
-  bool is_legacy;
 };
 
 // ****************************************************************************
@@ -98,7 +94,7 @@ template <typename T>
 class Subscriber
 {
 public:
-  Subscriber(std::string name = "", bool legacy = false);
+  Subscriber(std::string name = "");
   ~Subscriber() = default;
 
   // コピーは禁止
@@ -118,10 +114,6 @@ private:
   std::unique_ptr<RingBuffer> ring_buffer;
   int current_reading_buffer;
   uint64_t data_expiry_time_us;
-
-  //For legacy system
-  uint8_t *data_ptr;
-  bool is_legacy;
 };
 
 // ****************************************************************************
@@ -143,15 +135,13 @@ private:
 //! @details \~english     Create shared memory objects and initialize mutex and condition variables.
 //!          \~japanese-en 共有メモリオブジェクトの生成、mutexや条件変数の初期化を行う．
 template <typename T>
-Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm, bool legacy)
+Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm)
 : shm_name(name)
 , shm_buf_num(buffer_num)
 , shm_perm(perm)
 , shared_memory(nullptr)
 , ring_buffer(nullptr)
 , data_size(sizeof(T))
-, data_ptr(nullptr)
-, is_legacy(legacy)
 {
   if (!std::is_standard_layout<T>::value)
   {
@@ -168,27 +158,14 @@ Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm, bool legacy
   } catch (const std::runtime_error& e) {
     throw std::runtime_error("shm::Publisher: " + std::string(e.what()));
   }
-  if (!is_legacy)
-  {
-    shared_memory->connect(RingBuffer::getSize(sizeof(T), shm_buf_num));
-  }
-  else
-  {
-    shared_memory->connect(sizeof(T));
-  }
+  shared_memory->connect(RingBuffer::getSize(sizeof(T), shm_buf_num));
+
   if (shared_memory->isDisconnected())
   {
     throw std::runtime_error("shm::Publisher: Cannot get memory!");
   }
 
-  if (!is_legacy)
-  {
-    ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr(), sizeof(T), shm_buf_num);
-  }
-  else
-  {
-    data_ptr = shared_memory->getPtr();
-  }
+  ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr(), sizeof(T), shm_buf_num);
 }
 
 
@@ -205,41 +182,24 @@ template <typename T>
 void
 Publisher<T>::publish(const T& data)
 {
-/*
-  if (data_size != sizeof(T))
+  int oldest_buffer = ring_buffer->getOldestBufferNum();
+  for (size_t i = 0; i < 10; i++)
   {
-    delete ring_buffer;
-    ring_buffer = nullptr;
-    shared_memory->disconnect();
-    shared_memory->connect(RingBuffer::getSize(sizeof(T), shm_buf_num));
-    ring_buffer = new RingBuffer(shared_memory->getPtr(), sizeof(T), shm_buf_num);
-  }
-*/
-  if (!is_legacy)
-  {
-    int oldest_buffer = ring_buffer->getOldestBufferNum();
-    for (size_t i = 0; i < 10; i++)
+    if (ring_buffer->allocateBuffer(oldest_buffer))
     {
-      if (ring_buffer->allocateBuffer(oldest_buffer))
-      {
-        break;
-      }
-      usleep(1000); // Wait for 1ms
-      oldest_buffer = ring_buffer->getOldestBufferNum();
+      break;
     }
+    usleep(1000); // Wait for 1ms
+    oldest_buffer = ring_buffer->getOldestBufferNum();
+  }
 
-    (reinterpret_cast<T *>(ring_buffer->getDataList()))[oldest_buffer] = data;
+  (reinterpret_cast<T *>(ring_buffer->getDataList()))[oldest_buffer] = data;
 
-    struct timespec t;
-    clock_gettime(CLOCK_MONOTONIC_RAW, &t);
-    ring_buffer->setTimestamp_us(((uint64_t) t.tv_sec * 1000000L) + ((uint64_t) t.tv_nsec / 1000L), oldest_buffer);
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC_RAW, &t);
+  ring_buffer->setTimestamp_us(((uint64_t) t.tv_sec * 1000000L) + ((uint64_t) t.tv_nsec / 1000L), oldest_buffer);
   
-    ring_buffer->signal();
-  }
-  else
-  {
-    memcpy(data_ptr, &data, sizeof(T));
-  }
+  ring_buffer->signal();
 }
 
 
@@ -252,14 +212,12 @@ Publisher<T>::publish(const T& data)
 //! @details \~english     Access to shared memory.
 //!          \~japanese-en 共有メモリへのアクセスを行う．
 template <typename T>
-Subscriber<T>::Subscriber(std::string name, bool legacy)
+Subscriber<T>::Subscriber(std::string name)
 : shm_name(name)
 , shared_memory(nullptr)
 , ring_buffer(nullptr)
 , current_reading_buffer(0)
 , data_expiry_time_us(2000000)
-, data_ptr(nullptr)
-, is_legacy(legacy)
 {
   if (!std::is_standard_layout<T>::value)
   {
@@ -333,11 +291,6 @@ template <typename T>
 bool
 Subscriber<T>::waitFor(uint64_t timeout_usec)
 {
-  if (is_legacy)
-  {
-    return false;
-  }
-
   if (shared_memory->isDisconnected())
   {
     if (ring_buffer != nullptr)
