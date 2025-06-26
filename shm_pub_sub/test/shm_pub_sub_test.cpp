@@ -346,8 +346,14 @@ TEST(SHMPubSubTest, MultiThreadTest)
   // Subscriber thread
   std::thread subscriber_thread([&]() {
     irlab::shm::Subscriber<SimpleInt> sub("/test_multithread");
-    
+    auto start_time = std::chrono::steady_clock::now();
+    const auto timeout = std::chrono::seconds(3);
+
     while (message_count.load() < NUM_MESSAGES) {
+      auto current_time = std::chrono::steady_clock::now();
+      if (current_time - start_time > timeout) {
+        break;
+      }
       bool is_successed = false;
       SimpleInt result = sub.subscribe(&is_successed);
       
@@ -522,24 +528,38 @@ TEST(SHMPubSubTest, VectorMultiThreadTest)
   // Subscriber thread for vectors
   std::thread subscriber_thread([&]() {
     irlab::shm::Subscriber<std::vector<SimpleInt>> sub("/test_vector_multithread");
-    
-    while (message_count.load() < NUM_MESSAGES) {
+    auto start_time = std::chrono::steady_clock::now();
+    const auto timeout = std::chrono::seconds(3);
+
+    while (message_count.load() < NUM_MESSAGES) 
+    {
+      auto current_time = std::chrono::steady_clock::now();
+      if (current_time - start_time > timeout)
+      {
+        break; // Exit if timeout reached
+      }
+
       bool is_successed = false;
       std::vector<SimpleInt> result = sub.subscribe(&is_successed);
       
-      if (is_successed && result.size() == VECTOR_SIZE) {
+      if (is_successed && result.size() == VECTOR_SIZE)
+      {
         // Extract message ID from first element
         int msg_id = result[0].value / VECTOR_SIZE;
-        if (msg_id >= 0 && msg_id < NUM_MESSAGES && !received[msg_id]) {
+        if (msg_id >= 0 && msg_id < NUM_MESSAGES && !received[msg_id]) 
+        {
           // Verify vector contents
           bool valid_vector = true;
-          for (int j = 0; j < VECTOR_SIZE; ++j) {
-            if (result[j].value != msg_id * VECTOR_SIZE + j) {
+          for (int j = 0; j < VECTOR_SIZE; ++j)
+          {
+            if (result[j].value != msg_id * VECTOR_SIZE + j)
+            {
               valid_vector = false;
               break;
             }
           }
-          if (valid_vector) {
+          if (valid_vector)
+          {
             received[msg_id] = true;
             message_count.fetch_add(1);
           }
