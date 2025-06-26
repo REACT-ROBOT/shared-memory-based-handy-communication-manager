@@ -134,7 +134,7 @@ template <typename T>
 void
 Publisher<std::vector<T>>::publish(const std::vector<T>& data)
 {
-  if (data.size() > vector_size)
+  if (data.size() != vector_size)
   {
     vector_size = data.size();
     ring_buffer.reset();

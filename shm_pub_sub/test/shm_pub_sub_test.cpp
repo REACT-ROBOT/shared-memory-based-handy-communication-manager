@@ -309,15 +309,12 @@ TEST(SHMPubSubTest, VectorTemplateTest)
     }
 
     // Then publish medium size vector
-    // Note: Due to current implementation, the returned vector size will be the maximum size (10)
-    // but only the first 5 elements will contain valid data
     std::vector<SimpleInt> medium_data = { SimpleInt(100), SimpleInt(200), SimpleInt(300), SimpleInt(400), SimpleInt(500) };
     pub.publish(medium_data);
 
     std::vector<SimpleInt> result3 = sub.subscribe(&is_successed);
     EXPECT_EQ(is_successed, true);
-    // Current implementation limitation: size remains at maximum allocated size
-    EXPECT_EQ(result3.size(), 10); // Maximum size, not actual data size
+    EXPECT_EQ(result3.size(), 5);
     
     // Verify the first 5 elements contain the correct data
     for (size_t i = 0; i < medium_data.size(); ++i) {
