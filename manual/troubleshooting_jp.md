@@ -1,5 +1,5 @@
 # 🐛 トラブルシューティング
-[[English](troubleshooting_en.md) | 日本語]
+[[English](../md_manual_troubleshooting_en.html) | 日本語]
 
 このガイドでは、共有メモリ通信ライブラリでよくある問題とその解決方法を詳しく説明します。問題が発生した時は、該当する症状を見つけて順番に対処法を試してください。
 

@@ -1,4 +1,4 @@
 var searchData=
 [
-  ['waitfor_54',['waitFor',['../classirlab_1_1shm_1_1_ring_buffer.html#af8fef59dd1e3852617def3e906c83fb4',1,'irlab::shm::RingBuffer']]]
+  ['⚡_20action_20communication_20complete_20guide_20_2d_20master_20long_2drunning_20asynchronous_20processing_49',['⚡ Action Communication Complete Guide - Master Long-Running Asynchronous Processing',['../md_manual_tutorials_shm_action_en.html',1,'']]]
 ];

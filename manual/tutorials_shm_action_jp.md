@@ -1,5 +1,5 @@
 # ⚡ Action通信完全ガイド - 長時間非同期処理をマスターしよう
-[[English](tutorials_shm_action_en.md) | 日本語]
+[[English](../md_manual_tutorials_shm_action_en.html) | 日本語]
 
 ## 🎯 このガイドで学べること
 

@@ -57,6 +57,36 @@ Below is how to introduce and build SHM.
    $ make
    ```
 
+## Documentation Generation
+
+You can generate HTML documentation using Doxygen. The documentation is available in both English and Japanese.
+
+### Build Documentation
+
+```bash
+$ cd <Your_cmake_ws>/build
+$ make shm_doc         # Build both English and Japanese documentation
+$ make shm_doc_en      # Build English documentation only
+$ make shm_doc_jp      # Build Japanese documentation only
+```
+
+### Documentation Structure
+
+- **English documentation**: Generated in `docs/` directory
+- **Japanese documentation**: Generated in `docs/docs_jp/` directory
+- **Manual pages**: Located in `manual/` directory (Markdown source files)
+
+### Prerequisites
+
+- Doxygen must be installed on your system
+- All documentation sources are included in the `manual/` folder
+
+### Accessing Documentation
+
+After building, open the following files in your web browser:
+- English: `docs/index.html`
+- Japanese: `docs/docs_jp/index.html`
+
 ## Manuals / Tutorials
 
 TODO: We will add manuals and tutorials to [Github Pages](https://ir-utsunomiya.github.io/shared-memory-based-handy-communication-manager/index.html)

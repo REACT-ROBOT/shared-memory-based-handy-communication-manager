@@ -1,5 +1,4 @@
 var searchData=
 [
-  ['tutorials_20_28c_2b_2b_29_52',['Tutorials (C++)',['../md_manual_tutorials_en.html',1,'']]],
-  ['tutorials_20_28python_29_53',['Tutorials (Python)',['../md_manual_tutorials_python_en.html',1,'']]]
+  ['waitfor_48',['waitFor',['../classirlab_1_1shm_1_1_ring_buffer.html#af8fef59dd1e3852617def3e906c83fb4',1,'irlab::shm::RingBuffer']]]
 ];

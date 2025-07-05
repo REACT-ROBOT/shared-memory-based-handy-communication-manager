@@ -1,5 +1,5 @@
 # Shared Memory Based Communication Manager {#mainpage}
-[[English](index_en.md) | 日本語]
+[[English](../index.html) | 日本語]
 
 ## 概要
 
@@ -23,6 +23,7 @@
   - [🤝 Service通信の使い方](tutorials_shm_service_jp.md)
   - [⚡ Action通信の使い方](tutorials_shm_action_jp.md)
 - [🐍 Pythonチュートリアル](tutorials_python_jp.md)
+  - [🔄 Python Pub/Sub通信の使い方](tutorials_shm_pub_sub_python_jp.md)
 
 ### 詳細仕様書
 - [📋 API仕様書](spec_jp.md)

@@ -1,5 +1,5 @@
 # 🚀 クイックスタートガイド
-[[English](quickstart_en.md) | 日本語]
+[[English](../md_manual_quickstart_en.html) | 日本語]
 
 このガイドでは、5分でプロセス間通信を体験できるように簡単な例を紹介します。
 

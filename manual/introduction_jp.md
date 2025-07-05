@@ -1,9 +1,9 @@
 # 📖 はじめに - 通信ライブラリの基礎知識
-[[English](introduction_en.md) | 日本語]
+[[English](../md_manual_introduction_en.html) | 日本語]
 
 ## 🌟 Welcome to プロセス間通信の世界！
 
-**Shared Memory & UDP Communication Manager**は、プロセス間通信を手軽に実現するための包括的なライブラリ集です。このライブラリを使えば、複雑な通信処理を数行のコードで実現できます。
+**Shared Memory Based Handy Communication Manager**は、プロセス間通信を手軽に実現するための包括的なライブラリ集です。このライブラリを使えば、複雑な通信処理を数行のコードで実現できます。
 
 ## 🤔 プロセス間通信って何？
 
@@ -212,6 +212,10 @@ namespace irlab::shm_base {
 - **[🔄 Pub/Sub通信](tutorials_shm_pub_sub_jp.md)** - 高速ブロードキャスト
 - **[🤝 Service通信](tutorials_shm_service_jp.md)** - 確実な要求応答
 - **[⚡ Action通信](tutorials_shm_action_jp.md)** - 非同期処理管理
+
+### 🐍 Python開発者の方
+- **[🐍 Python基礎](tutorials_python_jp.md)** - PythonAPIの基本
+- **[🔄 Python Pub/Sub](tutorials_shm_pub_sub_python_jp.md)** - Python版出版者/購読者
 
 ---
 

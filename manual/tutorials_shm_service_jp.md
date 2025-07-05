@@ -1,5 +1,5 @@
 # 🤝 Service通信完全ガイド - 確実な要求応答通信をマスターしよう
-[[English](tutorials_shm_service_en.md) | 日本語]
+[[English](../md_manual_tutorials_shm_service_en.html) | 日本語]
 
 ## 🎯 このガイドで学べること
 
