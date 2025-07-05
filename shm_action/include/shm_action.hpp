@@ -238,26 +238,30 @@ template <class Goal, class Result, class Feedback>
 void
 ActionServer<Goal, Result, Feedback>::waitNewGoalAvailable()
 {
+  // Fix race condition: Check timestamp inside mutex
+  pthread_mutex_lock(goal_mutex);
   while (current_goal_timestamp_usec >= *goal_timestamp_us)
   {
-    // Wait on the condvar
-    pthread_mutex_lock(goal_mutex);
+    // Wait on the condvar while holding the mutex
     pthread_cond_wait(goal_condition, goal_mutex);
-    pthread_mutex_unlock(goal_mutex);
   }
+  pthread_mutex_unlock(goal_mutex);
 }
 
 template <class Goal, class Result, class Feedback>
 Goal
 ActionServer<Goal, Result, Feedback>::acceptNewGoal()
 {
+  pthread_mutex_lock(goal_mutex);
   *status_ptr = ACTIVE;
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
   start_timestamp_us = ((uint64_t) ts.tv_sec * 1000000L) + ((uint64_t) ts.tv_nsec / 1000L);
   current_goal_timestamp_usec = *goal_timestamp_us;
+  Goal goal_copy = *goal_ptr;
+  pthread_mutex_unlock(goal_mutex);
 
-  return *goal_ptr;
+  return goal_copy;
 }
 
 template <class Goal, class Result, class Feedback>
@@ -297,12 +301,14 @@ template <class Goal, class Result, class Feedback>
 void
 ActionServer<Goal, Result, Feedback>::publishResult(const Result& result)
 {
+  pthread_mutex_lock(result_mutex);
   *result_ptr = result;
   *status_ptr = SUCCEEDED;
 
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
   *result_timestamp_us = ((uint64_t) ts.tv_sec * 1000000L) + ((uint64_t) ts.tv_nsec / 1000L);
+  pthread_mutex_unlock(result_mutex);
 
   pthread_cond_broadcast(result_condition);
 }
@@ -311,7 +317,10 @@ template <class Goal, class Result, class Feedback>
 void
 ActionServer<Goal, Result, Feedback>::publishFeedback(const Feedback& feedback)
 {
+  // Use result_mutex to protect feedback updates (reusing existing mutex)
+  pthread_mutex_lock(result_mutex);
   *feedback_ptr = feedback;
+  pthread_mutex_unlock(result_mutex);
 }
 
 
@@ -411,7 +420,10 @@ template <class Goal, class Result, class Feedback>
 Feedback
 ActionClient<Goal, Result, Feedback>::getFeedback()
 {
-  return *feedback_ptr;
+  pthread_mutex_lock(result_mutex);
+  Feedback feedback_copy = *feedback_ptr;
+  pthread_mutex_unlock(result_mutex);
+  return feedback_copy;
 }
 
 template <class Goal, class Result, class Feedback>

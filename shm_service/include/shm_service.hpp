@@ -47,6 +47,7 @@ private:
 
   Res (*func)(Req request);
   pthread_t thread;
+  volatile bool shutdown_requested;
 
   std::string shm_name;
   PERM shm_perm;
@@ -80,6 +81,7 @@ public:
   ~ServiceClient();
 
   bool call(Req request, Res *response);
+  bool call(Req request, Res *response, unsigned long timeout_usec);
 
 private:
   std::string shm_name;
@@ -106,6 +108,7 @@ private:
 template <class Req, class Res>
 ServiceServer<Req, Res>::ServiceServer(std::string name, Res (*input_func)(Req request), PERM perm)
 : func(input_func)
+, shutdown_requested(false)
 , shm_name(name)
 , shm_perm(perm)
 , shared_memory(nullptr)
@@ -155,7 +158,15 @@ ServiceServer<Req, Res>::ServiceServer(std::string name, Res (*input_func)(Req r
 template <class Req, class Res>
 ServiceServer<Req, Res>::~ServiceServer()
 {
+  // Request graceful shutdown
+  shutdown_requested = true;
+  
+  // Wake up the thread
+  pthread_cond_broadcast(request_condition);
+  
+  // Wait for thread to finish gracefully, then force if needed
   pthread_cancel(thread);
+  pthread_join(thread, nullptr);
 
   shared_memory->disconnect();
   if (shared_memory != nullptr)
@@ -197,21 +208,44 @@ template <class Req, class Res>
 void
 ServiceServer<Req, Res>::loop()
 {
-  while (1)
+  while (!shutdown_requested)
   {
-    while (current_request_timestamp_usec >= *request_timestamp_usec)
+    // Fix race condition: Check timestamp inside mutex
+    pthread_mutex_lock(request_mutex);
+    while (current_request_timestamp_usec >= *request_timestamp_usec && !shutdown_requested)
     {
-      // Wait on the condvar
-      pthread_mutex_lock(request_mutex);
+      // Wait on the condvar while holding the mutex
       pthread_cond_wait(request_condition, request_mutex);
-      pthread_mutex_unlock(request_mutex);
     }
+    
+    // Check for shutdown request
+    if (shutdown_requested)
+    {
+      pthread_mutex_unlock(request_mutex);
+      break;
+    }
+    
+    // Update current timestamp and copy request data while holding mutex
     current_request_timestamp_usec = *request_timestamp_usec;
+    Req current_request = *request_ptr;
+    pthread_mutex_unlock(request_mutex);
 
-    *response_ptr = func(*request_ptr);
+    // Process request outside of mutex to avoid blocking other clients
+    Res result = func(current_request);
+    
+    // Check again for shutdown before responding
+    if (shutdown_requested)
+    {
+      break;
+    }
+    
+    // Update response under mutex protection
+    pthread_mutex_lock(response_mutex);
+    *response_ptr = result;
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
     *response_timestamp_usec = ((uint64_t) ts.tv_sec * 1000000L) + ((uint64_t) ts.tv_nsec / 1000L);
+    pthread_mutex_unlock(response_mutex);
 
     pthread_cond_broadcast(response_condition);
   }
@@ -247,7 +281,15 @@ template <class Req, class Res>
 bool
 ServiceClient<Req, Res>::call(Req request, Res *response)
 {
-  // Check the service shared memory existance.
+  // Default timeout of 5 seconds
+  return call(request, response, 5000000);
+}
+
+template <class Req, class Res>
+bool
+ServiceClient<Req, Res>::call(Req request, Res *response, unsigned long timeout_usec)
+{
+  // Check the service shared memory existence.
   if (shared_memory->isDisconnected())
   {
     shared_memory->connect();
@@ -282,11 +324,26 @@ ServiceClient<Req, Res>::call(Req request, Res *response)
 
   pthread_cond_broadcast(request_condition);
 
+  // Simple timeout implementation using loop with small delays
+  uint64_t start_time = *request_timestamp_usec;
+  uint64_t end_time = start_time + timeout_usec;
+  
   while (current_response_timestamp_usec >= *response_timestamp_usec)
   {
-    // Wait on the condvar
+    // Check timeout
+    clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+    uint64_t current_time = ((uint64_t) ts.tv_sec * 1000000L) + ((uint64_t) ts.tv_nsec / 1000L);
+    if (current_time > end_time)
+    {
+      return false; // Timeout
+    }
+    
+    // Wait on the condvar with short timeout
     pthread_mutex_lock(response_mutex);
-    pthread_cond_wait(response_condition, response_mutex);
+    struct timespec wait_time;
+    wait_time.tv_sec = 0;
+    wait_time.tv_nsec = 10000000; // 10ms
+    pthread_cond_timedwait(response_condition, response_mutex, &wait_time);
     pthread_mutex_unlock(response_mutex);
   }
   current_response_timestamp_usec = *response_timestamp_usec;

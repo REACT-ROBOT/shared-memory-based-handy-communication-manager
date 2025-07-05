@@ -66,19 +66,7 @@ find_program(PYTHON "python3")
 #endif()
 
 # shm_action_test
-#include(GoogleTest)
-#include_directories(test)
-#add_executable(shm_action_test
-#    test/memory_member_test.cpp test/local_memory_base_test.cpp 
-#    test/shared_memory_base_test.cpp
-#  )
-#target_link_libraries(shm_action_test
-#  PRIVATE
-#    shm_action 
-#    # Google Testをリンクする
-#    ${GTEST_LDFLAGS}
-#  )
-#gtest_add_tests(TARGET shm_action_test)
+add_subdirectory(test)
 
 #FIND_PACKAGE(Doxygen)
 #IF(DOXYGEN_FOUND)
