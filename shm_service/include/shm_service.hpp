@@ -15,6 +15,7 @@
 
 #include <string>
 #include <thread>
+#include <memory>
 #include "shm_base.hpp"
 
 namespace irlab
@@ -208,6 +209,10 @@ template <class Req, class Res>
 void
 ServiceServer<Req, Res>::loop()
 {
+  // Pre-allocate objects to avoid repeated allocation/deallocation
+  std::unique_ptr<Req> current_request_ptr = std::make_unique<Req>();
+  std::unique_ptr<Res> result_ptr = std::make_unique<Res>();
+  
   while (!shutdown_requested)
   {
     // Fix race condition: Check timestamp inside mutex
@@ -227,11 +232,11 @@ ServiceServer<Req, Res>::loop()
     
     // Update current timestamp and copy request data while holding mutex
     current_request_timestamp_usec = *request_timestamp_usec;
-    Req current_request = *request_ptr;
+    *current_request_ptr = *request_ptr;
     pthread_mutex_unlock(request_mutex);
 
     // Process request outside of mutex to avoid blocking other clients
-    Res result = func(current_request);
+    *result_ptr = func(*current_request_ptr);
     
     // Check again for shutdown before responding
     if (shutdown_requested)
@@ -241,7 +246,7 @@ ServiceServer<Req, Res>::loop()
     
     // Update response under mutex protection
     pthread_mutex_lock(response_mutex);
-    *response_ptr = result;
+    *response_ptr = *result_ptr;
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
     *response_timestamp_usec = ((uint64_t) ts.tv_sec * 1000000L) + ((uint64_t) ts.tv_nsec / 1000L);

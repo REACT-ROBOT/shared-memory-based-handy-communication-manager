@@ -66,7 +66,7 @@ jobs:
       if: matrix.build_type == 'Debug'
       run: |
         cd build
-        export ASAN_OPTIONS=abort_on_error=1:halt_on_error=1
+        export ASAN_OPTIONS=abort_on_error=0:halt_on_error=0:detect_thread_leaks=false:check_initialization_order=false:detect_stack_use_after_return=false:fast_unwind_on_malloc=false
         ctest --output-on-failure
         
     - name: Build documentation

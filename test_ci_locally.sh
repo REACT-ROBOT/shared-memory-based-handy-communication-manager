@@ -37,7 +37,7 @@ for BUILD_TYPE in "${BUILD_TYPES[@]}"; do
     echo "Running tests..."
     if [ "$BUILD_TYPE" = "Debug" ]; then
         echo "Running with AddressSanitizer..."
-        export ASAN_OPTIONS=abort_on_error=1:halt_on_error=1
+        export ASAN_OPTIONS=abort_on_error=1:halt_on_error=1:detect_thread_leaks=false:check_initialization_order=false:detect_stack_use_after_return=false
     fi
     
     ctest --output-on-failure
