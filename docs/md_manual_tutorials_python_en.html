@@ -211,10 +211,7 @@ Methods</h3>
 </ul>
 <h2><a class="anchor" id="autotoc_md232"></a>
 🔨 Build Instructions</h2>
-<div class="fragment"><div class="line"># Navigate to the CMake directory</div>
-<div class="line">cd shm_ws/src/shared-memory-based-handy-communication-manager</div>
-<div class="line"> </div>
-<div class="line"># Create build directory</div>
+<div class="fragment"><div class="line"># Create build directory</div>
 <div class="line">mkdir build &amp;&amp; cd build</div>
 <div class="line"> </div>
 <div class="line"># Run CMake configuration</div>
@@ -223,11 +220,11 @@ Methods</h3>
 <div class="line"># Build the project</div>
 <div class="line">make</div>
 <div class="line"> </div>
-<div class="line"># Install Python package</div>
-<div class="line">cd ../shm_pub_sub/scripts</div>
-<div class="line">python setup.py install</div>
-</div><!-- fragment --><p><b>Alternative Installation (Development Mode):</b> </p><div class="fragment"><div class="line"># Install in development mode for easier debugging</div>
-<div class="line">python setup.py develop</div>
+<div class="line"># Install</div>
+<div class="line">make install</div>
+<div class="line"> </div>
+<div class="line"># Register the Python package path</div>
+<div class="line">export PYTHONPATH=$PYTHONPATH:$(pwd)/python</div>
 </div><!-- fragment --><h1><a class="anchor" id="autotoc_md233"></a>
 🚨 Limitations and Considerations</h1>
 <h2><a class="anchor" id="autotoc_md234"></a>
@@ -578,7 +575,7 @@ Design Patterns</h2>
 </div><!-- PageDoc -->
 <!-- start footer part -->
 <hr class="footer"/><address class="footer"><small>
-Generated on Sun Jul 6 2025 00:08:41 for SHM by&#160;<a href="https://www.doxygen.org/index.html"><img class="footer" src="doxygen.svg" width="104" height="31" alt="doxygen"/></a> 1.9.1
+Generated on Sun Jul 6 2025 14:47:59 for SHM by&#160;<a href="https://www.doxygen.org/index.html"><img class="footer" src="doxygen.svg" width="104" height="31" alt="doxygen"/></a> 1.9.1
 </small></address>
 </body>
 </html>
