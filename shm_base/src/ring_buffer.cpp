@@ -111,21 +111,24 @@ RingBuffer::getNewestBufferNum()
 {
   uint64_t timestamp_buf = 0;
   size_t newest_buffer = -1;
-  while (timestamp_buf == 0)
+  bool found_valid_timestamp = false;
+  
+  for (size_t i = 0; i < *buf_num; i++)
   {
-    for (size_t i = 0; i < *buf_num; i++)
+    if (timestamp_list[i] != std::numeric_limits<uint64_t>::max() && timestamp_list[i] > 0 && timestamp_list[i] >= timestamp_buf)
     {
-      if (timestamp_list[i] != std::numeric_limits<uint64_t>::max() && timestamp_list[i] >= timestamp_buf)
-      {
-        timestamp_buf = timestamp_list[i];
-        newest_buffer = i;
-      }
-    }
-    if (timestamp_buf == std::numeric_limits<uint64_t>::max())
-    {
-      timestamp_buf = 0;
+      timestamp_buf = timestamp_list[i];
+      newest_buffer = i;
+      found_valid_timestamp = true;
     }
   }
+  
+  // If no valid timestamp found, return -1
+  if (!found_valid_timestamp)
+  {
+    return -1;
+  }
+  
   timestamp_us = timestamp_buf;
 
   struct timespec ts;

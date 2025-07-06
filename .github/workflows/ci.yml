@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        build_type: [Release, Debug]
+        include:
+          - build_type: Release
+            sanitizer: OFF
+          - build_type: Debug
+            sanitizer: ON
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          cmake \
+          libgtest-dev \
+          pkg-config \
+          libboost-python-dev \
+          python3-dev \
+          doxygen
+    
+    - name: Build gtest
+      run: |
+        cd /usr/src/gtest
+        sudo cmake CMakeLists.txt
+        sudo make
+        sudo cp lib/*.a /usr/lib
+    
+    - name: Create build directory
+      run: mkdir -p build
+    
+    - name: Configure CMake
+      run: |
+        cd build
+        if [ "${{ matrix.build_type }}" = "Debug" ]; then
+          cmake .. -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DDEBUG=ON
+        else
+          cmake .. -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+        fi
+    
+    - name: Build
+      run: |
+        cd build
+        make -j$(nproc)
+    
+    - name: Run tests
+      run: |
+        cd build
+        ctest --output-on-failure
+    
+    - name: Run AddressSanitizer tests (Debug only)
+      if: matrix.build_type == 'Debug'
+      run: |
+        cd build
+        export ASAN_OPTIONS=abort_on_error=1:halt_on_error=1
+        ctest --output-on-failure
+        
+    - name: Build documentation
+      if: matrix.build_type == 'Release'
+      run: |
+        cd build
+        if make -n shm_doc >/dev/null 2>&1; then
+          make shm_doc
+        else
+          echo "Documentation target not available in this build configuration"
+        fi
+    
+    - name: Upload documentation
+      if: matrix.build_type == 'Release' && github.ref == 'refs/heads/main'
+      uses: actions/upload-artifact@v3
+      with:
+        name: documentation
+        path: docs/

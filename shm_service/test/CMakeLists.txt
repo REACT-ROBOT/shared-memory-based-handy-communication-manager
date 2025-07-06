@@ -22,6 +22,12 @@ target_link_libraries(shm_service_test ${GTEST_LIBRARIES} pthread rt shm_base)
 # Compiler flags
 target_compile_options(shm_service_test PRIVATE ${GTEST_CFLAGS_OTHER})
 
+# Apply debug flags if DEBUG is enabled
+if (DEBUG)
+    target_compile_options(shm_service_test PRIVATE -fsanitize=address -fno-omit-frame-pointer)
+    target_link_options(shm_service_test PRIVATE -fsanitize=address)
+endif()
+
 # Enable testing
 enable_testing()
 add_test(NAME shm_service_test COMMAND shm_service_test)
