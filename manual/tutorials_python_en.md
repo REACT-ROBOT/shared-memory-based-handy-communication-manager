@@ -170,9 +170,6 @@ logger_thread.start()
 ### 🔨 Build Instructions
 
 ```bash
-# Navigate to the CMake directory
-cd shm_ws/src/shared-memory-based-handy-communication-manager
-
 # Create build directory
 mkdir build && cd build
 
@@ -182,15 +179,11 @@ cmake ..
 # Build the project
 make
 
-# Install Python package
-cd ../shm_pub_sub/scripts
-python setup.py install
-```
+# Install
+make install
 
-**Alternative Installation (Development Mode):**
-```bash
-# Install in development mode for easier debugging
-python setup.py develop
+# Register the Python package path
+export PYTHONPATH=$PYTHONPATH:$(pwd)/python
 ```
 
 ## 🚨 Limitations and Considerations

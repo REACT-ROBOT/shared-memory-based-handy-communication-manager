@@ -27,10 +27,7 @@ This package can be called with Python.
 Please run below sample commands.
 ```
 (Terminal 1)
-In Ubuntu 20.04: 
-  export PYTHONPATH=$PYTHONPATH:/root/cmake_ws/build/lib/python3.8/site-packages
-In Ubuntu 22.04: 
-  export PYTHONPATH=$PYTHONPATH:/root/cmake_ws/build/local/lib/python3.10/dist-packages
+export PYTHONPATH=$PYTHONPATH:${YOUR_WS}/build/python
 
 python3
 > import shm_pub_sub
@@ -38,10 +35,7 @@ python3
 > pub.publish(8)
 
 (Terminal 2)
-In Ubuntu 20.04: 
-  export PYTHONPATH=$PYTHONPATH:/root/cmake_ws/build/lib/python3.8/site-packages
-In Ubuntu 22.04: 
-  export PYTHONPATH=$PYTHONPATH:/root/cmake_ws/build/local/lib/python3.10/dist-packages
+export PYTHONPATH=$PYTHONPATH:${YOUR_WS}/build/python
 
 python3
 > import shm_pub_sub

@@ -114,9 +114,6 @@ data, is_success = sub_float.subscribe()
 ### ビルド手順
 
 ```bash
-# CMakeディレクトリに移動
-cd shm_ws/src/shared-memory-based-handy-communication-manager
-
 # ビルドディレクトリを作成
 mkdir build && cd build
 
@@ -126,9 +123,11 @@ cmake ..
 # ビルドを実行
 make
 
-# Pythonパッケージをインストール
-cd ../shm_pub_sub/scripts
-python setup.py install
+# 実行ファイル・ライブラリをインストール
+make install
+
+# Pythonライブラリのパスを登録
+export PYTHONPATH=$PYTHONPATH:$(pwd)/python
 ```
 
 ## 制限事項
