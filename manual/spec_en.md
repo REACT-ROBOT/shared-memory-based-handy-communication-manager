@@ -65,7 +65,8 @@ A class or structure that:
 
 ## Overall System Architecture
 
-```mermaid
+@htmlonly
+<div class="mermaid">
 graph TB
     subgraph "Process A"
         PA[Application A]
@@ -97,19 +98,25 @@ graph TB
     SubC --> PC
     
     SM --> Meta
-```
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+@endhtmlonly
 
 ## Layer Architecture
 
-```mermaid
+@htmlonly
+<div class="mermaid">
 graph TB
     subgraph "Application Layer"
         APP[User Application]
     end
     
     subgraph "SHM API Layer"
-        PUB[Publisher<T>]
-        SUB[Subscriber<T>]
+        PUB["Publisher"]
+        SUB["Subscriber"]
     end
     
     subgraph "Shared Memory Management Layer"
@@ -120,7 +127,7 @@ graph TB
     
     subgraph "OS Layer"
         KERNEL[Linux Kernel]
-        SHMFS[/dev/shm Filesystem]
+        SHMFS["/dev/shm Filesystem"]
     end
     
     APP --> PUB
@@ -131,16 +138,22 @@ graph TB
     POSIX --> RB
     POSIX --> KERNEL
     KERNEL --> SHMFS
-```
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+@endhtmlonly
 
 # 🔧 Detailed Design
 
 ## Class Hierarchy Structure
 
-```mermaid
+@htmlonly
+<div class="mermaid">
 classDiagram
     class SharedMemory {
-        <<abstract>>
+        &lt;&lt;abstract&gt;&gt;
         #int shm_fd
         #int shm_oflag
         #PERM shm_perm
@@ -168,7 +181,7 @@ classDiagram
         -pthread_cond_t* condition
         -size_t* element_size
         -size_t* buf_num
-        -atomic~uint64_t~* timestamp_list
+        -atomic_uint64_t* timestamp_list
         -unsigned char* data_list
         -uint64_t timestamp_us
         -uint64_t data_expiry_time_us
@@ -187,21 +200,21 @@ classDiagram
         +setDataExpiryTime_us(uint64_t time_us)
     }
     
-    class Publisher~T~ {
+    class PublisherT {
         -string shm_name
         -int shm_buf_num
         -PERM shm_perm
-        -unique_ptr~SharedMemory~ shared_memory
-        -unique_ptr~RingBuffer~ ring_buffer
+        -unique_ptr_SharedMemory shared_memory
+        -unique_ptr_RingBuffer ring_buffer
         -size_t data_size
         +Publisher(string name, int buffer_num, PERM perm)
         +publish(const T& data)
     }
     
-    class Subscriber~T~ {
+    class SubscriberT {
         -string shm_name
-        -unique_ptr~SharedMemory~ shared_memory
-        -unique_ptr~RingBuffer~ ring_buffer
+        -unique_ptr_SharedMemory shared_memory
+        -unique_ptr_RingBuffer ring_buffer
         -int current_reading_buffer
         -uint64_t data_expiry_time_us
         +Subscriber(string name)
@@ -211,15 +224,21 @@ classDiagram
     }
     
     SharedMemory <|-- SharedMemoryPosix
-    Publisher~T~ *-- SharedMemory
-    Publisher~T~ *-- RingBuffer
-    Subscriber~T~ *-- SharedMemory
-    Subscriber~T~ *-- RingBuffer
-```
+    PublisherT *-- SharedMemory
+    PublisherT *-- RingBuffer
+    SubscriberT *-- SharedMemory
+    SubscriberT *-- RingBuffer
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+@endhtmlonly
 
 ## Shared Memory Layout
 
-```mermaid
+@htmlonly
+<div class="mermaid">
 graph TB
     subgraph "Shared Memory Segment"
         subgraph "Metadata Area"
@@ -230,17 +249,17 @@ graph TB
         end
         
         subgraph "Timestamp Area"
-            TS0[timestamp[0]]
-            TS1[timestamp[1]]
-            TS2[timestamp[2]]
-            TSN[timestamp[n-1]]
+            TS0["timestamp[0]"]
+            TS1["timestamp[1]"]
+            TS2["timestamp[2]"]
+            TSN["timestamp[n-1]"]
         end
         
         subgraph "Data Area"
-            DATA0[data_buffer[0]]
-            DATA1[data_buffer[1]]
-            DATA2[data_buffer[2]]
-            DATAN[data_buffer[n-1]]
+            DATA0["data_buffer[0]"]
+            DATA1["data_buffer[1]"]
+            DATA2["data_buffer[2]"]
+            DATAN["data_buffer[n-1]"]
         end
     end
     
@@ -255,13 +274,19 @@ graph TB
     DATA0 --> DATA1
     DATA1 --> DATA2
     DATA2 --> DATAN
-```
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+@endhtmlonly
 
 ## Data Flow
 
 ### Publish Process Flow
 
-```mermaid
+@htmlonly
+<div class="mermaid">
 sequenceDiagram
     participant App as Application
     participant Pub as Publisher
@@ -289,11 +314,17 @@ sequenceDiagram
     Pub->>RB: signal()
     Note over RB: Notify waiting Subscribers
     Pub-->>-App: Process complete
-```
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+@endhtmlonly
 
 ### Subscribe Process Flow
 
-```mermaid
+@htmlonly
+<div class="mermaid">
 sequenceDiagram
     participant App as Application
     participant Sub as Subscriber
@@ -320,11 +351,17 @@ sequenceDiagram
         Sub->>SM: Copy data from buffer
         Sub-->>-App: (data, true)
     end
-```
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+@endhtmlonly
 
 ### waitFor Process Flow
 
-```mermaid
+@htmlonly
+<div class="mermaid">
 sequenceDiagram
     participant App as Application
     participant Sub as Subscriber
@@ -349,7 +386,12 @@ sequenceDiagram
         RB-->>Sub: false
         Sub-->>App: false
     end
-```
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+@endhtmlonly
 
 # 📡 Communication Protocol
 
@@ -357,7 +399,8 @@ sequenceDiagram
 
 ### Buffer Selection Algorithm
 
-```mermaid
+@htmlonly
+<div class="mermaid">
 flowchart TD
     Start([Start]) --> GetOldest[Identify buffer with oldest timestamp]
     GetOldest --> TryAlloc{Try buffer allocation}
@@ -370,11 +413,17 @@ flowchart TD
     UpdateTime --> Signal[Send signal via condition variable]
     Signal --> End([End])
     Error --> End
-```
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+@endhtmlonly
 
 ### Data Reading Algorithm
 
-```mermaid
+@htmlonly
+<div class="mermaid">
 flowchart TD
     Start([Start]) --> CheckConn{Shared memory connected?}
     CheckConn -->|No| Reconnect[Try reconnection]
@@ -391,13 +440,19 @@ flowchart TD
     ReturnFail --> End([End])
     ReturnOld --> End
     ReturnSuccess --> End
-```
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+@endhtmlonly
 
 ## Synchronization Mechanism
 
 ### Mutex and Condition Variable
 
-```mermaid
+@htmlonly
+<div class="mermaid">
 stateDiagram-v2
     [*] --> Unlocked : Initial state
     
@@ -414,7 +469,12 @@ stateDiagram-v2
         Waiting --> Processing : Signal received
         Processing --> Unlocked : Data reading complete
     }
-```
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+@endhtmlonly
 
 # ⚡ Performance Characteristics
 
@@ -435,7 +495,8 @@ data_array_size = element_size * buffer_num
 
 ## Latency Characteristics
 
-```mermaid
+@htmlonly
+<div class="mermaid">
 graph LR
     subgraph "Latency Components"
         A[Application Processing] --> B[Publisher Processing]
@@ -457,13 +518,19 @@ graph LR
         T7[Sub: ~2μs]
         T8[App: ~1μs]
     end
-```
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+@endhtmlonly
 
 # 🔒 Security Considerations
 
 ## Access Permissions
 
-```mermaid
+@htmlonly
+<div class="mermaid">
 graph TB
     subgraph "POSIX Permission Model"
         Owner[Owner]
@@ -490,11 +557,17 @@ graph TB
     Default -.-> Owner
     Default -.-> Group
     Default -.-> Others
-```
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+@endhtmlonly
 
 ## Data Integrity
 
-```mermaid
+@htmlonly
+<div class="mermaid">
 sequenceDiagram
     participant P1 as Publisher 1
     participant P2 as Publisher 2
@@ -519,13 +592,19 @@ sequenceDiagram
     
     S->>Buffer: Read latest data
     Note over S: Gets P2's data
-```
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+@endhtmlonly
 
 # ❌ Error Handling
 
 ## Error Classification and Response
 
-```mermaid
+@htmlonly
+<div class="mermaid">
 flowchart TD
     Error([Error Occurred]) --> CheckType{Error Type}
     
@@ -552,13 +631,19 @@ flowchart TD
     Success -->|Yes| End([Normal termination])
     Success -->|No| Recovery
     Abort --> End
-```
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+@endhtmlonly
 
 # 🐍 Python Binding Design
 
 ## Boost.Python Wrapper Structure
 
-```mermaid
+@htmlonly
+<div class="mermaid">
 classDiagram
     class PublisherBool {
         +PublisherBool(string name, bool arg, int buffer_num)
@@ -577,38 +662,44 @@ classDiagram
     
     class SubscriberBool {
         +SubscriberBool(string name, bool arg)
-        +_subscribe() tuple~bool, bool~
+        +_subscribe() (bool,bool)
     }
     
     class SubscriberInt {
         +SubscriberInt(string name, int arg)
-        +_subscribe() tuple~int, bool~
+        +_subscribe() (int,bool)
     }
     
     class SubscriberFloat {
         +SubscriberFloat(string name, float arg)
-        +_subscribe() tuple~float, bool~
+        +_subscribe() (float,bool)
     }
     
-    class Publisher~T~ {
-        <<C++ Template>>
+    class Publisher {
+        &lt;&lt;C++ Template&gt;&gt;
     }
     
-    class Subscriber~T~ {
-        <<C++ Template>>
+    class Subscriber {
+        &lt;&lt;C++ Template&gt;&gt;
     }
     
-    Publisher~T~ <|-- PublisherBool
-    Publisher~T~ <|-- PublisherInt
-    Publisher~T~ <|-- PublisherFloat
-    Subscriber~T~ <|-- SubscriberBool
-    Subscriber~T~ <|-- SubscriberInt
-    Subscriber~T~ <|-- SubscriberFloat
-```
+    Publisher <|-- PublisherBool
+    Publisher <|-- PublisherInt
+    Publisher <|-- PublisherFloat
+    Subscriber <|-- SubscriberBool
+    Subscriber <|-- SubscriberInt
+    Subscriber <|-- SubscriberFloat
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+@endhtmlonly
 
 ## Python/C++ Data Conversion
 
-```mermaid
+@htmlonly
+<div class="mermaid">
 sequenceDiagram
     participant Py as Python App
     participant Boost as Boost.Python
@@ -632,25 +723,31 @@ sequenceDiagram
     Wrapper-->>-Boost: make_tuple(result_data, is_success)
     Note over Boost: C++ type → Python type conversion
     Boost-->>-Py: (data, success)
-```
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+@endhtmlonly
 
 # 🔧 Extensibility Considerations
 
 ## Adding New Data Types
 
-```mermaid
+@htmlonly
+<div class="mermaid">
 flowchart TD
     Start([Add new type T]) --> CheckPOD{POD type?}
     CheckPOD -->|Yes| UseTemplate[Use existing templates]
     CheckPOD -->|No| Specialize[Template specialization]
     
-    UseTemplate --> InstantiateC[Instantiate Publisher<T>,<br/>Subscriber<T> in C++]
-    Specialize --> CustomImpl[Custom implementation<br/>・Serialization<br/>・Deserialization]
+    UseTemplate --> InstantiateC["Instantiate PublisherT,<br/>SubscriberT in C++"]
+    Specialize --> CustomImpl["Custom implementation<br/>・Serialization<br/>・Deserialization"]
     
     CustomImpl --> InstantiateC
     InstantiateC --> PythonNeeded{Python support needed?}
     
-    PythonNeeded -->|Yes| CreateWrapper[Create Boost.Python wrapper<br/>・PublisherT<br/>・SubscriberT]
+    PythonNeeded -->|Yes| CreateWrapper["Create Boost.Python wrapper<br/>・PublisherT<br/>・SubscriberT"]
     PythonNeeded -->|No| TestC[Implement C++ tests]
     
     CreateWrapper --> UpdateModule[Add to BOOST_PYTHON_MODULE]
@@ -658,7 +755,12 @@ flowchart TD
     TestPy --> TestC
     TestC --> Document[Update documentation]
     Document --> End([Complete])
-```
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+@endhtmlonly
 
 # 📚 References
 

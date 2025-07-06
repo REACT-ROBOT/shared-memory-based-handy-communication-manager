@@ -99,8 +99,8 @@ graph TB
     end
     
     subgraph "SHM API層"
-        PUB[Publisher&lt;T&gt;]
-        SUB[Subscriber&lt;T&gt;]
+        PUB["Publisher"]
+        SUB["Subscriber"]
     end
     
     subgraph "共有メモリ管理層"
@@ -110,8 +110,8 @@ graph TB
     end
     
     subgraph "OS層"
-        KERNEL[Linux Kernel]
-        SHMFS[/dev/shm ファイルシステム]
+        KERNEL["Linux Kernel"]
+        SHMFS["/dev/shm ファイルシステム"]
     end
     
     APP --> PUB
@@ -137,7 +137,7 @@ graph TB
 <div class="mermaid">
 classDiagram
     class SharedMemory {
-        <<abstract>>
+        &lt;&lt;abstract&gt;&gt;
         #int shm_fd
         #int shm_oflag
         #PERM shm_perm
@@ -165,7 +165,7 @@ classDiagram
         -pthread_cond_t* condition
         -size_t* element_size
         -size_t* buf_num
-        -atomic~uint64_t~* timestamp_list
+        -atomic_uint64_t* timestamp_list
         -unsigned char* data_list
         -uint64_t timestamp_us
         -uint64_t data_expiry_time_us
@@ -184,21 +184,21 @@ classDiagram
         +setDataExpiryTime_us(uint64_t time_us)
     }
     
-    class Publisher~T~ {
+    class PublisherT {
         -string shm_name
         -int shm_buf_num
         -PERM shm_perm
-        -unique_ptr~SharedMemory~ shared_memory
-        -unique_ptr~RingBuffer~ ring_buffer
+        -unique_ptr_SharedMemory shared_memory
+        -unique_ptr_RingBuffer ring_buffer
         -size_t data_size
         +Publisher(string name, int buffer_num, PERM perm)
         +publish(const T& data)
     }
     
-    class Subscriber~T~ {
+    class SubscriberT {
         -string shm_name
-        -unique_ptr~SharedMemory~ shared_memory
-        -unique_ptr~RingBuffer~ ring_buffer
+        -unique_ptr_SharedMemory shared_memory
+        -unique_ptr_RingBuffer ring_buffer
         -int current_reading_buffer
         -uint64_t data_expiry_time_us
         +Subscriber(string name)
@@ -208,10 +208,10 @@ classDiagram
     }
     
     SharedMemory <|-- SharedMemoryPosix
-    Publisher~T~ *-- SharedMemory
-    Publisher~T~ *-- RingBuffer
-    Subscriber~T~ *-- SharedMemory
-    Subscriber~T~ *-- RingBuffer
+    PublisherT *-- SharedMemory
+    PublisherT *-- RingBuffer
+    SubscriberT *-- SharedMemory
+    SubscriberT *-- RingBuffer
 </div>
 <script type="module">
   import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
@@ -233,17 +233,17 @@ graph TB
         end
         
         subgraph "タイムスタンプ領域"
-            TS0[timestamp[0]]
-            TS1[timestamp[1]]
-            TS2[timestamp[2]]
-            TSN[timestamp[n-1]]
+            TS0["timestamp[0]"]
+            TS1["timestamp[1]"]
+            TS2["timestamp[2]"]
+            TSN["timestamp[n-1]"]
         end
         
         subgraph "データ領域"
-            DATA0[data_buffer[0]]
-            DATA1[data_buffer[1]]
-            DATA2[data_buffer[2]]
-            DATAN[data_buffer[n-1]]
+            DATA0["data_buffer[0]"]
+            DATA1["data_buffer[1]"]
+            DATA2["data_buffer[2]"]
+            DATAN["data_buffer[n-1]"]
         end
     end
     
@@ -523,8 +523,8 @@ graph TB
     end
     
     subgraph "権限種別"
-        Read[読み取り: S_IRUSR/S_IRGRP/S_IROTH]
-        Write[書き込み: S_IWUSR/S_IWGRP/S_IWOTH]
+        Read["読み取り: S_IRUSR/S_IRGRP/S_IROTH"]
+        Write["書き込み: S_IWUSR/S_IWGRP/S_IWOTH"]
     end
     
     subgraph "デフォルト設定"
@@ -597,10 +597,10 @@ flowchart TD
     CheckType -->|メモリエラー| MemError[メモリエラー]
     CheckType -->|タイムアウト| TimeoutError[タイムアウトエラー]
     
-    InitError --> InitActions[・名前の確認<br/>・権限の確認<br/>・POD型の確認]
-    CommError --> CommActions[・共有メモリ再接続<br/>・Publisher側確認<br/>・プロセス生存確認]
-    MemError --> MemActions[・メモリ不足確認<br/>・セグメント削除<br/>・システム再起動]
-    TimeoutError --> TimeoutActions[・タイムアウト値調整<br/>・Publisher頻度確認<br/>・システム負荷確認]
+    InitError --> InitActions["・名前の確認<br/>・権限の確認<br/>・POD型の確認"]
+    CommError --> CommActions["・共有メモリ再接続<br/>・Publisher側確認<br/>・プロセス生存確認"]
+    MemError --> MemActions["・メモリ不足確認<br/>・セグメント削除<br/>・システム再起動"]
+    TimeoutError --> TimeoutActions["・タイムアウト値調整<br/>・Publisher頻度確認<br/>・システム負荷確認"]
     
     InitActions --> LogError[エラーログ出力]
     CommActions --> LogError
@@ -646,33 +646,33 @@ classDiagram
     
     class SubscriberBool {
         +SubscriberBool(string name, bool arg)
-        +_subscribe() tuple~bool, bool~
+        +_subscribe() (bool,bool)
     }
     
     class SubscriberInt {
         +SubscriberInt(string name, int arg)
-        +_subscribe() tuple~int, bool~
+        +_subscribe() (int,bool)
     }
     
     class SubscriberFloat {
         +SubscriberFloat(string name, float arg)
-        +_subscribe() tuple~float, bool~
+        +_subscribe() (float,bool)
     }
     
-    class Publisher~T~ {
-        <<C++ Template>>
+    class Publisher {
+        &lt;&lt;C++ Template&gt;&gt;
     }
     
-    class Subscriber~T~ {
-        <<C++ Template>>
+    class Subscriber {
+        &lt;&lt;C++ Template&gt;&gt;
     }
     
-    Publisher~T~ <|-- PublisherBool
-    Publisher~T~ <|-- PublisherInt
-    Publisher~T~ <|-- PublisherFloat
-    Subscriber~T~ <|-- SubscriberBool
-    Subscriber~T~ <|-- SubscriberInt
-    Subscriber~T~ <|-- SubscriberFloat
+    Publisher <|-- PublisherBool
+    Publisher <|-- PublisherInt
+    Publisher <|-- PublisherFloat
+    Subscriber <|-- SubscriberBool
+    Subscriber <|-- SubscriberInt
+    Subscriber <|-- SubscriberFloat
 </div>
 <script type="module">
   import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
@@ -725,13 +725,13 @@ flowchart TD
     CheckPOD -->|Yes| UseTemplate[既存テンプレートを使用]
     CheckPOD -->|No| Specialize[テンプレート特殊化]
     
-    UseTemplate --> InstantiateC[C++でPublisher&lt;T&gt;,<br/>Subscriber&lt;T&gt;をインスタンス化]
-    Specialize --> CustomImpl[カスタム実装<br/>・シリアライゼーション<br/>・デシリアライゼーション]
+    UseTemplate --> InstantiateC["C++でPublisherT,<br/>SubscriberTをインスタンス化"]
+    Specialize --> CustomImpl["カスタム実装<br/>・シリアライゼーション<br/>・デシリアライゼーション"]
     
     CustomImpl --> InstantiateC
     InstantiateC --> PythonNeeded{Python対応必要?}
     
-    PythonNeeded -->|Yes| CreateWrapper[Boost.Pythonラッパー作成<br/>・PublisherT<br/>・SubscriberT]
+    PythonNeeded -->|Yes| CreateWrapper["Boost.Pythonラッパー作成<br/>・PublisherT<br/>・SubscriberT"]
     PythonNeeded -->|No| TestC[C++テスト実装]
     
     CreateWrapper --> UpdateModule[BOOST_PYTHON_MODULEに追加]

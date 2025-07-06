@@ -194,328 +194,408 @@ Standard Layout Type</h3>
 🏗️ Architecture Design</h1>
 <h2><a class="anchor" id="autotoc_md120"></a>
 Overall System Architecture</h2>
-<div class="fragment"><div class="line">graph TB</div>
-<div class="line">    subgraph &quot;Process A&quot;</div>
-<div class="line">        PA[Application A]</div>
-<div class="line">        PubA[Publisher A]</div>
-<div class="line">    end</div>
-<div class="line">    </div>
-<div class="line">    subgraph &quot;Process B&quot;</div>
-<div class="line">        PB[Application B]</div>
-<div class="line">        SubB[Subscriber B]</div>
-<div class="line">    end</div>
-<div class="line">    </div>
-<div class="line">    subgraph &quot;Process C&quot;</div>
-<div class="line">        PC[Application C]</div>
-<div class="line">        SubC[Subscriber C]</div>
-<div class="line">    end</div>
-<div class="line">    </div>
-<div class="line">    subgraph &quot;Shared Memory Area&quot;</div>
-<div class="line">        SM[Shared Memory Segment]</div>
-<div class="line">        RB[Ring Buffer]</div>
-<div class="line">        Meta[Metadata]</div>
-<div class="line">    end</div>
-<div class="line">    </div>
-<div class="line">    PA --&gt; PubA</div>
-<div class="line">    PubA --&gt; SM</div>
-<div class="line">    SM --&gt; RB</div>
-<div class="line">    RB --&gt; SubB</div>
-<div class="line">    RB --&gt; SubC</div>
-<div class="line">    SubB --&gt; PB</div>
-<div class="line">    SubC --&gt; PC</div>
-<div class="line">    </div>
-<div class="line">    SM --&gt; Meta</div>
-</div><!-- fragment --><h2><a class="anchor" id="autotoc_md121"></a>
+<p> 
+<div class="mermaid">
+graph TB
+    subgraph "Process A"
+        PA[Application A]
+        PubA[Publisher A]
+    end
+    
+    subgraph "Process B"
+        PB[Application B]
+        SubB[Subscriber B]
+    end
+    
+    subgraph "Process C"
+        PC[Application C]
+        SubC[Subscriber C]
+    end
+    
+    subgraph "Shared Memory Area"
+        SM[Shared Memory Segment]
+        RB[Ring Buffer]
+        Meta[Metadata]
+    end
+    
+    PA --> PubA
+    PubA --> SM
+    SM --> RB
+    RB --> SubB
+    RB --> SubC
+    SubB --> PB
+    SubC --> PC
+    
+    SM --> Meta
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+</p>
+<h2><a class="anchor" id="autotoc_md121"></a>
 Layer Architecture</h2>
-<div class="fragment"><div class="line">graph TB</div>
-<div class="line">    subgraph &quot;Application Layer&quot;</div>
-<div class="line">        APP[User Application]</div>
-<div class="line">    end</div>
-<div class="line">    </div>
-<div class="line">    subgraph &quot;SHM API Layer&quot;</div>
-<div class="line">        PUB[Publisher&lt;T&gt;]</div>
-<div class="line">        SUB[Subscriber&lt;T&gt;]</div>
-<div class="line">    end</div>
-<div class="line">    </div>
-<div class="line">    subgraph &quot;Shared Memory Management Layer&quot;</div>
-<div class="line">        SHM[SharedMemory]</div>
-<div class="line">        POSIX[SharedMemoryPosix]</div>
-<div class="line">        RB[RingBuffer]</div>
-<div class="line">    end</div>
-<div class="line">    </div>
-<div class="line">    subgraph &quot;OS Layer&quot;</div>
-<div class="line">        KERNEL[Linux Kernel]</div>
-<div class="line">        SHMFS[/dev/shm Filesystem]</div>
-<div class="line">    end</div>
-<div class="line">    </div>
-<div class="line">    APP --&gt; PUB</div>
-<div class="line">    APP --&gt; SUB</div>
-<div class="line">    PUB --&gt; SHM</div>
-<div class="line">    SUB --&gt; SHM</div>
-<div class="line">    SHM --&gt; POSIX</div>
-<div class="line">    POSIX --&gt; RB</div>
-<div class="line">    POSIX --&gt; KERNEL</div>
-<div class="line">    KERNEL --&gt; SHMFS</div>
-</div><!-- fragment --><h1><a class="anchor" id="autotoc_md122"></a>
+<p> 
+<div class="mermaid">
+graph TB
+    subgraph "Application Layer"
+        APP[User Application]
+    end
+    
+    subgraph "SHM API Layer"
+        PUB["Publisher"]
+        SUB["Subscriber"]
+    end
+    
+    subgraph "Shared Memory Management Layer"
+        SHM[SharedMemory]
+        POSIX[SharedMemoryPosix]
+        RB[RingBuffer]
+    end
+    
+    subgraph "OS Layer"
+        KERNEL[Linux Kernel]
+        SHMFS["/dev/shm Filesystem"]
+    end
+    
+    APP --> PUB
+    APP --> SUB
+    PUB --> SHM
+    SUB --> SHM
+    SHM --> POSIX
+    POSIX --> RB
+    POSIX --> KERNEL
+    KERNEL --> SHMFS
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+</p>
+<h1><a class="anchor" id="autotoc_md122"></a>
 🔧 Detailed Design</h1>
 <h2><a class="anchor" id="autotoc_md123"></a>
 Class Hierarchy Structure</h2>
-<div class="fragment"><div class="line">classDiagram</div>
-<div class="line">    class SharedMemory {</div>
-<div class="line">        &lt;&lt;abstract&gt;&gt;</div>
-<div class="line">        #int shm_fd</div>
-<div class="line">        #int shm_oflag</div>
-<div class="line">        #PERM shm_perm</div>
-<div class="line">        #size_t shm_size</div>
-<div class="line">        #unsigned char* shm_ptr</div>
-<div class="line">        +SharedMemory(int oflag, PERM perm)</div>
-<div class="line">        +getSize() size_t</div>
-<div class="line">        +getPtr() unsigned char*</div>
-<div class="line">        +connect(size_t size)* bool</div>
-<div class="line">        +disconnect()* int</div>
-<div class="line">        +isDisconnected()* bool</div>
-<div class="line">    }</div>
-<div class="line">    </div>
-<div class="line">    class SharedMemoryPosix {</div>
-<div class="line">        -string shm_name</div>
-<div class="line">        +SharedMemoryPosix(string name, int oflag, PERM perm)</div>
-<div class="line">        +connect(size_t size) bool</div>
-<div class="line">        +disconnect() int</div>
-<div class="line">        +isDisconnected() bool</div>
-<div class="line">    }</div>
-<div class="line">    </div>
-<div class="line">    class RingBuffer {</div>
-<div class="line">        -unsigned char* memory_ptr</div>
-<div class="line">        -pthread_mutex_t* mutex</div>
-<div class="line">        -pthread_cond_t* condition</div>
-<div class="line">        -size_t* element_size</div>
-<div class="line">        -size_t* buf_num</div>
-<div class="line">        -atomic~uint64_t~* timestamp_list</div>
-<div class="line">        -unsigned char* data_list</div>
-<div class="line">        -uint64_t timestamp_us</div>
-<div class="line">        -uint64_t data_expiry_time_us</div>
-<div class="line">        +RingBuffer(unsigned char* first_ptr, size_t size, int buffer_num)</div>
-<div class="line">        +getSize(size_t element_size, int buffer_num)$ size_t</div>
-<div class="line">        +getTimestamp_us() uint64_t</div>
-<div class="line">        +setTimestamp_us(uint64_t input_time_us, int buffer_num)</div>
-<div class="line">        +getNewestBufferNum() int</div>
-<div class="line">        +getOldestBufferNum() int</div>
-<div class="line">        +allocateBuffer(int buffer_num) bool</div>
-<div class="line">        +getElementSize() size_t</div>
-<div class="line">        +getDataList() unsigned char*</div>
-<div class="line">        +signal()</div>
-<div class="line">        +waitFor(uint64_t timeout_usec) bool</div>
-<div class="line">        +isUpdated() bool</div>
-<div class="line">        +setDataExpiryTime_us(uint64_t time_us)</div>
-<div class="line">    }</div>
-<div class="line">    </div>
-<div class="line">    class Publisher~T~ {</div>
-<div class="line">        -string shm_name</div>
-<div class="line">        -int shm_buf_num</div>
-<div class="line">        -PERM shm_perm</div>
-<div class="line">        -unique_ptr~SharedMemory~ shared_memory</div>
-<div class="line">        -unique_ptr~RingBuffer~ ring_buffer</div>
-<div class="line">        -size_t data_size</div>
-<div class="line">        +Publisher(string name, int buffer_num, PERM perm)</div>
-<div class="line">        +publish(const T&amp; data)</div>
-<div class="line">    }</div>
-<div class="line">    </div>
-<div class="line">    class Subscriber~T~ {</div>
-<div class="line">        -string shm_name</div>
-<div class="line">        -unique_ptr~SharedMemory~ shared_memory</div>
-<div class="line">        -unique_ptr~RingBuffer~ ring_buffer</div>
-<div class="line">        -int current_reading_buffer</div>
-<div class="line">        -uint64_t data_expiry_time_us</div>
-<div class="line">        +Subscriber(string name)</div>
-<div class="line">        +subscribe(bool* state) T</div>
-<div class="line">        +waitFor(uint64_t timeout_usec) bool</div>
-<div class="line">        +setDataExpiryTime_us(uint64_t time_us)</div>
-<div class="line">    }</div>
-<div class="line">    </div>
-<div class="line">    SharedMemory &lt;|-- SharedMemoryPosix</div>
-<div class="line">    Publisher~T~ *-- SharedMemory</div>
-<div class="line">    Publisher~T~ *-- RingBuffer</div>
-<div class="line">    Subscriber~T~ *-- SharedMemory</div>
-<div class="line">    Subscriber~T~ *-- RingBuffer</div>
-</div><!-- fragment --><h2><a class="anchor" id="autotoc_md124"></a>
+<p> 
+<div class="mermaid">
+classDiagram
+    class SharedMemory {
+        &lt;&lt;abstract&gt;&gt;
+        #int shm_fd
+        #int shm_oflag
+        #PERM shm_perm
+        #size_t shm_size
+        #unsigned char* shm_ptr
+        +SharedMemory(int oflag, PERM perm)
+        +getSize() size_t
+        +getPtr() unsigned char*
+        +connect(size_t size)* bool
+        +disconnect()* int
+        +isDisconnected()* bool
+    }
+    
+    class SharedMemoryPosix {
+        -string shm_name
+        +SharedMemoryPosix(string name, int oflag, PERM perm)
+        +connect(size_t size) bool
+        +disconnect() int
+        +isDisconnected() bool
+    }
+    
+    class RingBuffer {
+        -unsigned char* memory_ptr
+        -pthread_mutex_t* mutex
+        -pthread_cond_t* condition
+        -size_t* element_size
+        -size_t* buf_num
+        -atomic_uint64_t* timestamp_list
+        -unsigned char* data_list
+        -uint64_t timestamp_us
+        -uint64_t data_expiry_time_us
+        +RingBuffer(unsigned char* first_ptr, size_t size, int buffer_num)
+        +getSize(size_t element_size, int buffer_num)$ size_t
+        +getTimestamp_us() uint64_t
+        +setTimestamp_us(uint64_t input_time_us, int buffer_num)
+        +getNewestBufferNum() int
+        +getOldestBufferNum() int
+        +allocateBuffer(int buffer_num) bool
+        +getElementSize() size_t
+        +getDataList() unsigned char*
+        +signal()
+        +waitFor(uint64_t timeout_usec) bool
+        +isUpdated() bool
+        +setDataExpiryTime_us(uint64_t time_us)
+    }
+    
+    class PublisherT {
+        -string shm_name
+        -int shm_buf_num
+        -PERM shm_perm
+        -unique_ptr_SharedMemory shared_memory
+        -unique_ptr_RingBuffer ring_buffer
+        -size_t data_size
+        +Publisher(string name, int buffer_num, PERM perm)
+        +publish(const T& data)
+    }
+    
+    class SubscriberT {
+        -string shm_name
+        -unique_ptr_SharedMemory shared_memory
+        -unique_ptr_RingBuffer ring_buffer
+        -int current_reading_buffer
+        -uint64_t data_expiry_time_us
+        +Subscriber(string name)
+        +subscribe(bool* state) T
+        +waitFor(uint64_t timeout_usec) bool
+        +setDataExpiryTime_us(uint64_t time_us)
+    }
+    
+    SharedMemory <|-- SharedMemoryPosix
+    PublisherT *-- SharedMemory
+    PublisherT *-- RingBuffer
+    SubscriberT *-- SharedMemory
+    SubscriberT *-- RingBuffer
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+</p>
+<h2><a class="anchor" id="autotoc_md124"></a>
 Shared Memory Layout</h2>
-<div class="fragment"><div class="line">graph TB</div>
-<div class="line">    subgraph &quot;Shared Memory Segment&quot;</div>
-<div class="line">        subgraph &quot;Metadata Area&quot;</div>
-<div class="line">            MUTEX[pthread_mutex_t]</div>
-<div class="line">            COND[pthread_cond_t]</div>
-<div class="line">            ESIZE[element_size]</div>
-<div class="line">            BUFNUM[buffer_num]</div>
-<div class="line">        end</div>
-<div class="line">        </div>
-<div class="line">        subgraph &quot;Timestamp Area&quot;</div>
-<div class="line">            TS0[timestamp[0]]</div>
-<div class="line">            TS1[timestamp[1]]</div>
-<div class="line">            TS2[timestamp[2]]</div>
-<div class="line">            TSN[timestamp[n-1]]</div>
-<div class="line">        end</div>
-<div class="line">        </div>
-<div class="line">        subgraph &quot;Data Area&quot;</div>
-<div class="line">            DATA0[data_buffer[0]]</div>
-<div class="line">            DATA1[data_buffer[1]]</div>
-<div class="line">            DATA2[data_buffer[2]]</div>
-<div class="line">            DATAN[data_buffer[n-1]]</div>
-<div class="line">        end</div>
-<div class="line">    end</div>
-<div class="line">    </div>
-<div class="line">    MUTEX --&gt; COND</div>
-<div class="line">    COND --&gt; ESIZE</div>
-<div class="line">    ESIZE --&gt; BUFNUM</div>
-<div class="line">    BUFNUM --&gt; TS0</div>
-<div class="line">    TS0 --&gt; TS1</div>
-<div class="line">    TS1 --&gt; TS2</div>
-<div class="line">    TS2 --&gt; TSN</div>
-<div class="line">    TSN --&gt; DATA0</div>
-<div class="line">    DATA0 --&gt; DATA1</div>
-<div class="line">    DATA1 --&gt; DATA2</div>
-<div class="line">    DATA2 --&gt; DATAN</div>
-</div><!-- fragment --><h2><a class="anchor" id="autotoc_md125"></a>
+<p> 
+<div class="mermaid">
+graph TB
+    subgraph "Shared Memory Segment"
+        subgraph "Metadata Area"
+            MUTEX[pthread_mutex_t]
+            COND[pthread_cond_t]
+            ESIZE[element_size]
+            BUFNUM[buffer_num]
+        end
+        
+        subgraph "Timestamp Area"
+            TS0["timestamp[0]"]
+            TS1["timestamp[1]"]
+            TS2["timestamp[2]"]
+            TSN["timestamp[n-1]"]
+        end
+        
+        subgraph "Data Area"
+            DATA0["data_buffer[0]"]
+            DATA1["data_buffer[1]"]
+            DATA2["data_buffer[2]"]
+            DATAN["data_buffer[n-1]"]
+        end
+    end
+    
+    MUTEX --> COND
+    COND --> ESIZE
+    ESIZE --> BUFNUM
+    BUFNUM --> TS0
+    TS0 --> TS1
+    TS1 --> TS2
+    TS2 --> TSN
+    TSN --> DATA0
+    DATA0 --> DATA1
+    DATA1 --> DATA2
+    DATA2 --> DATAN
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+</p>
+<h2><a class="anchor" id="autotoc_md125"></a>
 Data Flow</h2>
 <h3><a class="anchor" id="autotoc_md126"></a>
 Publish Process Flow</h3>
-<div class="fragment"><div class="line">sequenceDiagram</div>
-<div class="line">    participant App as Application</div>
-<div class="line">    participant Pub as Publisher</div>
-<div class="line">    participant RB as RingBuffer</div>
-<div class="line">    participant SM as SharedMemory</div>
-<div class="line">    </div>
-<div class="line">    App-&gt;&gt;+Pub: publish(data)</div>
-<div class="line">    Pub-&gt;&gt;+RB: getOldestBufferNum()</div>
-<div class="line">    RB--&gt;&gt;-Pub: buffer_index</div>
-<div class="line">    </div>
-<div class="line">    loop Maximum 10 retries</div>
-<div class="line">        Pub-&gt;&gt;+RB: allocateBuffer(buffer_index)</div>
-<div class="line">        alt Buffer allocation success</div>
-<div class="line">            RB--&gt;&gt;-Pub: true</div>
-<div class="line">        else Buffer allocation failure</div>
-<div class="line">            RB--&gt;&gt;Pub: false</div>
-<div class="line">            Note over Pub: Wait 1ms</div>
-<div class="line">            Pub-&gt;&gt;RB: getOldestBufferNum()</div>
-<div class="line">            RB--&gt;&gt;Pub: new buffer_index</div>
-<div class="line">        end</div>
-<div class="line">    end</div>
-<div class="line">    </div>
-<div class="line">    Pub-&gt;&gt;SM: Copy data to buffer</div>
-<div class="line">    Pub-&gt;&gt;RB: setTimestamp_us(current_time, buffer_index)</div>
-<div class="line">    Pub-&gt;&gt;RB: signal()</div>
-<div class="line">    Note over RB: Notify waiting Subscribers</div>
-<div class="line">    Pub--&gt;&gt;-App: Process complete</div>
-</div><!-- fragment --><h3><a class="anchor" id="autotoc_md127"></a>
+<p> 
+<div class="mermaid">
+sequenceDiagram
+    participant App as Application
+    participant Pub as Publisher
+    participant RB as RingBuffer
+    participant SM as SharedMemory
+    
+    App->>+Pub: publish(data)
+    Pub->>+RB: getOldestBufferNum()
+    RB-->>-Pub: buffer_index
+    
+    loop Maximum 10 retries
+        Pub->>+RB: allocateBuffer(buffer_index)
+        alt Buffer allocation success
+            RB-->>-Pub: true
+        else Buffer allocation failure
+            RB-->>Pub: false
+            Note over Pub: Wait 1ms
+            Pub->>RB: getOldestBufferNum()
+            RB-->>Pub: new buffer_index
+        end
+    end
+    
+    Pub->>SM: Copy data to buffer
+    Pub->>RB: setTimestamp_us(current_time, buffer_index)
+    Pub->>RB: signal()
+    Note over RB: Notify waiting Subscribers
+    Pub-->>-App: Process complete
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+</p>
+<h3><a class="anchor" id="autotoc_md127"></a>
 Subscribe Process Flow</h3>
-<div class="fragment"><div class="line">sequenceDiagram</div>
-<div class="line">    participant App as Application</div>
-<div class="line">    participant Sub as Subscriber</div>
-<div class="line">    participant RB as RingBuffer</div>
-<div class="line">    participant SM as SharedMemory</div>
-<div class="line">    </div>
-<div class="line">    App-&gt;&gt;+Sub: subscribe(&amp;is_success)</div>
-<div class="line">    </div>
-<div class="line">    alt Shared memory disconnected</div>
-<div class="line">        Sub-&gt;&gt;+SM: connect()</div>
-<div class="line">        SM--&gt;&gt;-Sub: Connection result</div>
-<div class="line">        alt Connection failed</div>
-<div class="line">            Sub--&gt;&gt;App: (default_value, false)</div>
-<div class="line">        end</div>
-<div class="line">        Sub-&gt;&gt;RB: Create new RingBuffer instance</div>
-<div class="line">    end</div>
-<div class="line">    </div>
-<div class="line">    Sub-&gt;&gt;+RB: getNewestBufferNum()</div>
-<div class="line">    RB--&gt;&gt;-Sub: buffer_index</div>
-<div class="line">    </div>
-<div class="line">    alt No valid buffer found</div>
-<div class="line">        Sub--&gt;&gt;App: (previous_value, false)</div>
-<div class="line">    else Valid buffer found</div>
-<div class="line">        Sub-&gt;&gt;SM: Copy data from buffer</div>
-<div class="line">        Sub--&gt;&gt;-App: (data, true)</div>
-<div class="line">    end</div>
-</div><!-- fragment --><h3><a class="anchor" id="autotoc_md128"></a>
+<p> 
+<div class="mermaid">
+sequenceDiagram
+    participant App as Application
+    participant Sub as Subscriber
+    participant RB as RingBuffer
+    participant SM as SharedMemory
+    
+    App->>+Sub: subscribe(&is_success)
+    
+    alt Shared memory disconnected
+        Sub->>+SM: connect()
+        SM-->>-Sub: Connection result
+        alt Connection failed
+            Sub-->>App: (default_value, false)
+        end
+        Sub->>RB: Create new RingBuffer instance
+    end
+    
+    Sub->>+RB: getNewestBufferNum()
+    RB-->>-Sub: buffer_index
+    
+    alt No valid buffer found
+        Sub-->>App: (previous_value, false)
+    else Valid buffer found
+        Sub->>SM: Copy data from buffer
+        Sub-->>-App: (data, true)
+    end
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+</p>
+<h3><a class="anchor" id="autotoc_md128"></a>
 waitFor Process Flow</h3>
-<div class="fragment"><div class="line">sequenceDiagram</div>
-<div class="line">    participant App as Application</div>
-<div class="line">    participant Sub as Subscriber</div>
-<div class="line">    participant RB as RingBuffer</div>
-<div class="line">    </div>
-<div class="line">    App-&gt;&gt;+Sub: waitFor(timeout_usec)</div>
-<div class="line">    </div>
-<div class="line">    alt Shared memory disconnected</div>
-<div class="line">        Sub-&gt;&gt;Sub: Reconnection process</div>
-<div class="line">        alt Reconnection failed</div>
-<div class="line">            Sub--&gt;&gt;App: false</div>
-<div class="line">        end</div>
-<div class="line">    end</div>
-<div class="line">    </div>
-<div class="line">    Sub-&gt;&gt;+RB: waitFor(timeout_usec)</div>
-<div class="line">    Note over RB: Wait with pthread_cond_timedwait</div>
-<div class="line">    </div>
-<div class="line">    alt Signal received before timeout</div>
-<div class="line">        RB--&gt;&gt;-Sub: true</div>
-<div class="line">        Sub--&gt;&gt;-App: true</div>
-<div class="line">    else Timeout</div>
-<div class="line">        RB--&gt;&gt;Sub: false</div>
-<div class="line">        Sub--&gt;&gt;App: false</div>
-<div class="line">    end</div>
-</div><!-- fragment --><h1><a class="anchor" id="autotoc_md129"></a>
+<p> 
+<div class="mermaid">
+sequenceDiagram
+    participant App as Application
+    participant Sub as Subscriber
+    participant RB as RingBuffer
+    
+    App->>+Sub: waitFor(timeout_usec)
+    
+    alt Shared memory disconnected
+        Sub->>Sub: Reconnection process
+        alt Reconnection failed
+            Sub-->>App: false
+        end
+    end
+    
+    Sub->>+RB: waitFor(timeout_usec)
+    Note over RB: Wait with pthread_cond_timedwait
+    
+    alt Signal received before timeout
+        RB-->>-Sub: true
+        Sub-->>-App: true
+    else Timeout
+        RB-->>Sub: false
+        Sub-->>App: false
+    end
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+</p>
+<h1><a class="anchor" id="autotoc_md129"></a>
 📡 Communication Protocol</h1>
 <h2><a class="anchor" id="autotoc_md130"></a>
 Ring Buffer Algorithm</h2>
 <h3><a class="anchor" id="autotoc_md131"></a>
 Buffer Selection Algorithm</h3>
-<div class="fragment"><div class="line">flowchart TD</div>
-<div class="line">    Start([Start]) --&gt; GetOldest[Identify buffer with oldest timestamp]</div>
-<div class="line">    GetOldest --&gt; TryAlloc{Try buffer allocation}</div>
-<div class="line">    TryAlloc --&gt;|Success| WriteData[Write data]</div>
-<div class="line">    TryAlloc --&gt;|Failure| CheckRetry{Retry count &lt; 10?}</div>
-<div class="line">    CheckRetry --&gt;|Yes| Wait[Wait 1ms]</div>
-<div class="line">    Wait --&gt; GetOldest</div>
-<div class="line">    CheckRetry --&gt;|No| Error[Error: Buffer allocation failed]</div>
-<div class="line">    WriteData --&gt; UpdateTime[Update timestamp]</div>
-<div class="line">    UpdateTime --&gt; Signal[Send signal via condition variable]</div>
-<div class="line">    Signal --&gt; End([End])</div>
-<div class="line">    Error --&gt; End</div>
-</div><!-- fragment --><h3><a class="anchor" id="autotoc_md132"></a>
+<p> 
+<div class="mermaid">
+flowchart TD
+    Start([Start]) --> GetOldest[Identify buffer with oldest timestamp]
+    GetOldest --> TryAlloc{Try buffer allocation}
+    TryAlloc -->|Success| WriteData[Write data]
+    TryAlloc -->|Failure| CheckRetry{Retry count < 10?}
+    CheckRetry -->|Yes| Wait[Wait 1ms]
+    Wait --> GetOldest
+    CheckRetry -->|No| Error[Error: Buffer allocation failed]
+    WriteData --> UpdateTime[Update timestamp]
+    UpdateTime --> Signal[Send signal via condition variable]
+    Signal --> End([End])
+    Error --> End
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+</p>
+<h3><a class="anchor" id="autotoc_md132"></a>
 Data Reading Algorithm</h3>
-<div class="fragment"><div class="line">flowchart TD</div>
-<div class="line">    Start([Start]) --&gt; CheckConn{Shared memory connected?}</div>
-<div class="line">    CheckConn --&gt;|No| Reconnect[Try reconnection]</div>
-<div class="line">    Reconnect --&gt; ConnSuccess{Connection success?}</div>
-<div class="line">    ConnSuccess --&gt;|No| ReturnFail[Return failure]</div>
-<div class="line">    ConnSuccess --&gt;|Yes| GetNewest</div>
-<div class="line">    CheckConn --&gt;|Yes| GetNewest[Identify buffer with newest timestamp]</div>
-<div class="line">    GetNewest --&gt; ValidBuffer{Valid buffer?}</div>
-<div class="line">    ValidBuffer --&gt;|No| ReturnOld[Return previous value and failure flag]</div>
-<div class="line">    ValidBuffer --&gt;|Yes| CheckExpiry{Data within expiry time?}</div>
-<div class="line">    CheckExpiry --&gt;|No| ReturnOld</div>
-<div class="line">    CheckExpiry --&gt;|Yes| ReadData[Read data]</div>
-<div class="line">    ReadData --&gt; ReturnSuccess[Return data and success flag]</div>
-<div class="line">    ReturnFail --&gt; End([End])</div>
-<div class="line">    ReturnOld --&gt; End</div>
-<div class="line">    ReturnSuccess --&gt; End</div>
-</div><!-- fragment --><h2><a class="anchor" id="autotoc_md133"></a>
+<p> 
+<div class="mermaid">
+flowchart TD
+    Start([Start]) --> CheckConn{Shared memory connected?}
+    CheckConn -->|No| Reconnect[Try reconnection]
+    Reconnect --> ConnSuccess{Connection success?}
+    ConnSuccess -->|No| ReturnFail[Return failure]
+    ConnSuccess -->|Yes| GetNewest
+    CheckConn -->|Yes| GetNewest[Identify buffer with newest timestamp]
+    GetNewest --> ValidBuffer{Valid buffer?}
+    ValidBuffer -->|No| ReturnOld[Return previous value and failure flag]
+    ValidBuffer -->|Yes| CheckExpiry{Data within expiry time?}
+    CheckExpiry -->|No| ReturnOld
+    CheckExpiry -->|Yes| ReadData[Read data]
+    ReadData --> ReturnSuccess[Return data and success flag]
+    ReturnFail --> End([End])
+    ReturnOld --> End
+    ReturnSuccess --> End
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+</p>
+<h2><a class="anchor" id="autotoc_md133"></a>
 Synchronization Mechanism</h2>
 <h3><a class="anchor" id="autotoc_md134"></a>
 Mutex and Condition Variable</h3>
-<div class="fragment"><div class="line">stateDiagram-v2</div>
-<div class="line">    [*] --&gt; Unlocked : Initial state</div>
-<div class="line">    </div>
-<div class="line">    state Publisher {</div>
-<div class="line">        Unlocked --&gt; Locked : pthread_mutex_lock</div>
-<div class="line">        Locked --&gt; Writing : Buffer allocation success</div>
-<div class="line">        Writing --&gt; Unlocked : pthread_mutex_unlock + pthread_cond_signal</div>
-<div class="line">        Locked --&gt; Unlocked : Buffer allocation failure + pthread_mutex_unlock</div>
-<div class="line">    }</div>
-<div class="line">    </div>
-<div class="line">    state Subscriber {</div>
-<div class="line">        Unlocked --&gt; Waiting : waitFor() called</div>
-<div class="line">        Waiting --&gt; Unlocked : Timeout</div>
-<div class="line">        Waiting --&gt; Processing : Signal received</div>
-<div class="line">        Processing --&gt; Unlocked : Data reading complete</div>
-<div class="line">    }</div>
-</div><!-- fragment --><h1><a class="anchor" id="autotoc_md135"></a>
+<p> 
+<div class="mermaid">
+stateDiagram-v2
+    [*] --> Unlocked : Initial state
+    
+    state Publisher {
+        Unlocked --> Locked : pthread_mutex_lock
+        Locked --> Writing : Buffer allocation success
+        Writing --> Unlocked : pthread_mutex_unlock + pthread_cond_signal
+        Locked --> Unlocked : Buffer allocation failure + pthread_mutex_unlock
+    }
+    
+    state Subscriber {
+        Unlocked --> Waiting : waitFor() called
+        Waiting --> Unlocked : Timeout
+        Waiting --> Processing : Signal received
+        Processing --> Unlocked : Data reading complete
+    }
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+</p>
+<h1><a class="anchor" id="autotoc_md135"></a>
 ⚡ Performance Characteristics</h1>
 <h2><a class="anchor" id="autotoc_md136"></a>
 Memory Usage</h2>
@@ -530,211 +610,267 @@ Memory Usage</h2>
 <div class="line">data_array_size = element_size * buffer_num</div>
 </div><!-- fragment --><h2><a class="anchor" id="autotoc_md137"></a>
 Latency Characteristics</h2>
-<div class="fragment"><div class="line">graph LR</div>
-<div class="line">    subgraph &quot;Latency Components&quot;</div>
-<div class="line">        A[Application Processing] --&gt; B[Publisher Processing]</div>
-<div class="line">        B --&gt; C[Mutex Acquisition]</div>
-<div class="line">        C --&gt; D[Memory Copy]</div>
-<div class="line">        D --&gt; E[Timestamp Update]</div>
-<div class="line">        E --&gt; F[Signal Transmission]</div>
-<div class="line">        F --&gt; G[Subscriber Processing]</div>
-<div class="line">        G --&gt; H[Application Processing]</div>
-<div class="line">    end</div>
-<div class="line">    </div>
-<div class="line">    subgraph &quot;Typical Times&quot;</div>
-<div class="line">        T1[App: ~1μs]</div>
-<div class="line">        T2[Pub: ~2μs]</div>
-<div class="line">        T3[Mutex: ~0.5μs]</div>
-<div class="line">        T4[Copy: ~0.1μs]</div>
-<div class="line">        T5[Time: ~0.1μs]</div>
-<div class="line">        T6[Signal: ~0.5μs]</div>
-<div class="line">        T7[Sub: ~2μs]</div>
-<div class="line">        T8[App: ~1μs]</div>
-<div class="line">    end</div>
-</div><!-- fragment --><h1><a class="anchor" id="autotoc_md138"></a>
+<p> 
+<div class="mermaid">
+graph LR
+    subgraph "Latency Components"
+        A[Application Processing] --> B[Publisher Processing]
+        B --> C[Mutex Acquisition]
+        C --> D[Memory Copy]
+        D --> E[Timestamp Update]
+        E --> F[Signal Transmission]
+        F --> G[Subscriber Processing]
+        G --> H[Application Processing]
+    end
+    
+    subgraph "Typical Times"
+        T1[App: ~1μs]
+        T2[Pub: ~2μs]
+        T3[Mutex: ~0.5μs]
+        T4[Copy: ~0.1μs]
+        T5[Time: ~0.1μs]
+        T6[Signal: ~0.5μs]
+        T7[Sub: ~2μs]
+        T8[App: ~1μs]
+    end
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+</p>
+<h1><a class="anchor" id="autotoc_md138"></a>
 🔒 Security Considerations</h1>
 <h2><a class="anchor" id="autotoc_md139"></a>
 Access Permissions</h2>
-<div class="fragment"><div class="line">graph TB</div>
-<div class="line">    subgraph &quot;POSIX Permission Model&quot;</div>
-<div class="line">        Owner[Owner]</div>
-<div class="line">        Group[Group]</div>
-<div class="line">        Others[Others]</div>
-<div class="line">    end</div>
-<div class="line">    </div>
-<div class="line">    subgraph &quot;Permission Types&quot;</div>
-<div class="line">        Read[Read: S_IRUSR/S_IRGRP/S_IROTH]</div>
-<div class="line">        Write[Write: S_IWUSR/S_IWGRP/S_IWOTH]</div>
-<div class="line">    end</div>
-<div class="line">    </div>
-<div class="line">    subgraph &quot;Default Settings&quot;</div>
-<div class="line">        Default[&quot;DEFAULT_PERM = 0666&lt;br/&gt;(All users read/write)&quot;]</div>
-<div class="line">    end</div>
-<div class="line">    </div>
-<div class="line">    Owner --&gt; Read</div>
-<div class="line">    Owner --&gt; Write</div>
-<div class="line">    Group --&gt; Read</div>
-<div class="line">    Group --&gt; Write</div>
-<div class="line">    Others --&gt; Read</div>
-<div class="line">    Others --&gt; Write</div>
-<div class="line">    </div>
-<div class="line">    Default -.-&gt; Owner</div>
-<div class="line">    Default -.-&gt; Group</div>
-<div class="line">    Default -.-&gt; Others</div>
-</div><!-- fragment --><h2><a class="anchor" id="autotoc_md140"></a>
+<p> 
+<div class="mermaid">
+graph TB
+    subgraph "POSIX Permission Model"
+        Owner[Owner]
+        Group[Group]
+        Others[Others]
+    end
+    
+    subgraph "Permission Types"
+        Read[Read: S_IRUSR/S_IRGRP/S_IROTH]
+        Write[Write: S_IWUSR/S_IWGRP/S_IWOTH]
+    end
+    
+    subgraph "Default Settings"
+        Default["DEFAULT_PERM = 0666<br/>(All users read/write)"]
+    end
+    
+    Owner --> Read
+    Owner --> Write
+    Group --> Read
+    Group --> Write
+    Others --> Read
+    Others --> Write
+    
+    Default -.-> Owner
+    Default -.-> Group
+    Default -.-> Others
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+</p>
+<h2><a class="anchor" id="autotoc_md140"></a>
 Data Integrity</h2>
-<div class="fragment"><div class="line">sequenceDiagram</div>
-<div class="line">    participant P1 as Publisher 1</div>
-<div class="line">    participant P2 as Publisher 2</div>
-<div class="line">    participant Mutex as Mutex</div>
-<div class="line">    participant Buffer as SharedBuffer</div>
-<div class="line">    participant S as Subscriber</div>
-<div class="line">    </div>
-<div class="line">    Note over P1,S: Concurrent writes from multiple Publishers</div>
-<div class="line">    </div>
-<div class="line">    P1-&gt;&gt;+Mutex: lock()</div>
-<div class="line">    P2-&gt;&gt;Mutex: lock() (blocked)</div>
-<div class="line">    Mutex--&gt;&gt;-P1: Acquisition success</div>
-<div class="line">    </div>
-<div class="line">    P1-&gt;&gt;Buffer: Write data</div>
-<div class="line">    P1-&gt;&gt;Buffer: Update timestamp</div>
-<div class="line">    P1-&gt;&gt;+Mutex: unlock() + signal()</div>
-<div class="line">    Mutex--&gt;&gt;-P2: Acquisition success</div>
-<div class="line">    </div>
-<div class="line">    P2-&gt;&gt;Buffer: Write data</div>
-<div class="line">    P2-&gt;&gt;Buffer: Update timestamp</div>
-<div class="line">    P2-&gt;&gt;Mutex: unlock() + signal()</div>
-<div class="line">    </div>
-<div class="line">    S-&gt;&gt;Buffer: Read latest data</div>
-<div class="line">    Note over S: Gets P2&#39;s data</div>
-</div><!-- fragment --><h1><a class="anchor" id="autotoc_md141"></a>
+<p> 
+<div class="mermaid">
+sequenceDiagram
+    participant P1 as Publisher 1
+    participant P2 as Publisher 2
+    participant Mutex as Mutex
+    participant Buffer as SharedBuffer
+    participant S as Subscriber
+    
+    Note over P1,S: Concurrent writes from multiple Publishers
+    
+    P1->>+Mutex: lock()
+    P2->>Mutex: lock() (blocked)
+    Mutex-->>-P1: Acquisition success
+    
+    P1->>Buffer: Write data
+    P1->>Buffer: Update timestamp
+    P1->>+Mutex: unlock() + signal()
+    Mutex-->>-P2: Acquisition success
+    
+    P2->>Buffer: Write data
+    P2->>Buffer: Update timestamp
+    P2->>Mutex: unlock() + signal()
+    
+    S->>Buffer: Read latest data
+    Note over S: Gets P2's data
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+</p>
+<h1><a class="anchor" id="autotoc_md141"></a>
 ❌ Error Handling</h1>
 <h2><a class="anchor" id="autotoc_md142"></a>
 Error Classification and Response</h2>
-<div class="fragment"><div class="line">flowchart TD</div>
-<div class="line">    Error([Error Occurred]) --&gt; CheckType{Error Type}</div>
-<div class="line">    </div>
-<div class="line">    CheckType --&gt;|Initialization Error| InitError[Initialization Error]</div>
-<div class="line">    CheckType --&gt;|Communication Error| CommError[Communication Error]</div>
-<div class="line">    CheckType --&gt;|Memory Error| MemError[Memory Error]</div>
-<div class="line">    CheckType --&gt;|Timeout| TimeoutError[Timeout Error]</div>
-<div class="line">    </div>
-<div class="line">    InitError --&gt; InitActions[・Name verification&lt;br/&gt;・Permission check&lt;br/&gt;・POD type verification]</div>
-<div class="line">    CommError --&gt; CommActions[・Shared memory reconnection&lt;br/&gt;・Publisher side check&lt;br/&gt;・Process liveness check]</div>
-<div class="line">    MemError --&gt; MemActions[・Memory shortage check&lt;br/&gt;・Segment deletion&lt;br/&gt;・System restart]</div>
-<div class="line">    TimeoutError --&gt; TimeoutActions[・Timeout value adjustment&lt;br/&gt;・Publisher frequency check&lt;br/&gt;・System load check]</div>
-<div class="line">    </div>
-<div class="line">    InitActions --&gt; LogError[Output error log]</div>
-<div class="line">    CommActions --&gt; LogError</div>
-<div class="line">    MemActions --&gt; LogError</div>
-<div class="line">    TimeoutActions --&gt; LogError</div>
-<div class="line">    </div>
-<div class="line">    LogError --&gt; Recovery{Recoverable?}</div>
-<div class="line">    Recovery --&gt;|Yes| Retry[Retry process]</div>
-<div class="line">    Recovery --&gt;|No| Abort[Abort process]</div>
-<div class="line">    </div>
-<div class="line">    Retry --&gt; Success{Success?}</div>
-<div class="line">    Success --&gt;|Yes| End([Normal termination])</div>
-<div class="line">    Success --&gt;|No| Recovery</div>
-<div class="line">    Abort --&gt; End</div>
-</div><!-- fragment --><h1><a class="anchor" id="autotoc_md143"></a>
+<p> 
+<div class="mermaid">
+flowchart TD
+    Error([Error Occurred]) --> CheckType{Error Type}
+    
+    CheckType -->|Initialization Error| InitError[Initialization Error]
+    CheckType -->|Communication Error| CommError[Communication Error]
+    CheckType -->|Memory Error| MemError[Memory Error]
+    CheckType -->|Timeout| TimeoutError[Timeout Error]
+    
+    InitError --> InitActions[・Name verification<br/>・Permission check<br/>・POD type verification]
+    CommError --> CommActions[・Shared memory reconnection<br/>・Publisher side check<br/>・Process liveness check]
+    MemError --> MemActions[・Memory shortage check<br/>・Segment deletion<br/>・System restart]
+    TimeoutError --> TimeoutActions[・Timeout value adjustment<br/>・Publisher frequency check<br/>・System load check]
+    
+    InitActions --> LogError[Output error log]
+    CommActions --> LogError
+    MemActions --> LogError
+    TimeoutActions --> LogError
+    
+    LogError --> Recovery{Recoverable?}
+    Recovery -->|Yes| Retry[Retry process]
+    Recovery -->|No| Abort[Abort process]
+    
+    Retry --> Success{Success?}
+    Success -->|Yes| End([Normal termination])
+    Success -->|No| Recovery
+    Abort --> End
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+</p>
+<h1><a class="anchor" id="autotoc_md143"></a>
 🐍 Python Binding Design</h1>
 <h2><a class="anchor" id="autotoc_md144"></a>
 Boost.Python Wrapper Structure</h2>
-<div class="fragment"><div class="line">classDiagram</div>
-<div class="line">    class PublisherBool {</div>
-<div class="line">        +PublisherBool(string name, bool arg, int buffer_num)</div>
-<div class="line">        +_publish(bool data)</div>
-<div class="line">    }</div>
-<div class="line">    </div>
-<div class="line">    class PublisherInt {</div>
-<div class="line">        +PublisherInt(string name, int arg, int buffer_num)</div>
-<div class="line">        +_publish(int data)</div>
-<div class="line">    }</div>
-<div class="line">    </div>
-<div class="line">    class PublisherFloat {</div>
-<div class="line">        +PublisherFloat(string name, float arg, int buffer_num)</div>
-<div class="line">        +_publish(float data)</div>
-<div class="line">    }</div>
-<div class="line">    </div>
-<div class="line">    class SubscriberBool {</div>
-<div class="line">        +SubscriberBool(string name, bool arg)</div>
-<div class="line">        +_subscribe() tuple~bool, bool~</div>
-<div class="line">    }</div>
-<div class="line">    </div>
-<div class="line">    class SubscriberInt {</div>
-<div class="line">        +SubscriberInt(string name, int arg)</div>
-<div class="line">        +_subscribe() tuple~int, bool~</div>
-<div class="line">    }</div>
-<div class="line">    </div>
-<div class="line">    class SubscriberFloat {</div>
-<div class="line">        +SubscriberFloat(string name, float arg)</div>
-<div class="line">        +_subscribe() tuple~float, bool~</div>
-<div class="line">    }</div>
-<div class="line">    </div>
-<div class="line">    class Publisher~T~ {</div>
-<div class="line">        &lt;&lt;C++ Template&gt;&gt;</div>
-<div class="line">    }</div>
-<div class="line">    </div>
-<div class="line">    class Subscriber~T~ {</div>
-<div class="line">        &lt;&lt;C++ Template&gt;&gt;</div>
-<div class="line">    }</div>
-<div class="line">    </div>
-<div class="line">    Publisher~T~ &lt;|-- PublisherBool</div>
-<div class="line">    Publisher~T~ &lt;|-- PublisherInt</div>
-<div class="line">    Publisher~T~ &lt;|-- PublisherFloat</div>
-<div class="line">    Subscriber~T~ &lt;|-- SubscriberBool</div>
-<div class="line">    Subscriber~T~ &lt;|-- SubscriberInt</div>
-<div class="line">    Subscriber~T~ &lt;|-- SubscriberFloat</div>
-</div><!-- fragment --><h2><a class="anchor" id="autotoc_md145"></a>
+<p> 
+<div class="mermaid">
+classDiagram
+    class PublisherBool {
+        +PublisherBool(string name, bool arg, int buffer_num)
+        +_publish(bool data)
+    }
+    
+    class PublisherInt {
+        +PublisherInt(string name, int arg, int buffer_num)
+        +_publish(int data)
+    }
+    
+    class PublisherFloat {
+        +PublisherFloat(string name, float arg, int buffer_num)
+        +_publish(float data)
+    }
+    
+    class SubscriberBool {
+        +SubscriberBool(string name, bool arg)
+        +_subscribe() (bool,bool)
+    }
+    
+    class SubscriberInt {
+        +SubscriberInt(string name, int arg)
+        +_subscribe() (int,bool)
+    }
+    
+    class SubscriberFloat {
+        +SubscriberFloat(string name, float arg)
+        +_subscribe() (float,bool)
+    }
+    
+    class Publisher {
+        &lt;&lt;C++ Template&gt;&gt;
+    }
+    
+    class Subscriber {
+        &lt;&lt;C++ Template&gt;&gt;
+    }
+    
+    Publisher <|-- PublisherBool
+    Publisher <|-- PublisherInt
+    Publisher <|-- PublisherFloat
+    Subscriber <|-- SubscriberBool
+    Subscriber <|-- SubscriberInt
+    Subscriber <|-- SubscriberFloat
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+</p>
+<h2><a class="anchor" id="autotoc_md145"></a>
 Python/C++ Data Conversion</h2>
-<div class="fragment"><div class="line">sequenceDiagram</div>
-<div class="line">    participant Py as Python App</div>
-<div class="line">    participant Boost as Boost.Python</div>
-<div class="line">    participant Wrapper as C++ Wrapper</div>
-<div class="line">    participant Core as SHM Core</div>
-<div class="line">    </div>
-<div class="line">    Note over Py,Core: Publish Process</div>
-<div class="line">    Py-&gt;&gt;+Boost: pub.publish(data)</div>
-<div class="line">    Boost-&gt;&gt;+Wrapper: _publish(converted_data)</div>
-<div class="line">    Note over Boost: Python type → C++ type conversion</div>
-<div class="line">    Wrapper-&gt;&gt;+Core: publish(data)</div>
-<div class="line">    Core--&gt;&gt;-Wrapper: void</div>
-<div class="line">    Wrapper--&gt;&gt;-Boost: void</div>
-<div class="line">    Boost--&gt;&gt;-Py: None</div>
-<div class="line">    </div>
-<div class="line">    Note over Py,Core: Subscribe Process</div>
-<div class="line">    Py-&gt;&gt;+Boost: data, success = sub.subscribe()</div>
-<div class="line">    Boost-&gt;&gt;+Wrapper: _subscribe()</div>
-<div class="line">    Wrapper-&gt;&gt;+Core: subscribe(&amp;is_success)</div>
-<div class="line">    Core--&gt;&gt;-Wrapper: result_data</div>
-<div class="line">    Wrapper--&gt;&gt;-Boost: make_tuple(result_data, is_success)</div>
-<div class="line">    Note over Boost: C++ type → Python type conversion</div>
-<div class="line">    Boost--&gt;&gt;-Py: (data, success)</div>
-</div><!-- fragment --><h1><a class="anchor" id="autotoc_md146"></a>
+<p> 
+<div class="mermaid">
+sequenceDiagram
+    participant Py as Python App
+    participant Boost as Boost.Python
+    participant Wrapper as C++ Wrapper
+    participant Core as SHM Core
+    
+    Note over Py,Core: Publish Process
+    Py->>+Boost: pub.publish(data)
+    Boost->>+Wrapper: _publish(converted_data)
+    Note over Boost: Python type → C++ type conversion
+    Wrapper->>+Core: publish(data)
+    Core-->>-Wrapper: void
+    Wrapper-->>-Boost: void
+    Boost-->>-Py: None
+    
+    Note over Py,Core: Subscribe Process
+    Py->>+Boost: data, success = sub.subscribe()
+    Boost->>+Wrapper: _subscribe()
+    Wrapper->>+Core: subscribe(&is_success)
+    Core-->>-Wrapper: result_data
+    Wrapper-->>-Boost: make_tuple(result_data, is_success)
+    Note over Boost: C++ type → Python type conversion
+    Boost-->>-Py: (data, success)
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+</p>
+<h1><a class="anchor" id="autotoc_md146"></a>
 🔧 Extensibility Considerations</h1>
 <h2><a class="anchor" id="autotoc_md147"></a>
 Adding New Data Types</h2>
-<div class="fragment"><div class="line">flowchart TD</div>
-<div class="line">    Start([Add new type T]) --&gt; CheckPOD{POD type?}</div>
-<div class="line">    CheckPOD --&gt;|Yes| UseTemplate[Use existing templates]</div>
-<div class="line">    CheckPOD --&gt;|No| Specialize[Template specialization]</div>
-<div class="line">    </div>
-<div class="line">    UseTemplate --&gt; InstantiateC[Instantiate Publisher&lt;T&gt;,&lt;br/&gt;Subscriber&lt;T&gt; in C++]</div>
-<div class="line">    Specialize --&gt; CustomImpl[Custom implementation&lt;br/&gt;・Serialization&lt;br/&gt;・Deserialization]</div>
-<div class="line">    </div>
-<div class="line">    CustomImpl --&gt; InstantiateC</div>
-<div class="line">    InstantiateC --&gt; PythonNeeded{Python support needed?}</div>
-<div class="line">    </div>
-<div class="line">    PythonNeeded --&gt;|Yes| CreateWrapper[Create Boost.Python wrapper&lt;br/&gt;・PublisherT&lt;br/&gt;・SubscriberT]</div>
-<div class="line">    PythonNeeded --&gt;|No| TestC[Implement C++ tests]</div>
-<div class="line">    </div>
-<div class="line">    CreateWrapper --&gt; UpdateModule[Add to BOOST_PYTHON_MODULE]</div>
-<div class="line">    UpdateModule --&gt; TestPy[Implement Python tests]</div>
-<div class="line">    TestPy --&gt; TestC</div>
-<div class="line">    TestC --&gt; Document[Update documentation]</div>
-<div class="line">    Document --&gt; End([Complete])</div>
-</div><!-- fragment --><h1><a class="anchor" id="autotoc_md148"></a>
+<p> 
+<div class="mermaid">
+flowchart TD
+    Start([Add new type T]) --> CheckPOD{POD type?}
+    CheckPOD -->|Yes| UseTemplate[Use existing templates]
+    CheckPOD -->|No| Specialize[Template specialization]
+    
+    UseTemplate --> InstantiateC["Instantiate PublisherT,<br/>SubscriberT in C++"]
+    Specialize --> CustomImpl["Custom implementation<br/>・Serialization<br/>・Deserialization"]
+    
+    CustomImpl --> InstantiateC
+    InstantiateC --> PythonNeeded{Python support needed?}
+    
+    PythonNeeded -->|Yes| CreateWrapper["Create Boost.Python wrapper<br/>・PublisherT<br/>・SubscriberT"]
+    PythonNeeded -->|No| TestC[Implement C++ tests]
+    
+    CreateWrapper --> UpdateModule[Add to BOOST_PYTHON_MODULE]
+    UpdateModule --> TestPy[Implement Python tests]
+    TestPy --> TestC
+    TestC --> Document[Update documentation]
+    Document --> End([Complete])
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true });
+</script>
+</p>
+<h1><a class="anchor" id="autotoc_md148"></a>
 📚 References</h1>
 <h2><a class="anchor" id="autotoc_md149"></a>
 man shm_overview</h2>
@@ -762,7 +898,7 @@ Additional Resources</h2>
 </div><!-- PageDoc -->
 <!-- start footer part -->
 <hr class="footer"/><address class="footer"><small>
-Generated on Sat Jul 5 2025 13:54:48 for SHM by&#160;<a href="https://www.doxygen.org/index.html"><img class="footer" src="doxygen.svg" width="104" height="31" alt="doxygen"/></a> 1.9.1
+Generated on Sun Jul 6 2025 00:08:41 for SHM by&#160;<a href="https://www.doxygen.org/index.html"><img class="footer" src="doxygen.svg" width="104" height="31" alt="doxygen"/></a> 1.9.1
 </small></address>
 </body>
 </html>
