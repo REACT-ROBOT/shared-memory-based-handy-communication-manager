@@ -43,9 +43,9 @@ Below is how to introduce and build SHM.
 1. clone or add for submodule this repository.
    ```
    $ cd <Your_cmake_ws>/src
-   $ git clone https://github.com/ir-utsunomiya/shared-memory-based-handy-communication-manager.git
+   $ git clone https://github.com/REACT-ROBOT/shared-memory-based-handy-communication-manager.git
    or
-   $ git submodule add https://github.com/ir-utsunomiya/shared-memory-based-handy-communication-manager.git
+   $ git submodule add https://github.com/REACT-ROBOT/shared-memory-based-handy-communication-manager.git
    $ gedit CMakeLists.txt
    add "add_subdirectory(shared-memory-based-handy-communication-manager)"
    ```
@@ -89,7 +89,18 @@ After building, open the following files in your web browser:
 
 ## Manuals / Tutorials
 
-TODO: We will add manuals and tutorials to [Github Pages](https://ir-utsunomiya.github.io/shared-memory-based-handy-communication-manager/index.html)
+Documentation is available both locally and online:
+
+- **Online Documentation**: [GitHub Pages](https://react-robot.github.io/shared-memory-based-handy-communication-manager/index.html)
+- **Local Documentation**: Available in the `manual/` directory
+  - English manuals: `manual/*_en.md`
+  - Japanese manuals: `manual/*_jp.md`
+
+The documentation includes:
+- Introduction and quickstart guides
+- Detailed tutorials for Publisher/Subscriber, Service, and Action patterns
+- Python integration examples
+- API reference and troubleshooting guides
 
 # License
 
