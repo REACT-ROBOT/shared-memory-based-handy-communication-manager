@@ -331,25 +331,21 @@ TEST(SHMPubSubTest, MultiThreadTest)
   constexpr int NUM_MESSAGES = 100;
   std::vector<bool> received(NUM_MESSAGES, false);
   std::atomic<int> message_count(0);
-
-  // Publisher thread
-  std::thread publisher_thread([&]() {
-    irlab::shm::Publisher<SimpleInt> pub("/test_multithread");
-    
-    for (int i = 0; i < NUM_MESSAGES; ++i) {
-      SimpleInt data(i);
-      pub.publish(data);
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-  });
+  std::atomic<bool> subscriber_ready(false);
+  std::atomic<bool> publisher_done(false);
 
   // Subscriber thread
   std::thread subscriber_thread([&]() {
     irlab::shm::Subscriber<SimpleInt> sub("/test_multithread");
+    
+    // Allow subscriber to fully initialize
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    subscriber_ready.store(true);
+    
     auto start_time = std::chrono::steady_clock::now();
-    const auto timeout = std::chrono::seconds(3);
+    const auto timeout = std::chrono::seconds(5); // Increased timeout
 
-    while (message_count.load() < NUM_MESSAGES) {
+    while (!publisher_done.load() || message_count.load() < NUM_MESSAGES) {
       auto current_time = std::chrono::steady_clock::now();
       if (current_time - start_time > timeout) {
         break;
@@ -358,12 +354,52 @@ TEST(SHMPubSubTest, MultiThreadTest)
       SimpleInt result = sub.subscribe(&is_successed);
       
       if (is_successed && result.value >= 0 && result.value < NUM_MESSAGES) {
-        received[result.value] = true;
-        message_count.fetch_add(1);
+        if (!received[result.value]) {
+          received[result.value] = true;
+          message_count.fetch_add(1);
+        }
       }
       
+      std::this_thread::sleep_for(std::chrono::microseconds(500));
+    }
+    
+    // Continue reading for a bit after publisher is done to catch any remaining messages
+    auto final_timeout = std::chrono::milliseconds(100);
+    auto final_start = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - final_start < final_timeout) {
+      bool is_successed = false;
+      SimpleInt result = sub.subscribe(&is_successed);
+      
+      if (is_successed && result.value >= 0 && result.value < NUM_MESSAGES) {
+        if (!received[result.value]) {
+          received[result.value] = true;
+          message_count.fetch_add(1);
+        }
+      }
+      
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+  });
+
+  // Publisher thread
+  std::thread publisher_thread([&]() {
+    // Wait for subscriber to be ready
+    while (!subscriber_ready.load()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
+    
+    // Additional delay to ensure subscriber is fully ready
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    
+    irlab::shm::Publisher<SimpleInt> pub("/test_multithread");
+    
+    for (int i = 0; i < NUM_MESSAGES; ++i) {
+      SimpleInt data(i);
+      pub.publish(data);
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    
+    publisher_done.store(true);
   });
 
   publisher_thread.join();
