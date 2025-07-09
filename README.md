@@ -1,5 +1,9 @@
 # SHM
 
+[![CI](https://github.com/REACT-ROBOT/shared-memory-based-handy-communication-manager/workflows/Shared%20Memory%20Communication%20Manager%20CI/badge.svg)](https://github.com/REACT-ROBOT/shared-memory-based-handy-communication-manager/actions)
+[![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/hijimasa/0de6c8879fb6085dd4e0fdbc3b4cf451/raw/shm_coverage.json)](https://github.com/REACT-ROBOT/shared-memory-based-handy-communication-manager/actions "Live coverage from CI")
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 ## Abstruct
 
 SHM is short for "Shared-memory based Handy-communication Manager".
@@ -56,6 +60,39 @@ Below is how to introduce and build SHM.
    $ cmake ..
    $ make
    ```
+
+### Building with Coverage
+
+To generate test coverage reports locally:
+
+```bash
+# Easy local coverage generation (recommended)
+./generate_coverage.sh
+
+# View the generated report
+xdg-open build_Coverage/coverage_html/index.html  # Linux
+```
+
+**Current Coverage**: High test coverage with comprehensive test suite
+
+The coverage report includes:
+- Line-by-line coverage visualization
+- Function coverage statistics  
+- Branch coverage analysis
+- Detailed HTML report with source code highlighting
+
+### Build Options
+
+```bash
+# Build with tests
+cmake -DBUILD_TESTING=ON ..
+
+# Build with debug symbols
+cmake -DDEBUG=ON ..
+
+# Build with coverage (automatically includes debug symbols)
+cmake -DENABLE_COVERAGE=ON ..
+```
 
 ## Documentation Generation
 

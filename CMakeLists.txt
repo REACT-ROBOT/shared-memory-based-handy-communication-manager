@@ -4,10 +4,28 @@ project(shm CXX)
 
 # Global options
 option(DEBUG "switch on debug option" OFF)
+option(ENABLE_COVERAGE "Enable code coverage reporting" OFF)
+
 #for check memory leak
 if (DEBUG)
     set(DEBUG_OPTION "-fsanitize=address -fno-omit-frame-pointer")
 endif()
+
+# Coverage options
+if(ENABLE_COVERAGE)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        set(COVERAGE_FLAGS "--coverage -g -O0")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${COVERAGE_FLAGS}")
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${COVERAGE_FLAGS}")
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} --coverage")
+        set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} --coverage")
+        message(STATUS "Code coverage enabled")
+    else()
+        message(WARNING "Code coverage requires GCC or Clang")
+        set(ENABLE_COVERAGE OFF)
+    endif()
+endif()
+
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DBOOST_NO_AUTO_PTR -fPIC ${DEBUG_OPTION}")
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
