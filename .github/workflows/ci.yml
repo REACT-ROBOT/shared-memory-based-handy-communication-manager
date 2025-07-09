@@ -73,7 +73,8 @@ jobs:
           echo "Running tests with coverage enabled..."
           ctest --output-on-failure
         else
-          # For Release builds, just run tests normally
+          # For Release builds, run tests normally
+          echo "Running tests..."
           ctest --output-on-failure
         fi
     
@@ -85,7 +86,8 @@ jobs:
         ctest --output-on-failure
     
     - name: Generate coverage report (Debug only)
-      if: matrix.build_type == 'Debug'
+      if: always() && matrix.build_type == 'Debug'
+      continue-on-error: false
       run: |
         cd build_${{ matrix.build_type }}
         
@@ -210,7 +212,7 @@ jobs:
         echo "=== Coverage report generation completed successfully ==="
     
     - name: Update Coverage Badge via Gist
-      if: matrix.build_type == 'Debug' && github.ref == 'refs/heads/main'
+      if: always() && matrix.build_type == 'Debug' && github.ref == 'refs/heads/main'
       uses: actions/github-script@v7
       with:
         github-token: ${{ secrets.GIST_TOKEN || secrets.GITHUB_TOKEN }}
@@ -270,7 +272,7 @@ jobs:
           }
     
     - name: Comment Coverage Report on PR
-      if: matrix.build_type == 'Debug' && github.event_name == 'pull_request'
+      if: always() && matrix.build_type == 'Debug' && github.event_name == 'pull_request'
       uses: actions/github-script@v7
       with:
         github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -299,7 +301,7 @@ jobs:
           });
     
     - name: Upload coverage HTML report
-      if: matrix.build_type == 'Debug'
+      if: always() && matrix.build_type == 'Debug'
       uses: actions/upload-artifact@v4
       with:
         name: coverage-report

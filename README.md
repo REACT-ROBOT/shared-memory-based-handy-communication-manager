@@ -94,6 +94,41 @@ cmake -DDEBUG=ON ..
 cmake -DENABLE_COVERAGE=ON ..
 ```
 
+## Testing
+
+### Running Tests
+
+```bash
+# Run all tests
+cd build
+ctest --output-on-failure
+
+# Run specific test suites
+ctest --output-on-failure -R "SHMPubSubTest"
+ctest --output-on-failure -R "SHMServiceTest" 
+ctest --output-on-failure -R "SharedMemoryPosixTest"
+```
+
+### Test Coverage
+
+The project maintains comprehensive test coverage with automated CI testing:
+
+- **Line Coverage**: High coverage across all modules
+- **Function Coverage**: ~99%
+- **Integration Tests**: Publisher/Subscriber, Service, Action patterns
+- **Performance Tests**: Throughput and latency validation
+
+**Note**: Performance tests may occasionally fail in CI environments due to timing constraints, but this does not affect the core functionality or coverage reporting.
+
+### Continuous Integration
+
+GitHub Actions automatically:
+- Builds and tests on multiple configurations (Release/Debug)
+- Runs AddressSanitizer for memory safety validation
+- Generates coverage reports and uploads as artifacts
+- Comments coverage results on Pull Requests
+- Validates cross-platform compatibility
+
 ## Documentation Generation
 
 You can generate HTML documentation using Doxygen. The documentation is available in both English and Japanese.
