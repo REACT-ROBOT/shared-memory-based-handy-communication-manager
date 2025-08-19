@@ -27,7 +27,7 @@ target_include_directories(shm_pub_sub PUBLIC
     $<INSTALL_INTERFACE:include>
     ${Python3_INCLUDE_DIRS}
 )
-target_link_libraries(shm_pub_sub PRIVATE rt pthread shm_base ${Boost_LIBRARIES} ${Python3_LIBRARIES})
+target_link_libraries(shm_pub_sub PUBLIC shm_base PRIVATE rt pthread ${Boost_LIBRARIES} ${Python3_LIBRARIES})
 set_target_properties(shm_pub_sub PROPERTIES PREFIX "") # 接頭辞'lib'を省略するため
 set_target_properties(shm_pub_sub PROPERTIES
 	PUBLIC_HEADER include/shm_pub_sub.hpp
@@ -140,7 +140,6 @@ add_executable(shm_pub_sub_test
   )
 target_link_libraries(shm_pub_sub_test
     PRIVATE
-    shm_base
     shm_pub_sub 
     # Google Testをリンクする
     ${GTEST_LDFLAGS}
