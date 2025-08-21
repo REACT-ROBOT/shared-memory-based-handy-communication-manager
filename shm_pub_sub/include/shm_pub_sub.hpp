@@ -266,7 +266,7 @@ Subscriber<T>::subscribe(bool *is_success)
     shared_memory->connect();
     if (shared_memory->isDisconnected())
     {
-      std::cerr << shm_name << "shm::Subscriber: Cannot connect to shared memory!" << std::endl;
+      // std::cerr << "shm::Subscriber:" << shm_name << " Cannot connect to shared memory!" << std::endl;
       *is_success = false;
       return T();
     }
@@ -274,7 +274,7 @@ Subscriber<T>::subscribe(bool *is_success)
     {
       if (shared_memory->getPtr() == nullptr)
       {
-        std::cerr << shm_name << "shm::Subscriber: Shared memory pointer is null!" << std::endl;
+        // std::cerr << "shm::Subscriber:" << shm_name << " Shared memory pointer is null!" << std::endl;
         *is_success = false;
         return T();
       }
@@ -282,7 +282,7 @@ Subscriber<T>::subscribe(bool *is_success)
     }
     catch (const std::bad_alloc &e)
     {
-      std::cerr << shm_name << "shm::Subscriber: Failed to allocate RingBuffer: " << e.what() << std::endl;
+      // std::cerr << "shm::Subscriber:" << shm_name << " Failed to allocate RingBuffer: " << e.what() << std::endl;
       *is_success = false;
       return T();
     }
@@ -291,11 +291,11 @@ Subscriber<T>::subscribe(bool *is_success)
   int newest_buffer = ring_buffer->getNewestBufferNum();
   if (newest_buffer < 0)
   {
-    std::cerr << shm_name << "shm::Subscriber: No data available!" << std::endl;
+    // std::cerr << "shm::Subscriber:" << shm_name << " No data available!" << std::endl;
     *is_success = false;
     return (reinterpret_cast<T *>(ring_buffer->getDataList()))[current_reading_buffer];
   }
-  std::cerr << shm_name << "shm::Subscriber: Newest buffer number: " << newest_buffer << std::endl;
+  // std::cerr << "shm::Subscriber:" << shm_name << " Newest buffer number: " << newest_buffer << std::endl;
   *is_success            = true;
   current_reading_buffer = newest_buffer;
   return (reinterpret_cast<T *>(ring_buffer->getDataList()))[current_reading_buffer];
