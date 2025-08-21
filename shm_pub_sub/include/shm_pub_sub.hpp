@@ -5,7 +5,7 @@
 //! @note \~english     The notation is complianted ROS Cpp style guide.
 //!       \~japanese-en 記法はROSに準拠する
 //!       \~            http://wiki.ros.org/ja/CppStyleGuide
-//! 
+//!
 //! @example test1.hpp
 //! 共有メモリに関するテスト
 //! @example test1.cpp
@@ -48,10 +48,12 @@ namespace shm
 //!          \~japanese-en template classとして与えられた型またはクラスをトピックとして出力するためのクラスである．
 //!          \~japanese-en sizeofによってメモリの使用量が把握できる型およびクラスに対応している．
 //!          \~japanese-en また、特殊なものはtemplate classを特殊化して対応する．
-//!  
+//!
 //! @note \~japanese-en 通常であれば、生成された共有メモリはデストラクタで破棄されるべきだと考えるのが自然であるが、
-//!       \~japanese-en 意図せずプログラムが再起動したような場合に共有メモリが破棄されてしまうと、値の更新が読み取れなかったり
-//!       \~japanese-en 以前に送っていた指令が読み取れなくなったりするなどの問題が生じる可能性があるため、あえて破棄していない．
+//!       \~japanese-en
+//!       意図せずプログラムが再起動したような場合に共有メモリが破棄されてしまうと、値の更新が読み取れなかったり
+//!       \~japanese-en
+//!       以前に送っていた指令が読み取れなくなったりするなどの問題が生じる可能性があるため、あえて破棄していない．
 //!       \~japanese-en 一度確保した共有メモリにサイズの異なるデータを格納しようとするとデータが破損するため、
 //!       \~japanese-en システムを再度立ち上げ直す際には共有メモリを破棄する操作を行うことを推奨する．
 // ****************************************************************************
@@ -62,21 +64,21 @@ public:
   Publisher(std::string name = "", int buffer_num = 3, PERM perm = DEFAULT_PERM);
   ~Publisher() = default;
 
-    // コピーは禁止
-  Publisher(const Publisher&) = delete;
-  Publisher& operator=(const Publisher&) = delete;
+  // コピーは禁止
+  Publisher(const Publisher &)            = delete;
+  Publisher &operator=(const Publisher &) = delete;
 
   // ムーブコンストラクタ：ポインタを奪い、元を nullptr に
-  Publisher(Publisher&& other) noexcept = default;
+  Publisher(Publisher &&other) noexcept = default;
 
-  void publish(const T& data);
+  void publish(const T &data);
 
 private:
-  std::string shm_name;
-  int shm_buf_num;
-  PERM shm_perm;
+  std::string                   shm_name;
+  int                           shm_buf_num;
+  PERM                          shm_perm;
   std::unique_ptr<SharedMemory> shared_memory;
-  std::unique_ptr<RingBuffer> ring_buffer;
+  std::unique_ptr<RingBuffer>   ring_buffer;
 
   size_t data_size;
 };
@@ -98,22 +100,22 @@ public:
   ~Subscriber() = default;
 
   // コピーは禁止
-  Subscriber(const Subscriber&) = delete;
-  Subscriber& operator=(const Subscriber&) = delete;
+  Subscriber(const Subscriber &)            = delete;
+  Subscriber &operator=(const Subscriber &) = delete;
 
   // ムーブコンストラクタ：ポインタを奪い、元を nullptr に
-  Subscriber(Subscriber&& other) noexcept = default;
-  
+  Subscriber(Subscriber &&other) noexcept = default;
+
   const T subscribe(bool *state);
-  bool waitFor(uint64_t timeout_usec);
-  void setDataExpiryTime_us(uint64_t time_us);
-  
+  bool    waitFor(uint64_t timeout_usec);
+  void    setDataExpiryTime_us(uint64_t time_us);
+
 private:
-  std::string shm_name;
+  std::string                   shm_name;
   std::unique_ptr<SharedMemory> shared_memory;
-  std::unique_ptr<RingBuffer> ring_buffer;
-  int current_reading_buffer;
-  uint64_t data_expiry_time_us;
+  std::unique_ptr<RingBuffer>   ring_buffer;
+  int                           current_reading_buffer;
+  uint64_t                      data_expiry_time_us;
 };
 
 // ****************************************************************************
@@ -136,12 +138,12 @@ private:
 //!          \~japanese-en 共有メモリオブジェクトの生成、mutexや条件変数の初期化を行う．
 template <typename T>
 Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm)
-: shm_name(name)
-, shm_buf_num(buffer_num)
-, shm_perm(perm)
-, shared_memory(nullptr)
-, ring_buffer(nullptr)
-, data_size(sizeof(T))
+  : shm_name(name)
+  , shm_buf_num(buffer_num)
+  , shm_perm(perm)
+  , shared_memory(nullptr)
+  , ring_buffer(nullptr)
+  , data_size(sizeof(T))
 {
   if (!std::is_standard_layout<T>::value)
   {
@@ -153,9 +155,12 @@ Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm)
     throw std::runtime_error("shm::Publisher: Please set name!");
   }
 
-  try {
+  try
+  {
     shared_memory = std::make_unique<SharedMemoryPosix>(shm_name, O_RDWR | O_CREAT, shm_perm);
-  } catch (const std::runtime_error& e) {
+  }
+  catch (const std::runtime_error &e)
+  {
     throw std::runtime_error("shm::Publisher: " + std::string(e.what()));
   }
   shared_memory->connect(RingBuffer::getSize(sizeof(T), shm_buf_num));
@@ -168,7 +173,6 @@ Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm)
   ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr(), sizeof(T), shm_buf_num);
 }
 
-
 //! @brief \~english     Publish a topic
 //!        \~japanese-en トピックの書き込み
 //! @param [in] data
@@ -180,7 +184,7 @@ Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm)
 //!          \~japanese-en また、pthreadの条件変数を介して、待機中のプロセスに再開信号を送る．
 template <typename T>
 void
-Publisher<T>::publish(const T& data)
+Publisher<T>::publish(const T &data)
 {
   int oldest_buffer = ring_buffer->getOldestBufferNum();
   for (size_t i = 0; i < 10; i++)
@@ -189,7 +193,7 @@ Publisher<T>::publish(const T& data)
     {
       break;
     }
-    usleep(1000); // Wait for 1ms
+    usleep(1000);  // Wait for 1ms
     oldest_buffer = ring_buffer->getOldestBufferNum();
   }
 
@@ -197,11 +201,10 @@ Publisher<T>::publish(const T& data)
 
   struct timespec t;
   clock_gettime(CLOCK_MONOTONIC_RAW, &t);
-  ring_buffer->setTimestamp_us(((uint64_t) t.tv_sec * 1000000L) + ((uint64_t) t.tv_nsec / 1000L), oldest_buffer);
-  
+  ring_buffer->setTimestamp_us(((uint64_t)t.tv_sec * 1000000L) + ((uint64_t)t.tv_nsec / 1000L), oldest_buffer);
+
   ring_buffer->signal();
 }
-
 
 //! @brief \~english     Constructor
 //!        \~japanese-en コンストラクタ
@@ -213,11 +216,11 @@ Publisher<T>::publish(const T& data)
 //!          \~japanese-en 共有メモリへのアクセスを行う．
 template <typename T>
 Subscriber<T>::Subscriber(std::string name)
-: shm_name(name)
-, shared_memory(nullptr)
-, ring_buffer(nullptr)
-, current_reading_buffer(0)
-, data_expiry_time_us(2000000)
+  : shm_name(name)
+  , shared_memory(nullptr)
+  , ring_buffer(nullptr)
+  , current_reading_buffer(0)
+  , data_expiry_time_us(2000000)
 {
   if (!std::is_standard_layout<T>::value)
   {
@@ -229,13 +232,15 @@ Subscriber<T>::Subscriber(std::string name)
     throw std::runtime_error("shm::Subscriber: Please set name!");
   }
 
-  try {
+  try
+  {
     shared_memory = std::make_unique<SharedMemoryPosix>(shm_name, O_RDWR, static_cast<PERM>(0));
-  } catch (const std::runtime_error& e) {
+  }
+  catch (const std::runtime_error &e)
+  {
     throw std::runtime_error("shm::Subscriber: " + std::string(e.what()));
   }
 }
-
 
 //! @brief \~english     Subscribe a topic
 //!        \~japanese-en トピックを読み込む
@@ -243,9 +248,11 @@ Subscriber<T>::Subscriber(std::string name)
 //! @return const T& \~english     Const reference to the loaded topic.
 //!                  \~japanese-en 読み込んだトピックへのconst参照
 //! @details         \~english     The topic with the most recent timestamp is loaded.
-//!                  \~english     It is recommended to duplicate the data by copy constructor or assignment, since it returns a direct reference to memory so that it can be later extended to variable-length classes.
+//!                  \~english     It is recommended to duplicate the data by copy constructor or assignment, since it
+//!                  returns a direct reference to memory so that it can be later extended to variable-length classes.
 //!                  \~japanese-en タイムスタンプが最も新しいトピックを読み込む．
-//!                  \~japanese-en 後々可変長なクラスに拡張できるように、メモリへの直接的な参照を返すので、コピーコンストラクタや代入によってデータを複製することを推奨する．
+//!                  \~japanese-en
+//!                  後々可変長なクラスに拡張できるように、メモリへの直接的な参照を返すので、コピーコンストラクタや代入によってデータを複製することを推奨する．
 template <typename T>
 const T
 Subscriber<T>::subscribe(bool *is_success)
@@ -259,17 +266,23 @@ Subscriber<T>::subscribe(bool *is_success)
     shared_memory->connect();
     if (shared_memory->isDisconnected())
     {
+      std::cerr << shm_name << "shm::Subscriber: Cannot connect to shared memory!" << std::endl;
       *is_success = false;
       return T();
     }
-    try {
-      if (shared_memory->getPtr() == nullptr) {
+    try
+    {
+      if (shared_memory->getPtr() == nullptr)
+      {
+        std::cerr << shm_name << "shm::Subscriber: Shared memory pointer is null!" << std::endl;
         *is_success = false;
         return T();
       }
       ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
-    } catch (const std::bad_alloc& e)
+    }
+    catch (const std::bad_alloc &e)
     {
+      std::cerr << shm_name << "shm::Subscriber: Failed to allocate RingBuffer: " << e.what() << std::endl;
       *is_success = false;
       return T();
     }
@@ -278,14 +291,15 @@ Subscriber<T>::subscribe(bool *is_success)
   int newest_buffer = ring_buffer->getNewestBufferNum();
   if (newest_buffer < 0)
   {
+    std::cerr << shm_name << "shm::Subscriber: No data available!" << std::endl;
     *is_success = false;
-    return (reinterpret_cast<T*>(ring_buffer->getDataList()))[current_reading_buffer];
+    return (reinterpret_cast<T *>(ring_buffer->getDataList()))[current_reading_buffer];
   }
-  *is_success = true;
+  std::cerr << shm_name << "shm::Subscriber: Newest buffer number: " << newest_buffer << std::endl;
+  *is_success            = true;
   current_reading_buffer = newest_buffer;
-  return (reinterpret_cast<T*>(ring_buffer->getDataList()))[current_reading_buffer];
+  return (reinterpret_cast<T *>(ring_buffer->getDataList()))[current_reading_buffer];
 }
-
 
 template <typename T>
 bool
@@ -309,7 +323,6 @@ Subscriber<T>::waitFor(uint64_t timeout_usec)
   return ring_buffer->waitFor(timeout_usec);
 }
 
-
 template <typename T>
 void
 Subscriber<T>::setDataExpiryTime_us(uint64_t time_us)
@@ -321,9 +334,8 @@ Subscriber<T>::setDataExpiryTime_us(uint64_t time_us)
   }
 }
 
+}  // namespace shm
 
-}
-
-}
+}  // namespace irlab
 
 #endif /* __SHM_PS_LIB_H__ */
