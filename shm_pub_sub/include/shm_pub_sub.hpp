@@ -21,6 +21,8 @@
 #include <regex>
 #include <stdexcept>
 #include <mutex>
+#include <chrono>
+#include <thread>
 extern "C" {
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -155,17 +157,21 @@ Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm)
 
   try {
     shared_memory = std::make_unique<SharedMemoryPosix>(shm_name, O_RDWR | O_CREAT, shm_perm);
+    shared_memory->connect(RingBuffer::getSize(sizeof(T), shm_buf_num));
+
+    if (shared_memory->isDisconnected())
+    {
+      throw std::runtime_error("shm::Publisher: Cannot get memory!");
+    }
+
+    ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr(), sizeof(T), shm_buf_num);
+    
+    // Small delay to ensure initialization is complete before releasing lock
+    std::this_thread::sleep_for(std::chrono::microseconds(100));
+    
   } catch (const std::runtime_error& e) {
     throw std::runtime_error("shm::Publisher: " + std::string(e.what()));
   }
-  shared_memory->connect(RingBuffer::getSize(sizeof(T), shm_buf_num));
-
-  if (shared_memory->isDisconnected())
-  {
-    throw std::runtime_error("shm::Publisher: Cannot get memory!");
-  }
-
-  ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr(), sizeof(T), shm_buf_num);
 }
 
 
@@ -267,6 +273,11 @@ Subscriber<T>::subscribe(bool *is_success)
         *is_success = false;
         return T();
       }
+      // Wait for initialization to complete
+      if (!RingBuffer::waitForInitialization(shared_memory->getPtr(), 500000)) { // 500ms timeout (increased)
+        *is_success = false;
+        return T();
+      }
       ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
     } catch (const std::bad_alloc& e)
     {
@@ -275,6 +286,7 @@ Subscriber<T>::subscribe(bool *is_success)
     }
     ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
   }
+  
   int newest_buffer = ring_buffer->getNewestBufferNum();
   if (newest_buffer < 0)
   {
@@ -302,6 +314,12 @@ Subscriber<T>::waitFor(uint64_t timeout_usec)
     {
       return false;
     }
+    
+    // Wait for initialization to complete
+    if (!RingBuffer::waitForInitialization(shared_memory->getPtr(), 500000)) { // 500ms timeout (increased)
+      return false;
+    }
+
     ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
     ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
   }

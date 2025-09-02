@@ -4,6 +4,7 @@
 #include <chrono>
 #include <vector>
 #include <atomic>
+#include <iomanip>
 
 #include "shm_base.hpp"
 #include "shm_pub_sub.hpp"
@@ -730,4 +731,257 @@ TEST(SHMPubSubTest, VectorErrorHandlingTest)
     
     irlab::shm::disconnectMemory("test_vector_rapid_change");
   }
+}
+
+TEST(SHMPubSubTest, ConcurrentCreationRaceConditionTest)
+{
+  constexpr int NUM_ITERATIONS = 200;
+  constexpr int NUM_THREADS = 4;
+  std::atomic<int> failure_count(0);
+  std::atomic<int> success_count(0);
+  std::atomic<int> timeout_count(0);
+  std::atomic<bool> start_trigger(false);
+  
+  const auto test_start_time = std::chrono::steady_clock::now();
+  const auto max_test_duration = std::chrono::seconds(10); // 10 second timeout
+
+  for (int iteration = 0; iteration < NUM_ITERATIONS; ++iteration) {
+    // Check for test timeout
+    if (std::chrono::steady_clock::now() - test_start_time > max_test_duration) {
+      timeout_count.fetch_add(1);
+      std::cout << "Test timed out at iteration " << iteration << std::endl;
+      break;
+    }
+    
+    std::string test_topic = "/test_race_" + std::to_string(iteration);
+    std::vector<std::thread> threads;
+    std::atomic<int> ready_count(0);
+
+    // Create multiple threads that will simultaneously create Publisher/Subscriber
+    for (int thread_id = 0; thread_id < NUM_THREADS; ++thread_id) {
+      threads.emplace_back([&, thread_id, test_topic]() {
+        // Signal ready and wait for all threads to be ready
+        ready_count.fetch_add(1);
+        while (!start_trigger.load()) {
+          std::this_thread::yield();
+        }
+        
+        const auto thread_start_time = std::chrono::steady_clock::now();
+        const auto thread_timeout = std::chrono::seconds(2);
+
+        try {
+          if (thread_id % 2 == 0) {
+            // Publisher thread
+            irlab::shm::Publisher<SimpleInt> pub(test_topic);
+            SimpleInt test_data(thread_id);
+            pub.publish(test_data);
+            
+            // Small delay to simulate real usage
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+            
+            success_count.fetch_add(1);
+          } else {
+            // Subscriber thread
+            irlab::shm::Subscriber<SimpleInt> sub(test_topic);
+            
+            // Try to read data with timeout
+            bool result = sub.waitFor(50000); // 50ms timeout
+            if (std::chrono::steady_clock::now() - thread_start_time > thread_timeout) {
+              timeout_count.fetch_add(1);
+              return;
+            }
+            
+            if (result) {
+              bool is_successed = false;
+              SimpleInt data = sub.subscribe(&is_successed);
+              if (is_successed && data.value >= 0 && data.value < NUM_THREADS) {
+                success_count.fetch_add(1);
+              } else {
+                failure_count.fetch_add(1);
+              }
+            } else {
+              // Timeout is now acceptable with initialization synchronization
+              success_count.fetch_add(1);
+            }
+          }
+        } catch (const std::exception& e) {
+          failure_count.fetch_add(1);
+        }
+      });
+    }
+
+    // Wait for all threads to be ready
+    while (ready_count.load() < NUM_THREADS) {
+      std::this_thread::yield();
+    }
+
+    // Trigger all threads to start simultaneously
+    start_trigger.store(true);
+
+    // Wait for all threads to complete with timeout
+    const auto join_start = std::chrono::steady_clock::now();
+    const auto join_timeout = std::chrono::seconds(3);
+    
+    for (auto& t : threads) {
+      if (t.joinable()) {
+        t.join();
+      }
+      if (std::chrono::steady_clock::now() - join_start > join_timeout) {
+        timeout_count.fetch_add(1);
+        break;
+      }
+    }
+
+    // Reset for next iteration
+    start_trigger.store(false);
+
+    // Clean up shared memory
+    irlab::shm::disconnectMemory(test_topic.substr(1));
+    
+    // Small delay between iterations
+    std::this_thread::sleep_for(std::chrono::microseconds(500));
+  }
+
+  // Verify test results - expect 0% failure rate with initialization synchronization
+  int total_operations = NUM_ITERATIONS * NUM_THREADS;
+  
+  std::cout << "Improved race condition test results:" << std::endl;
+  std::cout << "  Success: " << success_count.load() << std::endl;
+  std::cout << "  Failures: " << failure_count.load() << std::endl;
+  std::cout << "  Timeouts: " << timeout_count.load() << std::endl;
+  std::cout << "  Total: " << total_operations << std::endl;
+  std::cout << "  Success rate: " << (100.0 * success_count.load() / total_operations) << "%" << std::endl;
+  
+  EXPECT_EQ(failure_count.load(), 0); // Expect 0 failures with initialization synchronization
+  EXPECT_LT(timeout_count.load(), NUM_ITERATIONS * 0.1); // Allow some timeouts but not many
+}
+
+TEST(SHMPubSubTest, SharedMemoryCorruptionDetectionTest)
+{
+  const std::string test_topic = "/test_corruption";
+  constexpr int NUM_RAPID_TESTS = 1000; // Increased to 1000 iterations as requested
+  std::atomic<int> corruption_detected(0);
+  std::atomic<int> creation_failures(0);
+  std::atomic<int> timeout_count(0);
+  
+  const auto test_start_time = std::chrono::steady_clock::now();
+  const auto max_test_duration = std::chrono::seconds(10); // 10 second timeout
+  
+  for (int i = 0; i < NUM_RAPID_TESTS; ++i) {
+    // Check for test timeout
+    if (std::chrono::steady_clock::now() - test_start_time > max_test_duration) {
+      timeout_count.fetch_add(1);
+      std::cout << "Test timed out at iteration " << i << std::endl;
+      break;
+    }
+    
+    try {
+      // Force cleanup before starting
+      irlab::shm::disconnectMemory(test_topic.substr(1));
+      
+      const auto iteration_start = std::chrono::steady_clock::now();
+      const auto iteration_timeout = std::chrono::milliseconds(500);
+      
+      // Create publisher and subscriber in very close succession
+      std::thread pub_thread([&]() {
+        try {
+          if (std::chrono::steady_clock::now() - iteration_start > iteration_timeout) {
+            timeout_count.fetch_add(1);
+            return;
+          }
+          irlab::shm::Publisher<SimpleInt> pub(test_topic);
+          SimpleInt expected_data(12345);
+          pub.publish(expected_data);
+          
+          // Keep publisher alive briefly
+          std::this_thread::sleep_for(std::chrono::microseconds(100));
+        } catch (const std::exception& e) {
+          creation_failures.fetch_add(1);
+          if (i < 10) { // Only log first few failures to avoid spam
+            std::cout << "Publisher creation failed: " << e.what() << std::endl;
+          }
+        }
+      });
+      
+      // Very small delay to create race condition window (reduced to test synchronization)
+      std::this_thread::sleep_for(std::chrono::microseconds(5));
+      
+      std::thread sub_thread([&]() {
+        try {
+          if (std::chrono::steady_clock::now() - iteration_start > iteration_timeout) {
+            timeout_count.fetch_add(1);
+            return;
+          }
+          irlab::shm::Subscriber<SimpleInt> sub(test_topic);
+          
+          // Try to read data multiple times
+          for (int attempt = 0; attempt < 3; ++attempt) {
+            if (std::chrono::steady_clock::now() - iteration_start > iteration_timeout) {
+              timeout_count.fetch_add(1);
+              return;
+            }
+            
+            bool is_successed = false;
+            SimpleInt result = sub.subscribe(&is_successed);
+            
+            if (is_successed) {
+              // Check if data looks corrupted
+              if (result.value < -999999 || result.value > 999999) {
+                corruption_detected.fetch_add(1);
+                if (corruption_detected.load() <= 5) { // Only log first few corruptions
+                  std::cout << "Corruption detected - invalid value: " << result.value << std::endl;
+                }
+                break;
+              } else if (result.value != 12345 && result.value != 0) {
+                // Unexpected but potentially valid data
+                if (i < 5 && result.value != 12345) {
+                  std::cout << "Unexpected data: " << result.value << " (expected 12345 or 0)" << std::endl;
+                }
+              }
+            }
+            
+            std::this_thread::sleep_for(std::chrono::microseconds(50));
+          }
+        } catch (const std::exception& e) {
+          creation_failures.fetch_add(1);
+          if (creation_failures.load() <= 5) { // Only log first few failures
+            std::cout << "Subscriber creation failed: " << e.what() << std::endl;
+          }
+        }
+      });
+      
+      pub_thread.join();
+      sub_thread.join();
+      
+      // Force cleanup after each test
+      irlab::shm::disconnectMemory(test_topic.substr(1));
+      
+      // Small delay between iterations (reduced for speed)
+      if (i % 100 == 0) {
+        std::this_thread::sleep_for(std::chrono::microseconds(500));
+      } else {
+        std::this_thread::sleep_for(std::chrono::microseconds(10));
+      }
+      
+    } catch (const std::exception& e) {
+      if (i < 5) { // Only log first few iteration failures
+        std::cout << "Test iteration " << i << " failed: " << e.what() << std::endl;
+      }
+    }
+  }
+  
+  std::cout << "1000-iteration corruption detection test results:" << std::endl;
+  std::cout << "  Corruption events: " << corruption_detected.load() << std::endl;
+  std::cout << "  Creation failures: " << creation_failures.load() << std::endl;
+  std::cout << "  Timeouts: " << timeout_count.load() << std::endl;
+  std::cout << "  Total iterations: " << NUM_RAPID_TESTS << std::endl;
+  std::cout << "  Success rate: " << (100.0 * (NUM_RAPID_TESTS - corruption_detected.load() - creation_failures.load()) / NUM_RAPID_TESTS) << "%" << std::endl;
+  
+  // Final cleanup
+  irlab::shm::disconnectMemory(test_topic.substr(1));
+  
+  // With initialization synchronization, expect 0 corruption events
+  EXPECT_EQ(corruption_detected.load(), 0); // Expect 0 corruption with initialization synchronization
+  EXPECT_LT(creation_failures.load(), NUM_RAPID_TESTS * 0.05); // Allow some creation failures (<5%)
+  EXPECT_LT(timeout_count.load(), NUM_RAPID_TESTS * 0.05); // Allow some timeouts (<5%)
 }

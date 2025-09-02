@@ -137,6 +137,8 @@ class RingBuffer
 {
 public:
   static size_t getSize(size_t element_size, int buffer_num);
+  static bool checkInitialized(unsigned char* first_ptr);
+  static bool waitForInitialization(unsigned char* first_ptr, uint64_t timeout_usec);
 
   RingBuffer(unsigned char* first_ptr, size_t size = 0, int buffer_num = 0);
   ~RingBuffer();
@@ -152,12 +154,14 @@ public:
   bool waitFor(uint64_t timeout_usec);
   bool isUpdated() const;
   void setDataExpiryTime_us(uint64_t time_us);
+  void markAsInitialized();
   
 private:
   void initializeExclusiveAccess();
   
   unsigned char *memory_ptr;
-
+  
+  std::atomic<uint32_t> *initialization_flag;
   pthread_mutex_t *mutex;
   pthread_cond_t *condition;
   size_t *element_size;
@@ -167,6 +171,9 @@ private:
   
   uint64_t timestamp_us;
   uint64_t data_expiry_time_us;
+  
+  static constexpr uint32_t INITIALIZED = 1;
+  static constexpr uint32_t NOT_INITIALIZED = 0;
 };
 
 }

@@ -1,6 +1,8 @@
 #include <shm_base.hpp>
 #include <condition_variable>
 #include <limits>
+#include <chrono>
+#include <thread>
 
 namespace irlab
 {
@@ -11,49 +13,104 @@ namespace shm
 size_t
 RingBuffer::getSize(size_t element_size, int buffer_num)
 {
-  return (sizeof(size_t) + sizeof(std::mutex) + sizeof(std::condition_variable) + sizeof(size_t) + (sizeof(std::atomic<uint64_t>)+element_size)*buffer_num);
+  return (sizeof(uint32_t) + sizeof(std::atomic<uint32_t>) + sizeof(size_t) + sizeof(std::mutex) +
+          sizeof(std::condition_variable) + sizeof(size_t) +
+          (sizeof(std::atomic<uint64_t>) + element_size) * buffer_num);
+}
+
+bool
+RingBuffer::checkInitialized(unsigned char* first_ptr)
+{
+  if (first_ptr == nullptr)
+  {
+    return false;
+  }
+
+  std::atomic<uint32_t> *initialization_flag =
+    reinterpret_cast<std::atomic<uint32_t> *>(first_ptr);
+  return (initialization_flag->load(std::memory_order_relaxed) == RingBuffer::INITIALIZED);
+}
+
+bool
+RingBuffer::waitForInitialization(unsigned char* first_ptr, uint64_t timeout_usec)
+{
+  auto start_time = std::chrono::steady_clock::now();
+  auto timeout_duration = std::chrono::microseconds(timeout_usec);
+  
+  while (!RingBuffer::checkInitialized(first_ptr)) {
+    auto current_time = std::chrono::steady_clock::now();
+    if (current_time - start_time >= timeout_duration) {
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::microseconds(50)); // Reduced wait interval for faster response
+  }
+  
+  return true;
 }
 
 //! @brief コンストラクタ
 //! @param [in] 共有メモリ名
 //! @return なし
 //! @details 共有メモリへのアクセスを行う．
-RingBuffer::RingBuffer(unsigned char* first_ptr, size_t size, int buffer_num)
-: memory_ptr(first_ptr)
-, timestamp_us(0)
-, data_expiry_time_us(2000000)
+RingBuffer::RingBuffer(unsigned char *first_ptr, size_t size, int buffer_num)
+  : memory_ptr(first_ptr)
+  , timestamp_us(0)
+  , data_expiry_time_us(2000000)
 {
-  unsigned char* temp_ptr = memory_ptr;
-  mutex          = reinterpret_cast<pthread_mutex_t *>(temp_ptr);
-  temp_ptr      += sizeof(pthread_mutex_t);
-  condition      = reinterpret_cast<pthread_cond_t *>(temp_ptr);
-  temp_ptr      += sizeof(pthread_cond_t);
-  element_size   = reinterpret_cast<size_t *>(temp_ptr);
+  unsigned char *temp_ptr = memory_ptr;
+
+  // Initialize memory layout with initialization tracking
+  initialization_flag = reinterpret_cast<std::atomic<uint32_t> *>(temp_ptr);
+  temp_ptr += sizeof(std::atomic<uint32_t>);
+  mutex = reinterpret_cast<pthread_mutex_t *>(temp_ptr);
+  temp_ptr += sizeof(pthread_mutex_t);
+  condition = reinterpret_cast<pthread_cond_t *>(temp_ptr);
+  temp_ptr += sizeof(pthread_cond_t);
+  element_size = reinterpret_cast<size_t *>(temp_ptr);
   if (size != 0)
   {
     *element_size = size;
   }
-  temp_ptr      += sizeof(size_t);
-  buf_num        = reinterpret_cast<size_t *>(temp_ptr);
+  temp_ptr += sizeof(size_t);
+  buf_num = reinterpret_cast<size_t *>(temp_ptr);
   if (buffer_num != 0)
   {
     *buf_num = buffer_num;
   }
-  temp_ptr      += sizeof(size_t);
+  temp_ptr += sizeof(size_t);
   timestamp_list = reinterpret_cast<std::atomic<uint64_t> *>(temp_ptr);
   temp_ptr += sizeof(std::atomic<uint64_t>) * *buf_num;
-  data_list      = temp_ptr;
+  data_list = temp_ptr;
 
   if (buffer_num != 0)
   {
+    // Mark as not initialized first
+    initialization_flag->store(NOT_INITIALIZED, std::memory_order_relaxed);
+
     initializeExclusiveAccess();
+
+    // Initialize all timestamp buffers to 0
+    for (size_t i = 0; i < *buf_num; ++i)
+    {
+      timestamp_list[i].store(0, std::memory_order_relaxed);
+    }
+
+    // Ensure all memory operations are complete before marking as initialized
+    std::atomic_thread_fence(std::memory_order_release);
+
+    // Mark as initialized after all setup is complete
+    initialization_flag->store(INITIALIZED, std::memory_order_release);
+  }
+  else
+  {
+    // For subscriber accessing existing memory, just set up pointers
+    // Initialization check will be done via checkInitialized()
   }
 }
 
 RingBuffer::~RingBuffer()
 {
 }
-
 
 void
 RingBuffer::initializeExclusiveAccess()
@@ -71,14 +128,13 @@ RingBuffer::initializeExclusiveAccess()
   pthread_mutexattr_destroy(&m_attr);
 }
 
-
 size_t
 RingBuffer::getElementSize() const
 {
   return *element_size;
 }
 
-unsigned char*
+unsigned char *
 RingBuffer::getDataList()
 {
   return data_list;
@@ -94,7 +150,6 @@ RingBuffer::getTimestamp_us() const
   return timestamp_us;
 }
 
-
 //! @brief タイムスタンプ取得
 //! @param なし
 //! @return なし
@@ -105,42 +160,41 @@ RingBuffer::setTimestamp_us(uint64_t input_time_us, int buffer_num)
   timestamp_list[buffer_num] = input_time_us;
 }
 
-
 int
 RingBuffer::getNewestBufferNum()
 {
-  uint64_t timestamp_buf = 0;
-  size_t newest_buffer = -1;
-  bool found_valid_timestamp = false;
-  
+  uint64_t timestamp_buf         = 0;
+  size_t   newest_buffer         = -1;
+  bool     found_valid_timestamp = false;
+
   for (size_t i = 0; i < *buf_num; i++)
   {
-    if (timestamp_list[i] != std::numeric_limits<uint64_t>::max() && timestamp_list[i] > 0 && timestamp_list[i] >= timestamp_buf)
+    if (timestamp_list[i] != std::numeric_limits<uint64_t>::max() && timestamp_list[i] > 0 &&
+        timestamp_list[i] >= timestamp_buf)
     {
-      timestamp_buf = timestamp_list[i];
-      newest_buffer = i;
+      timestamp_buf         = timestamp_list[i];
+      newest_buffer         = i;
       found_valid_timestamp = true;
     }
   }
-  
+
   // If no valid timestamp found, return -1
   if (!found_valid_timestamp)
   {
     return -1;
   }
-  
+
   timestamp_us = timestamp_buf;
 
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-  uint64_t current_time_us = ((uint64_t) ts.tv_sec * 1000000L) + ((uint64_t) ts.tv_nsec / 1000L);
+  uint64_t current_time_us = ((uint64_t)ts.tv_sec * 1000000L) + ((uint64_t)ts.tv_nsec / 1000L);
   if (current_time_us - timestamp_us < data_expiry_time_us)
   {
     return newest_buffer;
   }
   return -1;
 }
-
 
 int
 RingBuffer::getOldestBufferNum()
@@ -150,7 +204,7 @@ RingBuffer::getOldestBufferNum()
     timestamp_us = UINT64_MAX;
   }
   uint64_t timestamp_buf = timestamp_list[0];
-  size_t oldest_buffer = 0;
+  size_t   oldest_buffer = 0;
   for (size_t i = 0; i < *buf_num; i++)
   {
     if (timestamp_list[i] < timestamp_buf)
@@ -159,11 +213,10 @@ RingBuffer::getOldestBufferNum()
       oldest_buffer = i;
     }
   }
-  
+
   timestamp_us = timestamp_buf;
   return oldest_buffer;
 }
-
 
 bool
 RingBuffer::allocateBuffer(int buffer_num)
@@ -178,8 +231,7 @@ RingBuffer::allocateBuffer(int buffer_num)
     // The buffer is already allocated
     return false;
   }
-  return timestamp_list[buffer_num].compare_exchange_weak(temp_buffer_timestamp,
-                                                          std::numeric_limits<uint64_t>::max(),
+  return timestamp_list[buffer_num].compare_exchange_weak(temp_buffer_timestamp, std::numeric_limits<uint64_t>::max(),
                                                           std::memory_order_relaxed);
 }
 
@@ -198,17 +250,17 @@ bool
 RingBuffer::waitFor(uint64_t timeout_usec)
 {
   struct timespec ts;
-  long sec  = static_cast<long>(timeout_usec / 1000000);
-  long mod_sec = static_cast<long>(timeout_usec % 1000000);
+  long            sec     = static_cast<long>(timeout_usec / 1000000);
+  long            mod_sec = static_cast<long>(timeout_usec % 1000000);
   clock_gettime(CLOCK_REALTIME, &ts);
   ts.tv_sec += sec;
-  ts.tv_nsec+= mod_sec * 1000;
+  ts.tv_nsec += mod_sec * 1000;
   if (1000000000 <= ts.tv_nsec)
   {
     ts.tv_nsec -= 1000000000;
-    ts.tv_sec  += 1;
+    ts.tv_sec += 1;
   }
-  
+
   while (!isUpdated())
   {
     // Wait on the condvar
@@ -223,7 +275,6 @@ RingBuffer::waitFor(uint64_t timeout_usec)
 
   return true;
 }
-
 
 //! @brief 共有メモリの更新確認
 //! @param なし
@@ -243,15 +294,18 @@ RingBuffer::isUpdated() const
   return false;
 }
 
-
 void
 RingBuffer::setDataExpiryTime_us(uint64_t time_us)
 {
   data_expiry_time_us = time_us;
 }
 
-
+void
+RingBuffer::markAsInitialized()
+{
+  initialization_flag->store(INITIALIZED, std::memory_order_release);
 }
 
-}
+}  // namespace shm
 
+}  // namespace irlab
