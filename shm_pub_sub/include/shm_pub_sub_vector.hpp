@@ -201,6 +201,11 @@ namespace irlab
           *is_success = false;
           return std::vector<T>(0);
         }
+        // Wait for initialization to complete
+        if (!RingBuffer::waitForInitialization(shared_memory->getPtr(), 500000)) { // 500ms timeout (increased)
+          *is_success = false;
+          return std::vector<T>(0);
+        }
         ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
         size_t element_size = ring_buffer->getElementSize();
         vector_size = element_size / sizeof(T);
@@ -230,6 +235,10 @@ namespace irlab
         shared_memory->connect();
         if (shared_memory->isDisconnected())
         {
+          return false;
+        }
+        // Wait for initialization to complete
+        if (!RingBuffer::waitForInitialization(shared_memory->getPtr(), 500000)) { // 500ms timeout (increased)
           return false;
         }
         ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
