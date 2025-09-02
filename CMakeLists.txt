@@ -4,6 +4,7 @@ project(shm CXX)
 
 # Global options
 option(DEBUG "switch on debug option" OFF)
+option(BUILD_TESTS "Build test programs" OFF)
 option(ENABLE_COVERAGE "Enable code coverage reporting" OFF)
 
 #for check memory leak
@@ -32,7 +33,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Enable testing
+if(BUILD_TESTS)
 enable_testing()
+endif()
 
 #project(core_cpp CXX)
 add_subdirectory(shm_base)

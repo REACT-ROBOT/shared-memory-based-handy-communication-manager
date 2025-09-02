@@ -5,6 +5,7 @@ project(shm_pub_sub CXX)
 set(package_version 20100204)
 option(DEBUG "switch on debug option" OFF)
 option(BUILD_TESTS "Build test programs" OFF)
+option(BUILD_EXAMPLES "Build examples" OFF)
 #for check memory leak
 if (DEBUG)
 set(DEBUG_OPTION "-fsanitize=address -fno-omit-frame-pointer")
@@ -37,7 +38,9 @@ set_target_properties(shm_pub_sub PROPERTIES
 )
 
 ##sample
+if(BUILD_EXAMPLES)
 add_subdirectory(samples)
+endif()
 
 ##install
 install(TARGETS shm_pub_sub EXPORT shm_pub_subExport
