@@ -246,8 +246,8 @@ TEST_F(RingBufferTest, BasicOperations) {
 TEST_F(RingBufferTest, TimestampManagement) {
     // Use current time-based timestamps to avoid expiration issues
     auto now = std::chrono::steady_clock::now();
-    auto base_time_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
-    
+    uint64_t base_time_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+
     std::vector<uint64_t> timestamps = {
         base_time_us + 10000,   // +10ms
         base_time_us + 20000,   // +20ms  

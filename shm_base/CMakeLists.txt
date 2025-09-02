@@ -4,6 +4,7 @@ project(shm_base CXX)
 
 set(package_version 20100204)
 option(DEBUG "switch on debug option" OFF)
+option(BUILD_TESTS "Build test programs" OFF)
 #for check memory leak
 if (DEBUG)
 set(DEBUG_OPTION "-fsanitize=address -fno-omit-frame-pointer")
@@ -14,7 +15,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(PkgConfig)
-pkg_search_module(GTEST REQUIRED gtest_main)
+if(BUILD_TESTS)
+    pkg_search_module(GTEST REQUIRED gtest_main)
+endif()
 
 ##libshm_pub_sub.a
 
@@ -41,18 +44,20 @@ install(EXPORT shm_baseExport
 )
 
 # shm_base_test
-include(GoogleTest)
-include_directories(test)
-add_executable(shm_base_test
-    test/shm_base_test.cpp
-  )
-target_link_libraries(shm_base_test
-  PRIVATE
-    shm_base
-    # Google Testをリンクする
-    ${GTEST_LDFLAGS}
-  )
-gtest_add_tests(TARGET shm_base_test)
+if(BUILD_TESTS)
+  include(GoogleTest)
+  include_directories(test)
+  add_executable(shm_base_test
+      test/shm_base_test.cpp
+    )
+  target_link_libraries(shm_base_test
+    PRIVATE
+      shm_base
+      # Google Testをリンクする
+      ${GTEST_LDFLAGS}
+    )
+  gtest_add_tests(TARGET shm_base_test)
+endif()
 
 FIND_PACKAGE(Doxygen)
 IF(DOXYGEN_FOUND)

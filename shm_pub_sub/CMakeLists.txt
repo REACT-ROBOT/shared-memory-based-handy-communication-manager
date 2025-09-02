@@ -4,6 +4,7 @@ project(shm_pub_sub CXX)
 
 set(package_version 20100204)
 option(DEBUG "switch on debug option" OFF)
+option(BUILD_TESTS "Build test programs" OFF)
 #for check memory leak
 if (DEBUG)
 set(DEBUG_OPTION "-fsanitize=address -fno-omit-frame-pointer")
@@ -14,7 +15,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(PkgConfig)
-pkg_search_module(GTEST REQUIRED gtest_main)
+if(BUILD_TESTS)
+    pkg_search_module(GTEST REQUIRED gtest_main)
+endif()
 find_package(Python3 COMPONENTS Interpreter Development)
 set(Boost_USE_STATIC_LIBS OFF)
 find_package(Boost COMPONENTS python REQUIRED)
@@ -132,17 +135,19 @@ __author__ = \"Masaaki HIJIKATA\"
     )
 endif()
 
-# shm_frame_cppy_test
-include(GoogleTest)
-include_directories(test)
-add_executable(shm_pub_sub_test
-    test/shm_pub_sub_test.cpp
-  )
-target_link_libraries(shm_pub_sub_test
-    PRIVATE
-    shm_pub_sub 
-    # Google Testをリンクする
-    ${GTEST_LDFLAGS}
-  )
-gtest_add_tests(TARGET shm_pub_sub_test)
+if(BUILD_TESTS)
+    # shm_frame_cppy_test
+    include(GoogleTest)
+    include_directories(test)
+    add_executable(shm_pub_sub_test
+        test/shm_pub_sub_test.cpp
+      )
+    target_link_libraries(shm_pub_sub_test
+        PRIVATE
+        shm_pub_sub 
+        # Google Testをリンクする
+        ${GTEST_LDFLAGS}
+      )
+    gtest_add_tests(TARGET shm_pub_sub_test)
+endif()
 

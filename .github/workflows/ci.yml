@@ -55,9 +55,9 @@ jobs:
       run: |
         cd build_${{ matrix.build_type }}
         if [ "${{ matrix.build_type }}" = "Debug" ]; then
-          cmake .. -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DDEBUG=ON -DENABLE_COVERAGE=ON -DCMAKE_CXX_FLAGS="--coverage -g -O0" -DCMAKE_C_FLAGS="--coverage -g -O0"
+          cmake .. -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DDEBUG=ON -DBUILD_TESTS=ON -DENABLE_COVERAGE=ON -DCMAKE_CXX_FLAGS="--coverage -g -O0" -DCMAKE_C_FLAGS="--coverage -g -O0"
         else
-          cmake .. -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          cmake .. -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DBUILD_TESTS=ON
         fi
     
     - name: Build

@@ -4,6 +4,7 @@ project(shm_service CXX)
 
 set(package_version 20230222)
 option(DEBUG "switch on debug option" OFF)
+option(BUILD_TESTS "Build test programs" OFF)
 #for check memory leak
 if (DEBUG)
 set(DEBUG_OPTION "-fsanitize=address -fno-omit-frame-pointer")
@@ -14,7 +15,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(PkgConfig)
-pkg_search_module(GTEST REQUIRED gtest_main)
+if(BUILD_TESTS)
+    pkg_search_module(GTEST REQUIRED gtest_main)
+endif()
 #FIND_PACKAGE(tomlplusplus REQUIRED)
 find_package(Python3 COMPONENTS Interpreter Development)
 set(Boost_USE_STATIC_LIBS OFF)
@@ -67,7 +70,9 @@ find_program(PYTHON "python3")
 #endif()
 
 # shm_service_test
+if(BUILD_TESTS)
 add_subdirectory(test)
+endif()
 
 #FIND_PACKAGE(Doxygen)
 #IF(DOXYGEN_FOUND)
