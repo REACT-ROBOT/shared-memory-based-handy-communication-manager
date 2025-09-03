@@ -148,8 +148,18 @@ namespace irlab
         oldest_buffer = ring_buffer->getOldestBufferNum();
       }
 
-      T *first_ptr = &((reinterpret_cast<T *>(ring_buffer->getDataList()))[oldest_buffer * vector_size]);
-      memcpy(first_ptr, data.data(), sizeof(T) * vector_size);
+      // Cross-platform aligned memory access for vectors
+      unsigned char* data_ptr = ring_buffer->getDataList();
+      size_t buffer_offset = oldest_buffer * vector_size * sizeof(T);
+      
+      if constexpr (is_arm_platform()) {
+        // ARM: Always use memcpy for vector data safety
+        std::memcpy(data_ptr + buffer_offset, data.data(), sizeof(T) * vector_size);
+      } else {
+        // x86/x64: Direct pointer access is safe
+        T *first_ptr = reinterpret_cast<T *>(data_ptr + buffer_offset);
+        std::memcpy(first_ptr, data.data(), sizeof(T) * vector_size);
+      }
 
       struct timespec t;
       clock_gettime(CLOCK_MONOTONIC_RAW, &t);
@@ -214,16 +224,42 @@ namespace irlab
       if (newest_buffer < 0)
       {
         *is_success = false;
-        T *first_ptr = &((reinterpret_cast<T *>(ring_buffer->getDataList()))[current_reading_buffer * vector_size]);
-        T *last_ptr = &((reinterpret_cast<T *>(ring_buffer->getDataList()))[current_reading_buffer * vector_size + vector_size]);
-        return std::vector<T>(first_ptr, last_ptr);
+        
+        // Cross-platform aligned memory access for fallback case
+        unsigned char* data_ptr = ring_buffer->getDataList();
+        size_t buffer_offset = current_reading_buffer * vector_size * sizeof(T);
+        
+        if constexpr (is_arm_platform()) {
+          // ARM: Use safer memory copy approach for vectors
+          std::vector<T> result(vector_size);
+          std::memcpy(result.data(), data_ptr + buffer_offset, sizeof(T) * vector_size);
+          return result;
+        } else {
+          // x86/x64: Direct pointer construction is safe
+          T *first_ptr = reinterpret_cast<T *>(data_ptr + buffer_offset);
+          T *last_ptr = first_ptr + vector_size;
+          return std::vector<T>(first_ptr, last_ptr);
+        }
       }
 
       *is_success = true;
       current_reading_buffer = newest_buffer;
-      T *first_ptr = &((reinterpret_cast<T *>(ring_buffer->getDataList()))[newest_buffer * vector_size]);
-      T *last_ptr = &((reinterpret_cast<T *>(ring_buffer->getDataList()))[newest_buffer * vector_size + vector_size]);
-      return std::vector<T>(first_ptr, last_ptr);
+      
+      // Cross-platform aligned memory access for successful case
+      unsigned char* data_ptr = ring_buffer->getDataList();
+      size_t buffer_offset = newest_buffer * vector_size * sizeof(T);
+      
+      if constexpr (is_arm_platform()) {
+        // ARM: Use safer memory copy approach for vectors
+        std::vector<T> result(vector_size);
+        std::memcpy(result.data(), data_ptr + buffer_offset, sizeof(T) * vector_size);
+        return result;
+      } else {
+        // x86/x64: Direct pointer construction is safe
+        T *first_ptr = reinterpret_cast<T *>(data_ptr + buffer_offset);
+        T *last_ptr = first_ptr + vector_size;
+        return std::vector<T>(first_ptr, last_ptr);
+      }
     }
 
     template <typename T>

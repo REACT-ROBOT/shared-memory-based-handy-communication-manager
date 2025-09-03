@@ -60,8 +60,8 @@ namespace shm
   template<typename T>
   constexpr size_t get_alignment() {
     if constexpr (is_arm_platform()) {
-      // ARM requires strict alignment
-      return std::max(alignof(T), sizeof(void*));
+      // ARM requires strict alignment - use 8-byte minimum for safety
+      return std::max({alignof(T), sizeof(void*), static_cast<size_t>(8)});
     } else {
       // x86/x64 is more lenient
       return alignof(T);
@@ -77,6 +77,14 @@ namespace shm
     const size_t alignment = get_alignment<T>();
     const uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
     const uintptr_t aligned_addr = (addr + alignment - 1) & ~(alignment - 1);
+    
+    // Additional safety check for ARM
+    if constexpr (is_arm_platform()) {
+      if ((aligned_addr % alignment) != 0) {
+        throw std::runtime_error("ARM alignment failure: unable to align pointer properly");
+      }
+    }
+    
     return reinterpret_cast<T*>(aligned_addr);
   }
   
@@ -102,8 +110,20 @@ namespace shm
       return true;
     } else {
       // ARM: Strict alignment checking
+      if (ptr == nullptr) {
+        return false;
+      }
       const uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
-      return (addr % get_alignment<T>()) == 0;
+      const size_t alignment = get_alignment<T>();
+      bool aligned = (addr % alignment) == 0;
+      
+      // Additional check for double types on ARM
+      if constexpr (std::is_same_v<T, double> || sizeof(T) == sizeof(double)) {
+        // Ensure 8-byte alignment for double-sized types on ARM
+        aligned = aligned && (addr % 8) == 0;
+      }
+      
+      return aligned;
     }
   }
 

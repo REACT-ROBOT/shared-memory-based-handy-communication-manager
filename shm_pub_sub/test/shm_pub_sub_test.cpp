@@ -15,33 +15,86 @@
 TEST(SHMPubSubTest, BasicTest)
 {
   {
-    ClassTest test;
-    irlab::shm::Publisher<ClassTest> pub("/test");
-    irlab::shm::Subscriber<ClassTest> sub("/test");
+    // ARM debugging: Check platform
+    std::cout << "Running on " << (irlab::shm::is_arm_platform() ? "ARM" : "x86/x64") << " platform" << std::endl;
+    
+    // ARM debugging: Check alignment properties
+    std::cout << "ClassTest size: " << sizeof(ClassTest) << ", alignment: " << alignof(ClassTest) << std::endl;
+    std::cout << "Required alignment: " << irlab::shm::get_alignment<ClassTest>() << std::endl;
+    
+    try {
+      // Initialize ClassTest with ARM-compatible method
+      ClassTest test(1, 2, 3, 4, 5, 6, 7);
+      std::cout << "ClassTest initialized successfully" << std::endl;
+      
+      // First try with SimpleInt to test basic functionality
+      if constexpr (irlab::shm::is_arm_platform()) {
+        std::cout << "ARM: Testing with SimpleInt first..." << std::endl;
+        
+        try {
+          std::cout << "ARM: Creating SimpleInt Publisher with extra safety..." << std::endl;
+          std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Pre-creation delay
+          
+          irlab::shm::Publisher<SimpleInt> simple_pub("/arm_test_simple");
+          std::cout << "SimpleInt Publisher created successfully" << std::endl;
+          
+          // Additional delay for ARM initialization
+          std::this_thread::sleep_for(std::chrono::milliseconds(200));
+          
+          SimpleInt simple_data(42);
+          simple_pub.publish(simple_data);
+          std::cout << "SimpleInt published successfully" << std::endl;
+          
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          
+          irlab::shm::Subscriber<SimpleInt> simple_sub("/arm_test_simple");
+          std::cout << "SimpleInt Subscriber created successfully" << std::endl;
+          
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          
+          bool simple_success = false;
+          SimpleInt simple_result = simple_sub.subscribe(&simple_success);
+          std::cout << "SimpleInt subscribed: " << (simple_success ? "success" : "failed") << std::endl;
+          
+          irlab::shm::disconnectMemory("arm_test_simple");
+          
+        } catch (const std::exception& arm_e) {
+          std::cout << "ARM SimpleInt test failed: " << arm_e.what() << std::endl;
+          // Continue with main test anyway
+        }
+      }
+      
+      std::cout << "Creating Publisher..." << std::endl;
+      irlab::shm::Publisher<ClassTest> pub("/test");
+      std::cout << "Publisher created successfully" << std::endl;
+      
+      std::cout << "Creating Subscriber..." << std::endl;
+      irlab::shm::Subscriber<ClassTest> sub("/test");
+      std::cout << "Subscriber created successfully" << std::endl;
 
-    test.a = 1;
-    test.b = 2;
-    test.c[0] = 3;
-    test.c[1] = 4;
-    test.c[2] = 5;
-    test.c[3] = 6;
-    test.c[4] = 7;
+      std::cout << "Publishing data..." << std::endl;
+      pub.publish(test);
+      std::cout << "Data published successfully" << std::endl;
 
-    pub.publish(test);
+      std::cout << "Subscribing data..." << std::endl;
+      bool is_successed = false;
+      ClassTest result = sub.subscribe(&is_successed);
+      std::cout << "Data subscribed successfully" << std::endl;
 
-    bool is_successed = false;
-    ClassTest result = sub.subscribe(&is_successed);
-
-    EXPECT_EQ(is_successed, true);
-    EXPECT_EQ(result.a, 1);
-    EXPECT_EQ(result.b, 2);
-    EXPECT_EQ(result.c[0], 3);
-    EXPECT_EQ(result.c[1], 4);
-    EXPECT_EQ(result.c[2], 5);
-    EXPECT_EQ(result.c[3], 6);
-    EXPECT_EQ(result.c[4], 7);
+      EXPECT_EQ(is_successed, true);
+      EXPECT_EQ(result.a, 1);
+      EXPECT_EQ(result.b, 2);
+      EXPECT_EQ(result.c[0], 3);
+      EXPECT_EQ(result.c[1], 4);
+      EXPECT_EQ(result.c[2], 5);
+      EXPECT_EQ(result.c[3], 6);
+      EXPECT_EQ(result.c[4], 7);
+      
+    } catch (const std::exception& e) {
+      std::cout << "Exception caught: " << e.what() << std::endl;
+      FAIL() << "Exception: " << e.what();
+    }
   }
-
 
   irlab::shm::disconnectMemory("test");
 }
@@ -152,6 +205,7 @@ TEST(SHMPubSubTest, DifferentDataTypesTest)
 
 TEST(SHMPubSubTest, VectorTemplateTest)
 {
+  // Vector tests now enabled for ARM with proper alignment handling
   // Test with vector<SimpleInt> - basic functionality test
   {
     irlab::shm::Publisher<std::vector<SimpleInt>> pub("/test_int_vector");
@@ -543,6 +597,7 @@ TEST(SHMPubSubTest, ExtendedErrorHandlingTest)
 
 TEST(SHMPubSubTest, VectorMultiThreadTest)
 {
+  // Vector tests now enabled for ARM with proper alignment handling
   constexpr int NUM_MESSAGES = 50;
   constexpr int VECTOR_SIZE = 10;
   std::vector<bool> received(NUM_MESSAGES, false);
@@ -622,6 +677,7 @@ TEST(SHMPubSubTest, VectorMultiThreadTest)
 
 TEST(SHMPubSubTest, VectorTimeoutTest)
 {
+  // Vector tests now enabled for ARM with proper alignment handling
   irlab::shm::Publisher<std::vector<SimpleInt>> pub("/test_vector_timeout");
   irlab::shm::Subscriber<std::vector<SimpleInt>> sub("/test_vector_timeout");
 
@@ -654,6 +710,7 @@ TEST(SHMPubSubTest, VectorTimeoutTest)
 
 TEST(SHMPubSubTest, VectorErrorHandlingTest)
 {
+  // Vector tests now enabled for ARM with proper alignment handling
   // Test multiple publishers to same vector topic
   {
     irlab::shm::Publisher<std::vector<SimpleInt>> pub1("/test_vector_multi_pub");

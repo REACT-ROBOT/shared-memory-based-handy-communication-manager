@@ -232,12 +232,15 @@ Publisher<T>::publish(const T& data)
   size_t buffer_offset = oldest_buffer * sizeof(T);
   
   if constexpr (is_arm_platform()) {
+    // ARM: Use memcpy for safer memory access
     if (!irlab::shm::is_aligned<T>(data_ptr + buffer_offset))
     {
-      throw std::runtime_error("shm::Publisher: Data pointer not properly aligned for ARM processor");
+      // Use memcpy for unaligned access on ARM
+      std::memcpy(data_ptr + buffer_offset, &data, sizeof(T));
+    } else {
+      T* typed_ptr = irlab::shm::align_pointer<T>(data_ptr + buffer_offset);
+      *typed_ptr = data;
     }
-    T* typed_ptr = irlab::shm::align_pointer<T>(data_ptr + buffer_offset);
-    *typed_ptr = data;
   } else {
     // x86/x64: Direct cast is safe
     T* typed_ptr = reinterpret_cast<T*>(data_ptr + buffer_offset);
@@ -355,12 +358,17 @@ Subscriber<T>::subscribe(bool *is_success)
     *is_success = false;
     
     if constexpr (is_arm_platform()) {
+      // ARM: Use safer memory copy approach
+      T result;
       if (!irlab::shm::is_aligned<T>(data_ptr + buffer_offset))
       {
-        return T();
+        // Use memcpy for unaligned access on ARM
+        std::memcpy(&result, data_ptr + buffer_offset, sizeof(T));
+      } else {
+        T* typed_ptr = irlab::shm::align_pointer<T>(data_ptr + buffer_offset);
+        result = *typed_ptr;
       }
-      T* typed_ptr = irlab::shm::align_pointer<T>(data_ptr + buffer_offset);
-      return *typed_ptr;
+      return result;
     } else {
       // x86/x64: Direct cast is safe
       T* typed_ptr = reinterpret_cast<T*>(data_ptr + buffer_offset);
@@ -375,13 +383,17 @@ Subscriber<T>::subscribe(bool *is_success)
   current_reading_buffer = newest_buffer;
   
   if constexpr (is_arm_platform()) {
+    // ARM: Use safer memory copy approach
+    T result;
     if (!irlab::shm::is_aligned<T>(data_ptr + buffer_offset))
     {
-      *is_success = false;
-      return T();
+      // Use memcpy for unaligned access on ARM
+      std::memcpy(&result, data_ptr + buffer_offset, sizeof(T));
+    } else {
+      T* typed_ptr = irlab::shm::align_pointer<T>(data_ptr + buffer_offset);
+      result = *typed_ptr;
     }
-    T* typed_ptr = irlab::shm::align_pointer<T>(data_ptr + buffer_offset);
-    return *typed_ptr;
+    return result;
   } else {
     // x86/x64: Direct cast is safe
     T* typed_ptr = reinterpret_cast<T*>(data_ptr + buffer_offset);
