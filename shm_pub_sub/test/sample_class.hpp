@@ -92,15 +92,18 @@ struct SimpleDouble
   }
 };
 
-struct ComplexStruct
+// ARM-safe aligned structure
+struct alignas(8) ComplexStruct
 {
-  int id;
-  float position[3];
-  double timestamp;
-  bool active;
+  int id;                    // 4 bytes
+  float position[3];         // 12 bytes
+  double timestamp;          // 8 bytes (requires 8-byte alignment on ARM)
+  bool active;               // 1 byte
+  char padding[3];           // Explicit padding to ensure 8-byte alignment
   
   ComplexStruct() : id(0), timestamp(0.0), active(false) {
     position[0] = position[1] = position[2] = 0.0f;
+    padding[0] = padding[1] = padding[2] = 0; // Initialize padding
   }
   
   bool operator==(const ComplexStruct& other) const {
@@ -112,5 +115,13 @@ struct ComplexStruct
            active == other.active;
   }
 };
+
+// Compile-time verification for ARM compatibility
+static_assert(sizeof(ComplexStruct) % 8 == 0, 
+              "ComplexStruct must be 8-byte aligned for ARM processors");
+static_assert(std::is_standard_layout<ComplexStruct>::value, 
+              "ComplexStruct must be standard layout for shared memory");
+static_assert(std::is_trivially_copyable<ComplexStruct>::value, 
+              "ComplexStruct must be trivially copyable for shared memory");
 
 #endif //__COMMON_H__

@@ -17,6 +17,8 @@
 #include <stdexcept>
 #include <mutex>
 #include <atomic>
+#include <cstdint>
+#include <type_traits>
 extern "C" {
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -34,6 +36,77 @@ namespace irlab
 
 namespace shm
 {
+  // ****************************************************************************
+  // Cross-platform alignment utilities
+  // クロスプラットフォーム対応アライメントユーティリティ
+  // ****************************************************************************
+  
+  /*!
+   * \~english     Platform detection
+   * \~japanese-en プラットフォーム検出
+   */
+  constexpr bool is_arm_platform() {
+#if defined(__ARM_ARCH) || defined(__aarch64__) || defined(_M_ARM) || defined(_M_ARM64)
+    return true;
+#else
+    return false;
+#endif
+  }
+  
+  /*!
+   * \~english     Get required alignment for type T
+   * \~japanese-en 型Tに必要なアライメントを取得
+   */
+  template<typename T>
+  constexpr size_t get_alignment() {
+    if constexpr (is_arm_platform()) {
+      // ARM requires strict alignment
+      return std::max(alignof(T), sizeof(void*));
+    } else {
+      // x86/x64 is more lenient
+      return alignof(T);
+    }
+  }
+  
+  /*!
+   * \~english     Align pointer to required boundary
+   * \~japanese-en ポインタを必要な境界にアライン
+   */
+  template<typename T>
+  inline T* align_pointer(void* ptr) {
+    const size_t alignment = get_alignment<T>();
+    const uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
+    const uintptr_t aligned_addr = (addr + alignment - 1) & ~(alignment - 1);
+    return reinterpret_cast<T*>(aligned_addr);
+  }
+  
+  /*!
+   * \~english     Calculate aligned size for type T
+   * \~japanese-en 型Tのアライン済みサイズを計算
+   */
+  template<typename T>
+  constexpr size_t get_aligned_size(size_t count = 1) {
+    const size_t alignment = get_alignment<T>();
+    const size_t size = sizeof(T) * count;
+    return (size + alignment - 1) & ~(alignment - 1);
+  }
+  
+  /*!
+   * \~english     Check if pointer is properly aligned for type T
+   * \~japanese-en ポインタが型Tに対して適切にアライメントされているかチェック
+   */
+  template<typename T>
+  inline bool is_aligned(const void* ptr) {
+    if constexpr (!is_arm_platform()) {
+      // x86/x64: Always return true for compatibility
+      return true;
+    } else {
+      // ARM: Strict alignment checking
+      const uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
+      return (addr % get_alignment<T>()) == 0;
+    }
+  }
+
   /*!
    * \~english     Permissions for shared memory
    * \~japanese-en 共有メモリに付与する権限を表す
@@ -139,6 +212,10 @@ public:
   static size_t getSize(size_t element_size, int buffer_num);
   static bool checkInitialized(unsigned char* first_ptr);
   static bool waitForInitialization(unsigned char* first_ptr, uint64_t timeout_usec);
+  static size_t calculateAlignedLayout(size_t element_size, int buffer_num, 
+                                       size_t& mutex_offset, size_t& cond_offset,
+                                       size_t& element_size_offset, size_t& buf_num_offset,
+                                       size_t& timestamp_offset, size_t& data_offset);
 
   RingBuffer(unsigned char* first_ptr, size_t size = 0, int buffer_num = 0);
   ~RingBuffer();
@@ -158,10 +235,13 @@ public:
   
 private:
   void initializeExclusiveAccess();
+  void initializeAlignedPointers();
+  bool waitForPthreadInitialization(uint64_t timeout_usec);
   
   unsigned char *memory_ptr;
   
   std::atomic<uint32_t> *initialization_flag;
+  std::atomic<uint32_t> *pthread_init_flag;
   pthread_mutex_t *mutex;
   pthread_cond_t *condition;
   size_t *element_size;
@@ -174,6 +254,8 @@ private:
   
   static constexpr uint32_t INITIALIZED = 1;
   static constexpr uint32_t NOT_INITIALIZED = 0;
+  static constexpr uint32_t PTHREAD_INITIALIZED = 1;
+  static constexpr uint32_t PTHREAD_NOT_INITIALIZED = 0;
 };
 
 }

@@ -145,9 +145,24 @@ Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm)
 , ring_buffer(nullptr)
 , data_size(sizeof(T))
 {
+  // Enhanced type checking for shared memory compatibility
   if (!std::is_standard_layout<T>::value)
   {
-    throw std::runtime_error("shm::Publisher: Be setted not POD class!");
+    throw std::runtime_error("shm::Publisher: Type must have standard layout for shared memory!");
+  }
+  
+  // Only enforce strict requirements on ARM platforms
+  if constexpr (is_arm_platform()) {
+    if (!std::is_trivially_copyable<T>::value)
+    {
+      throw std::runtime_error("shm::Publisher: Type must be trivially copyable for ARM compatibility!");
+    }
+    
+    // Check alignment requirements for ARM processors
+    if (get_alignment<T>() > alignof(::max_align_t))
+    {
+      throw std::runtime_error("shm::Publisher: Type requires alignment beyond max_align_t on ARM!");
+    }
   }
 
   if (name.empty())
@@ -166,8 +181,21 @@ Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm)
 
     ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr(), sizeof(T), shm_buf_num);
     
-    // Small delay to ensure initialization is complete before releasing lock
-    std::this_thread::sleep_for(std::chrono::microseconds(100));
+    // Enhanced initialization synchronization for ARM processors
+    // Wait for pthread structures to be properly initialized
+    auto start_time = std::chrono::steady_clock::now();
+    const auto timeout = std::chrono::milliseconds(1000); // 1 second timeout
+    
+    while (std::chrono::steady_clock::now() - start_time < timeout) {
+      if (RingBuffer::checkInitialized(shared_memory->getPtr())) {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+    
+    if (!RingBuffer::checkInitialized(shared_memory->getPtr())) {
+      throw std::runtime_error("shm::Publisher: RingBuffer initialization timeout");
+    }
     
   } catch (const std::runtime_error& e) {
     throw std::runtime_error("shm::Publisher: " + std::string(e.what()));
@@ -199,7 +227,22 @@ Publisher<T>::publish(const T& data)
     oldest_buffer = ring_buffer->getOldestBufferNum();
   }
 
-  (reinterpret_cast<T *>(ring_buffer->getDataList()))[oldest_buffer] = data;
+  // Cross-platform aligned memory access
+  unsigned char* data_ptr = ring_buffer->getDataList();
+  size_t buffer_offset = oldest_buffer * sizeof(T);
+  
+  if constexpr (is_arm_platform()) {
+    if (!irlab::shm::is_aligned<T>(data_ptr + buffer_offset))
+    {
+      throw std::runtime_error("shm::Publisher: Data pointer not properly aligned for ARM processor");
+    }
+    T* typed_ptr = irlab::shm::align_pointer<T>(data_ptr + buffer_offset);
+    *typed_ptr = data;
+  } else {
+    // x86/x64: Direct cast is safe
+    T* typed_ptr = reinterpret_cast<T*>(data_ptr + buffer_offset);
+    *typed_ptr = data;
+  }
 
   struct timespec t;
   clock_gettime(CLOCK_MONOTONIC_RAW, &t);
@@ -225,9 +268,24 @@ Subscriber<T>::Subscriber(std::string name)
 , current_reading_buffer(0)
 , data_expiry_time_us(2000000)
 {
+  // Enhanced type checking for shared memory compatibility
   if (!std::is_standard_layout<T>::value)
   {
-    throw std::runtime_error("shm::Subscriber: Be setted not POD class!");
+    throw std::runtime_error("shm::Subscriber: Type must have standard layout for shared memory!");
+  }
+  
+  // Only enforce strict requirements on ARM platforms
+  if constexpr (is_arm_platform()) {
+    if (!std::is_trivially_copyable<T>::value)
+    {
+      throw std::runtime_error("shm::Subscriber: Type must be trivially copyable for ARM compatibility!");
+    }
+    
+    // Check alignment requirements for ARM processors
+    if (get_alignment<T>() > alignof(::max_align_t))
+    {
+      throw std::runtime_error("shm::Subscriber: Type requires alignment beyond max_align_t on ARM!");
+    }
   }
 
   if (name.empty())
@@ -290,12 +348,45 @@ Subscriber<T>::subscribe(bool *is_success)
   int newest_buffer = ring_buffer->getNewestBufferNum();
   if (newest_buffer < 0)
   {
+    // Cross-platform aligned memory access for fallback case
+    unsigned char* data_ptr = ring_buffer->getDataList();
+    size_t buffer_offset = current_reading_buffer * sizeof(T);
+    
     *is_success = false;
-    return (reinterpret_cast<T*>(ring_buffer->getDataList()))[current_reading_buffer];
+    
+    if constexpr (is_arm_platform()) {
+      if (!irlab::shm::is_aligned<T>(data_ptr + buffer_offset))
+      {
+        return T();
+      }
+      T* typed_ptr = irlab::shm::align_pointer<T>(data_ptr + buffer_offset);
+      return *typed_ptr;
+    } else {
+      // x86/x64: Direct cast is safe
+      T* typed_ptr = reinterpret_cast<T*>(data_ptr + buffer_offset);
+      return *typed_ptr;
+    }
   }
+  // Cross-platform aligned memory access
+  unsigned char* data_ptr = ring_buffer->getDataList();
+  size_t buffer_offset = newest_buffer * sizeof(T);
+  
   *is_success = true;
   current_reading_buffer = newest_buffer;
-  return (reinterpret_cast<T*>(ring_buffer->getDataList()))[current_reading_buffer];
+  
+  if constexpr (is_arm_platform()) {
+    if (!irlab::shm::is_aligned<T>(data_ptr + buffer_offset))
+    {
+      *is_success = false;
+      return T();
+    }
+    T* typed_ptr = irlab::shm::align_pointer<T>(data_ptr + buffer_offset);
+    return *typed_ptr;
+  } else {
+    // x86/x64: Direct cast is safe
+    T* typed_ptr = reinterpret_cast<T*>(data_ptr + buffer_offset);
+    return *typed_ptr;
+  }
 }
 
 
