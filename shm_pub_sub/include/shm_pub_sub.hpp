@@ -23,6 +23,8 @@
 #include <mutex>
 #include <chrono>
 #include <thread>
+#include <cstdint>
+#include <type_traits>
 extern "C" {
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -145,6 +147,9 @@ Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm)
 , ring_buffer(nullptr)
 , data_size(sizeof(T))
 {
+  // アライメントチェックを追加
+  static_assert(alignof(T) <= 8, "Type alignment must be <= 8 bytes for shared memory compatibility");
+  
   if (!std::is_standard_layout<T>::value)
   {
     throw std::runtime_error("shm::Publisher: Be setted not POD class!");
@@ -164,10 +169,27 @@ Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm)
       throw std::runtime_error("shm::Publisher: Cannot get memory!");
     }
 
+    // メモリポインタの有効性チェックを強化
+    void* mem_ptr = shared_memory->getPtr();
+    if (mem_ptr == nullptr) {
+      throw std::runtime_error("shm::Publisher: Shared memory pointer is null!");
+    }
+    
+    // アライメントチェック
+    if (reinterpret_cast<uintptr_t>(mem_ptr) % alignof(std::max_align_t) != 0) {
+      throw std::runtime_error("shm::Publisher: Shared memory is not properly aligned!");
+    }
+
     ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr(), sizeof(T), shm_buf_num);
     
-    // Small delay to ensure initialization is complete before releasing lock
+    // 初期化完了まで待機
     std::this_thread::sleep_for(std::chrono::microseconds(100));
+    
+    // データリストポインタの有効性確認
+    void* data_list = ring_buffer->getDataList();
+    if (data_list == nullptr) {
+      throw std::runtime_error("shm::Publisher: Ring buffer data list is null!");
+    }
     
   } catch (const std::runtime_error& e) {
     throw std::runtime_error("shm::Publisher: " + std::string(e.what()));
@@ -188,6 +210,10 @@ template <typename T>
 void
 Publisher<T>::publish(const T& data)
 {
+  if (!ring_buffer || !shared_memory || shared_memory->isDisconnected()) {
+    throw std::runtime_error("shm::Publisher: Not connected to shared memory!");
+  }
+  
   int oldest_buffer = ring_buffer->getOldestBufferNum();
   for (size_t i = 0; i < 10; i++)
   {
@@ -199,7 +225,24 @@ Publisher<T>::publish(const T& data)
     oldest_buffer = ring_buffer->getOldestBufferNum();
   }
 
-  (reinterpret_cast<T *>(ring_buffer->getDataList()))[oldest_buffer] = data;
+  // バッファ番号の範囲チェック
+  if (oldest_buffer < 0 || oldest_buffer >= shm_buf_num) {
+    throw std::runtime_error("shm::Publisher: Invalid buffer number!");
+  }
+
+  // データリストの有効性チェック
+  void* data_list_ptr = ring_buffer->getDataList();
+  if (data_list_ptr == nullptr) {
+    throw std::runtime_error("shm::Publisher: Data list pointer is null!");
+  }
+
+  // 安全なキャストとコピー
+  T* typed_data_list = reinterpret_cast<T*>(data_list_ptr);
+  try {
+    typed_data_list[oldest_buffer] = data;
+  } catch (const std::exception& e) {
+    throw std::runtime_error("shm::Publisher: Failed to write data - " + std::string(e.what()));
+  }
 
   struct timespec t;
   clock_gettime(CLOCK_MONOTONIC_RAW, &t);
@@ -225,6 +268,9 @@ Subscriber<T>::Subscriber(std::string name)
 , current_reading_buffer(0)
 , data_expiry_time_us(2000000)
 {
+  // アライメントチェック
+  static_assert(alignof(T) <= 8, "Type alignment must be <= 8 bytes for shared memory compatibility");
+  
   if (!std::is_standard_layout<T>::value)
   {
     throw std::runtime_error("shm::Subscriber: Be setted not POD class!");
@@ -269,17 +315,33 @@ Subscriber<T>::subscribe(bool *is_success)
       return T();
     }
     try {
-      if (shared_memory->getPtr() == nullptr) {
+      void* mem_ptr = shared_memory->getPtr();
+      if (mem_ptr == nullptr) {
         *is_success = false;
         return T();
       }
-      // Wait for initialization to complete
+      
+      // アライメントチェック
+      if (reinterpret_cast<uintptr_t>(mem_ptr) % alignof(std::max_align_t) != 0) {
+        *is_success = false;
+        return T();
+      }
+      
+      // 初期化完了まで待機（タイムアウト時間を増加）
       if (!RingBuffer::waitForInitialization(shared_memory->getPtr(), 500000)) { // 500ms timeout (increased)
         *is_success = false;
         return T();
       }
       ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
-    } catch (const std::bad_alloc& e)
+      
+      // データリストの有効性確認
+      void* data_list = ring_buffer->getDataList();
+      if (data_list == nullptr) {
+        *is_success = false;
+        return T();
+      }
+      
+    } catch (const std::exception& e)
     {
       *is_success = false;
       return T();
@@ -291,11 +353,27 @@ Subscriber<T>::subscribe(bool *is_success)
   if (newest_buffer < 0)
   {
     *is_success = false;
-    return (reinterpret_cast<T*>(ring_buffer->getDataList()))[current_reading_buffer];
+    // 現在のバッファ番号の範囲チェック
+    if (current_reading_buffer < 0) {
+      return T();
+    }
+    void* data_list_ptr = ring_buffer->getDataList();
+    if (data_list_ptr == nullptr) {
+      return T();
+    }
+    return (reinterpret_cast<T*>(data_list_ptr))[current_reading_buffer];
   }
+  
   *is_success = true;
   current_reading_buffer = newest_buffer;
-  return (reinterpret_cast<T*>(ring_buffer->getDataList()))[current_reading_buffer];
+  
+  void* data_list_ptr = ring_buffer->getDataList();
+  if (data_list_ptr == nullptr) {
+    *is_success = false;
+    return T();
+  }
+  
+  return (reinterpret_cast<T*>(data_list_ptr))[current_reading_buffer];
 }
 
 
@@ -315,12 +393,27 @@ Subscriber<T>::waitFor(uint64_t timeout_usec)
       return false;
     }
     
+    // メモリポインタの有効性チェック
+    void* mem_ptr = shared_memory->getPtr();
+    if (mem_ptr == nullptr) {
+      return false;
+    }
+    
+    // アライメントチェック
+    if (reinterpret_cast<uintptr_t>(mem_ptr) % alignof(std::max_align_t) != 0) {
+      return false;
+    }
+    
     // Wait for initialization to complete
     if (!RingBuffer::waitForInitialization(shared_memory->getPtr(), 500000)) { // 500ms timeout (increased)
       return false;
     }
 
-    ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
+    try {
+      ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
+    } catch (const std::exception& e) {
+      return false;
+    }
     ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
   }
 
