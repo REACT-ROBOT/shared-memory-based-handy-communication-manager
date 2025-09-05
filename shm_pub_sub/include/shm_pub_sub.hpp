@@ -18,6 +18,7 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <cstring>
 #include <regex>
 #include <stdexcept>
 #include <mutex>
