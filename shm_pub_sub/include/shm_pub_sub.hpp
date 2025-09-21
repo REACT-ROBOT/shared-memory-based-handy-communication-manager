@@ -106,8 +106,8 @@ public:
 
   // ムーブコンストラクタ：ポインタを奪い、元を nullptr に
   Subscriber(Subscriber&& other) noexcept = default;
-  
-  const T subscribe(bool *state);
+
+  const T& subscribe(bool *state);
   bool waitFor(uint64_t timeout_usec);
   void setDataExpiryTime_us(uint64_t time_us);
   
@@ -117,6 +117,7 @@ private:
   std::unique_ptr<RingBuffer> ring_buffer;
   int current_reading_buffer;
   uint64_t data_expiry_time_us;
+  T return_buffer_;
 };
 
 // ****************************************************************************
@@ -271,6 +272,7 @@ Subscriber<T>::Subscriber(std::string name)
 , ring_buffer(nullptr)
 , current_reading_buffer(0)
 , data_expiry_time_us(2000000)
+, return_buffer_()
 {
   // Enhanced type checking for shared memory compatibility
   if (!std::is_standard_layout<T>::value)
@@ -315,7 +317,7 @@ Subscriber<T>::Subscriber(std::string name)
 //!                  \~japanese-en タイムスタンプが最も新しいトピックを読み込む．
 //!                  \~japanese-en 後々可変長なクラスに拡張できるように、メモリへの直接的な参照を返すので、コピーコンストラクタや代入によってデータを複製することを推奨する．
 template <typename T>
-const T
+const T&
 Subscriber<T>::subscribe(bool *is_success)
 {
   if (shared_memory->isDisconnected())
@@ -328,23 +330,23 @@ Subscriber<T>::subscribe(bool *is_success)
     if (shared_memory->isDisconnected())
     {
       *is_success = false;
-      return T();
+      return return_buffer_;
     }
     try {
       if (shared_memory->getPtr() == nullptr) {
         *is_success = false;
-        return T();
+        return return_buffer_;
       }
       // Wait for initialization to complete
       if (!RingBuffer::waitForInitialization(shared_memory->getPtr(), 500000)) { // 500ms timeout (increased)
         *is_success = false;
-        return T();
+        return return_buffer_;
       }
       ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
     } catch (const std::bad_alloc& e)
     {
       *is_success = false;
-      return T();
+      return return_buffer_;
     }
     ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
   }
@@ -352,29 +354,8 @@ Subscriber<T>::subscribe(bool *is_success)
   int newest_buffer = ring_buffer->getNewestBufferNum();
   if (newest_buffer < 0)
   {
-    // Cross-platform aligned memory access for fallback case
-    unsigned char* data_ptr = ring_buffer->getDataList();
-    size_t buffer_offset = current_reading_buffer * sizeof(T);
-    
     *is_success = false;
-    
-    if constexpr (is_arm_platform()) {
-      // ARM: Use safer memory copy approach
-      T result;
-      if (!irlab::shm::is_aligned<T>(data_ptr + buffer_offset))
-      {
-        // Use memcpy for unaligned access on ARM
-        std::memcpy(&result, data_ptr + buffer_offset, sizeof(T));
-      } else {
-        T* typed_ptr = irlab::shm::align_pointer<T>(data_ptr + buffer_offset);
-        result = *typed_ptr;
-      }
-      return result;
-    } else {
-      // x86/x64: Direct cast is safe
-      T* typed_ptr = reinterpret_cast<T*>(data_ptr + buffer_offset);
-      return *typed_ptr;
-    }
+    return return_buffer_;
   }
   // Cross-platform aligned memory access
   unsigned char* data_ptr = ring_buffer->getDataList();
@@ -385,20 +366,20 @@ Subscriber<T>::subscribe(bool *is_success)
   
   if constexpr (is_arm_platform()) {
     // ARM: Use safer memory copy approach
-    T result;
     if (!irlab::shm::is_aligned<T>(data_ptr + buffer_offset))
     {
       // Use memcpy for unaligned access on ARM
-      std::memcpy(&result, data_ptr + buffer_offset, sizeof(T));
+      std::memcpy(&return_buffer_, data_ptr + buffer_offset, sizeof(T));
     } else {
       T* typed_ptr = irlab::shm::align_pointer<T>(data_ptr + buffer_offset);
-      result = *typed_ptr;
+      return_buffer_ = *typed_ptr;
     }
-    return result;
+    return return_buffer_;
   } else {
     // x86/x64: Direct cast is safe
     T* typed_ptr = reinterpret_cast<T*>(data_ptr + buffer_offset);
-    return *typed_ptr;
+    return_buffer_ = *typed_ptr;
+    return return_buffer_;
   }
 }
 

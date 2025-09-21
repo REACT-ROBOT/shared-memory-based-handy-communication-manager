@@ -74,7 +74,7 @@ namespace irlab
       Subscriber(std::string name = "");
       ~Subscriber() = default;
 
-      const std::vector<T> subscribe(bool *is_success);
+      const std::vector<T>& subscribe(bool *is_success);
       bool waitFor(uint64_t timeout_usec);
       void setDataExpiryTime_us(uint64_t time_us);
 
@@ -86,6 +86,7 @@ namespace irlab
       uint64_t data_expiry_time_us;
 
       size_t vector_size;
+      std::vector<T> return_buffer_;
     };
 
     // ****************************************************************************
@@ -185,7 +186,7 @@ namespace irlab
     //! @details 共有メモリへのアクセスを行う．
     template <typename T>
     Subscriber<std::vector<T>>::Subscriber(std::string name)
-        : shm_name(name), shared_memory(nullptr), ring_buffer(nullptr), current_reading_buffer(0), data_expiry_time_us(2000000)
+        : shm_name(name), shared_memory(nullptr), ring_buffer(nullptr), current_reading_buffer(0), data_expiry_time_us(2000000), return_buffer_(0)
     {
       if (!std::is_standard_layout<T>::value)
       {
@@ -200,7 +201,7 @@ namespace irlab
     //! @details タイムスタンプが最も新しいトピックを読み込む．
     //! 後々可変長なクラスに拡張できるように、メモリへの直接的な参照を返すので、コピーコンストラクタや代入によってデータを複製することを推奨する．
     template <typename T>
-    const std::vector<T>
+    const std::vector<T>&
     Subscriber<std::vector<T>>::subscribe(bool *is_success)
     {
       if (shared_memory == nullptr || shared_memory->isDisconnected())
@@ -209,37 +210,23 @@ namespace irlab
         if (shared_memory->isDisconnected())
         {
           *is_success = false;
-          return std::vector<T>(0);
+          return return_buffer_;
         }
         // Wait for initialization to complete
         if (!RingBuffer::waitForInitialization(shared_memory->getPtr(), 500000)) { // 500ms timeout (increased)
           *is_success = false;
-          return std::vector<T>(0);
+          return return_buffer_;
         }
         ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
         size_t element_size = ring_buffer->getElementSize();
         vector_size = element_size / sizeof(T);
+        return_buffer_.resize(vector_size);
       }
       int newest_buffer = ring_buffer->getNewestBufferNum();
       if (newest_buffer < 0)
       {
         *is_success = false;
-        
-        // Cross-platform aligned memory access for fallback case
-        unsigned char* data_ptr = ring_buffer->getDataList();
-        size_t buffer_offset = current_reading_buffer * vector_size * sizeof(T);
-        
-        if constexpr (is_arm_platform()) {
-          // ARM: Use safer memory copy approach for vectors
-          std::vector<T> result(vector_size);
-          std::memcpy(result.data(), data_ptr + buffer_offset, sizeof(T) * vector_size);
-          return result;
-        } else {
-          // x86/x64: Direct pointer construction is safe
-          T *first_ptr = reinterpret_cast<T *>(data_ptr + buffer_offset);
-          T *last_ptr = first_ptr + vector_size;
-          return std::vector<T>(first_ptr, last_ptr);
-        }
+        return return_buffer_;
       }
 
       *is_success = true;
@@ -251,14 +238,13 @@ namespace irlab
       
       if constexpr (is_arm_platform()) {
         // ARM: Use safer memory copy approach for vectors
-        std::vector<T> result(vector_size);
-        std::memcpy(result.data(), data_ptr + buffer_offset, sizeof(T) * vector_size);
-        return result;
+        std::memcpy(return_buffer_.data(), data_ptr + buffer_offset, sizeof(T) * vector_size);
+        return return_buffer_;
       } else {
         // x86/x64: Direct pointer construction is safe
         T *first_ptr = reinterpret_cast<T *>(data_ptr + buffer_offset);
-        T *last_ptr = first_ptr + vector_size;
-        return std::vector<T>(first_ptr, last_ptr);
+        std::memcpy(return_buffer_.data(), first_ptr, sizeof(T) * vector_size);
+        return return_buffer_;
       }
     }
 
