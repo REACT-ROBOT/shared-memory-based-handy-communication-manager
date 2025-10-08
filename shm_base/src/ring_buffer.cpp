@@ -15,79 +15,81 @@ RingBuffer::getSize(size_t element_size, int buffer_num)
 {
   // Use aligned layout calculation for accurate size
   size_t mutex_offset, cond_offset, element_size_offset, buf_num_offset, timestamp_offset, data_offset;
-  return calculateAlignedLayout(element_size, buffer_num, mutex_offset, cond_offset,
-                               element_size_offset, buf_num_offset, timestamp_offset, data_offset);
+  return calculateAlignedLayout(element_size, buffer_num, mutex_offset, cond_offset, element_size_offset,
+                                buf_num_offset, timestamp_offset, data_offset);
 }
 
 bool
-RingBuffer::checkInitialized(unsigned char* first_ptr)
+RingBuffer::checkInitialized(unsigned char *first_ptr)
 {
   if (first_ptr == nullptr)
   {
     return false;
   }
 
-  std::atomic<uint32_t> *initialization_flag =
-    reinterpret_cast<std::atomic<uint32_t> *>(first_ptr);
+  std::atomic<uint32_t> *initialization_flag = reinterpret_cast<std::atomic<uint32_t> *>(first_ptr);
   return (initialization_flag->load(std::memory_order_relaxed) == RingBuffer::INITIALIZED);
 }
 
 bool
-RingBuffer::waitForInitialization(unsigned char* first_ptr, uint64_t timeout_usec)
+RingBuffer::waitForInitialization(unsigned char *first_ptr, uint64_t timeout_usec)
 {
-  auto start_time = std::chrono::steady_clock::now();
+  auto start_time       = std::chrono::steady_clock::now();
   auto timeout_duration = std::chrono::microseconds(timeout_usec);
-  
-  while (!RingBuffer::checkInitialized(first_ptr)) {
+
+  while (!RingBuffer::checkInitialized(first_ptr))
+  {
     auto current_time = std::chrono::steady_clock::now();
-    if (current_time - start_time >= timeout_duration) {
+    if (current_time - start_time >= timeout_duration)
+    {
       return false;
     }
-    std::this_thread::sleep_for(std::chrono::microseconds(50)); // Reduced wait interval for faster response
+    std::this_thread::sleep_for(std::chrono::microseconds(50));  // Reduced wait interval for faster response
   }
-  
+
   return true;
 }
 
 size_t
-RingBuffer::calculateAlignedLayout(size_t element_size, int buffer_num, 
-                                   size_t& mutex_offset, size_t& cond_offset,
-                                   size_t& element_size_offset, size_t& buf_num_offset,
-                                   size_t& timestamp_offset, size_t& data_offset)
+RingBuffer::calculateAlignedLayout(size_t element_size, int buffer_num, size_t &mutex_offset, size_t &cond_offset,
+                                   size_t &element_size_offset, size_t &buf_num_offset, size_t &timestamp_offset,
+                                   size_t &data_offset)
 {
   size_t current_offset = 0;
-  
+
   // 1. initialization_flag (std::atomic<uint32_t>) - starts at beginning
   current_offset = 0;
-  
-  // 2. pthread_init_flag (std::atomic<uint32_t>) - aligned to 8 bytes for ARM  
+
+  // 2. pthread_init_flag (std::atomic<uint32_t>) - aligned to 8 bytes for ARM
   current_offset += get_aligned_size<std::atomic<uint32_t>>(1);
-  
+
   // 3. mutex (pthread_mutex_t) - aligned to 8 bytes for ARM
-  mutex_offset = (current_offset + get_alignment<pthread_mutex_t>() - 1) & ~(get_alignment<pthread_mutex_t>() - 1);
+  mutex_offset   = (current_offset + get_alignment<pthread_mutex_t>() - 1) & ~(get_alignment<pthread_mutex_t>() - 1);
   current_offset = mutex_offset + sizeof(pthread_mutex_t);
-  
+
   // 4. condition (pthread_cond_t) - aligned to 8 bytes for ARM
-  cond_offset = (current_offset + get_alignment<pthread_cond_t>() - 1) & ~(get_alignment<pthread_cond_t>() - 1);
+  cond_offset    = (current_offset + get_alignment<pthread_cond_t>() - 1) & ~(get_alignment<pthread_cond_t>() - 1);
   current_offset = cond_offset + sizeof(pthread_cond_t);
-  
+
   // 5. element_size (size_t) - aligned to 8 bytes for ARM
   element_size_offset = (current_offset + get_alignment<size_t>() - 1) & ~(get_alignment<size_t>() - 1);
-  current_offset = element_size_offset + sizeof(size_t);
-  
+  current_offset      = element_size_offset + sizeof(size_t);
+
   // 6. buf_num (size_t) - aligned to 8 bytes for ARM
   buf_num_offset = (current_offset + get_alignment<size_t>() - 1) & ~(get_alignment<size_t>() - 1);
   current_offset = buf_num_offset + sizeof(size_t);
-  
+
   // 7. timestamp_list (std::atomic<uint64_t> * buffer_num) - aligned to 8 bytes for ARM
-  timestamp_offset = (current_offset + get_alignment<std::atomic<uint64_t>>() - 1) & ~(get_alignment<std::atomic<uint64_t>>() - 1);
+  timestamp_offset =
+      (current_offset + get_alignment<std::atomic<uint64_t>>() - 1) & ~(get_alignment<std::atomic<uint64_t>>() - 1);
   current_offset = timestamp_offset + sizeof(std::atomic<uint64_t>) * buffer_num;
-  
+
   // 8. data_list (aligned for element type) - use maximum alignment for safety
-  const size_t data_alignment = std::max(get_alignment<uint64_t>(), static_cast<size_t>(8)); // At least 8-byte aligned on ARM
-  data_offset = (current_offset + data_alignment - 1) & ~(data_alignment - 1);
+  const size_t data_alignment =
+      std::max(get_alignment<uint64_t>(), static_cast<size_t>(8));  // At least 8-byte aligned on ARM
+  data_offset    = (current_offset + data_alignment - 1) & ~(data_alignment - 1);
   current_offset = data_offset + element_size * buffer_num;
-  
+
   return current_offset;
 }
 
@@ -102,30 +104,37 @@ RingBuffer::RingBuffer(unsigned char *first_ptr, size_t size, int buffer_num)
 {
   // Use aligned layout calculation for ARM compatibility
   size_t mutex_offset, cond_offset, element_size_offset, buf_num_offset, timestamp_offset, data_offset;
-  
-  if (buffer_num != 0 && size != 0) {
+
+  if (buffer_num != 0 && size != 0)
+  {
     // Calculate aligned layout for new buffer creation
-    calculateAlignedLayout(size, buffer_num, mutex_offset, cond_offset,
-                          element_size_offset, buf_num_offset, timestamp_offset, data_offset);
-  } else {
+    calculateAlignedLayout(size, buffer_num, mutex_offset, cond_offset, element_size_offset, buf_num_offset,
+                           timestamp_offset, data_offset);
+  }
+  else
+  {
     // Reading existing buffer - need to extract parameters first
-    element_size = reinterpret_cast<size_t *>(memory_ptr + sizeof(std::atomic<uint32_t>) + sizeof(std::atomic<uint32_t>) + sizeof(pthread_mutex_t) + sizeof(pthread_cond_t));
-    buf_num = reinterpret_cast<size_t *>(memory_ptr + sizeof(std::atomic<uint32_t>) + sizeof(std::atomic<uint32_t>) + sizeof(pthread_mutex_t) + sizeof(pthread_cond_t) + sizeof(size_t));
-    
+    element_size =
+        reinterpret_cast<size_t *>(memory_ptr + sizeof(std::atomic<uint32_t>) + sizeof(std::atomic<uint32_t>) +
+                                   sizeof(pthread_mutex_t) + sizeof(pthread_cond_t));
+    buf_num = reinterpret_cast<size_t *>(memory_ptr + sizeof(std::atomic<uint32_t>) + sizeof(std::atomic<uint32_t>) +
+                                         sizeof(pthread_mutex_t) + sizeof(pthread_cond_t) + sizeof(size_t));
+
     // Calculate aligned layout based on existing parameters
-    calculateAlignedLayout(*element_size, *buf_num, mutex_offset, cond_offset,
-                          element_size_offset, buf_num_offset, timestamp_offset, data_offset);
+    calculateAlignedLayout(*element_size, *buf_num, mutex_offset, cond_offset, element_size_offset, buf_num_offset,
+                           timestamp_offset, data_offset);
   }
 
   // Initialize pointers using calculated aligned offsets
   initialization_flag = reinterpret_cast<std::atomic<uint32_t> *>(memory_ptr);
-  pthread_init_flag = reinterpret_cast<std::atomic<uint32_t> *>(memory_ptr + get_aligned_size<std::atomic<uint32_t>>(1));
-  mutex = reinterpret_cast<pthread_mutex_t *>(memory_ptr + mutex_offset);
-  condition = reinterpret_cast<pthread_cond_t *>(memory_ptr + cond_offset);
-  element_size = reinterpret_cast<size_t *>(memory_ptr + element_size_offset);
-  buf_num = reinterpret_cast<size_t *>(memory_ptr + buf_num_offset);
+  pthread_init_flag =
+      reinterpret_cast<std::atomic<uint32_t> *>(memory_ptr + get_aligned_size<std::atomic<uint32_t>>(1));
+  mutex          = reinterpret_cast<pthread_mutex_t *>(memory_ptr + mutex_offset);
+  condition      = reinterpret_cast<pthread_cond_t *>(memory_ptr + cond_offset);
+  element_size   = reinterpret_cast<size_t *>(memory_ptr + element_size_offset);
+  buf_num        = reinterpret_cast<size_t *>(memory_ptr + buf_num_offset);
   timestamp_list = reinterpret_cast<std::atomic<uint64_t> *>(memory_ptr + timestamp_offset);
-  data_list = memory_ptr + data_offset;
+  data_list      = memory_ptr + data_offset;
 
   // Initialize values for new buffers
   if (buffer_num != 0)
@@ -241,13 +250,20 @@ RingBuffer::getNewestBufferNum()
 
   timestamp_us = timestamp_buf;
 
-  struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-  uint64_t current_time_us = ((uint64_t)ts.tv_sec * 1000000L) + ((uint64_t)ts.tv_nsec / 1000L);
+  // struct timespec ts;
+  // clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+  // uint64_t current_time_us = ((uint64_t)ts.tv_sec * 1000000L) + ((uint64_t)ts.tv_nsec / 1000L);
+  uint64_t current_time_us =
+      std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch())
+          .count();
+
   if (current_time_us - timestamp_us < data_expiry_time_us)
   {
     return newest_buffer;
   }
+  // std::cerr << "Data is expiry By time. (duration: " << current_time_us - timestamp_us
+  //           << ", expiry time: " << data_expiry_time_us << ")" << std::endl;
+
   return -1;
 }
 
