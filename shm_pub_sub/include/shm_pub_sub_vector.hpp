@@ -133,8 +133,14 @@ namespace irlab
       {
         vector_size = data.size();
         ring_buffer.reset();
-        shared_memory->disconnect();
+        shared_memory->disconnectAndUnlink();
         shared_memory->connect(RingBuffer::getSize(sizeof(T) * vector_size, shm_buf_num));
+
+        if (shared_memory->isDisconnected())
+        {
+          throw std::runtime_error("shm::Publisher: Cannot allocate shared memory!");
+        }
+
         ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr(), sizeof(T) * vector_size, shm_buf_num);
       }
 
@@ -162,9 +168,10 @@ namespace irlab
         std::memcpy(first_ptr, data.data(), sizeof(T) * vector_size);
       }
 
-      struct timespec t;
-      clock_gettime(CLOCK_MONOTONIC_RAW, &t);
-      ring_buffer->setTimestamp_us(((uint64_t)t.tv_sec * 1000000L) + ((uint64_t)t.tv_nsec / 1000L), oldest_buffer);
+      uint64_t current_time_us =
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+      ring_buffer->setTimestamp_us(current_time_us, oldest_buffer);
 
       ring_buffer->signal();
     }
@@ -206,21 +213,46 @@ namespace irlab
     {
       if (shared_memory == nullptr || shared_memory->isDisconnected())
       {
+        if (ring_buffer != nullptr)
+        {
+          ring_buffer.reset();
+        }
+
+        // Clean up old connection before reconnecting
+        shared_memory->disconnect();
         shared_memory->connect();
         if (shared_memory->isDisconnected())
         {
           *is_success = false;
           return return_buffer_;
         }
-        // Wait for initialization to complete
-        if (!RingBuffer::waitForInitialization(shared_memory->getPtr(), 500000)) { // 500ms timeout (increased)
+
+        try
+        {
+          if (shared_memory->getPtr() == nullptr)
+          {
+            *is_success = false;
+            return return_buffer_;
+          }
+
+          std::cerr << "[Subscriber::subscribe] Waiting for initialization..." << std::endl;
+          // Wait for initialization to complete
+          if (!RingBuffer::waitForInitialization(shared_memory->getPtr(), 500000)) { // 500ms timeout (increased)
+            *is_success = false;
+            return return_buffer_;
+          }
+
+          ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
+          size_t element_size = ring_buffer->getElementSize();
+          vector_size = element_size / sizeof(T);
+          return_buffer_.resize(vector_size);
+        }
+        catch (const std::bad_alloc &e)
+        {
           *is_success = false;
           return return_buffer_;
         }
-        ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
-        size_t element_size = ring_buffer->getElementSize();
-        vector_size = element_size / sizeof(T);
-        return_buffer_.resize(vector_size);
+        ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
       }
       int newest_buffer = ring_buffer->getNewestBufferNum();
       if (newest_buffer < 0)
@@ -254,6 +286,12 @@ namespace irlab
     {
       if (shared_memory->isDisconnected())
       {
+        if (ring_buffer != nullptr)
+        {
+          ring_buffer.reset();
+        }
+        // Clean up old connection before reconnecting
+        shared_memory->disconnect();
         shared_memory->connect();
         if (shared_memory->isDisconnected())
         {
@@ -264,6 +302,10 @@ namespace irlab
           return false;
         }
         ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
+        size_t element_size = ring_buffer->getElementSize();
+        vector_size = element_size / sizeof(T);
+        return_buffer_.resize(vector_size);
+        ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
       }
 
       return ring_buffer->waitFor(timeout_usec);

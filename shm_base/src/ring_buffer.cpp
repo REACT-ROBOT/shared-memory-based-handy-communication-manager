@@ -114,13 +114,18 @@ RingBuffer::RingBuffer(unsigned char *first_ptr, size_t size, int buffer_num)
   else
   {
     // Reading existing buffer - need to extract parameters first
-    element_size =
-        reinterpret_cast<size_t *>(memory_ptr + sizeof(std::atomic<uint32_t>) + sizeof(std::atomic<uint32_t>) +
-                                   sizeof(pthread_mutex_t) + sizeof(pthread_cond_t));
-    buf_num = reinterpret_cast<size_t *>(memory_ptr + sizeof(std::atomic<uint32_t>) + sizeof(std::atomic<uint32_t>) +
-                                         sizeof(pthread_mutex_t) + sizeof(pthread_cond_t) + sizeof(size_t));
+    // IMPORTANT: Must use aligned offsets, not sizeof() sum, to match the writer's layout
+    size_t temp_mutex_offset, temp_cond_offset, temp_element_size_offset, temp_buf_num_offset, temp_timestamp_offset, temp_data_offset;
 
-    // Calculate aligned layout based on existing parameters
+    // First pass: calculate offsets with dummy values to find element_size and buf_num locations
+    calculateAlignedLayout(0, 1, temp_mutex_offset, temp_cond_offset, temp_element_size_offset, temp_buf_num_offset,
+                           temp_timestamp_offset, temp_data_offset);
+
+    // Now read element_size and buf_num using aligned offsets
+    element_size = reinterpret_cast<size_t *>(memory_ptr + temp_element_size_offset);
+    buf_num = reinterpret_cast<size_t *>(memory_ptr + temp_buf_num_offset);
+
+    // Second pass: calculate aligned layout based on actual parameters from shared memory
     calculateAlignedLayout(*element_size, *buf_num, mutex_offset, cond_offset, element_size_offset, buf_num_offset,
                            timestamp_offset, data_offset);
   }
@@ -233,10 +238,11 @@ RingBuffer::getNewestBufferNum()
 
   for (size_t i = 0; i < *buf_num; i++)
   {
-    if (timestamp_list[i] != std::numeric_limits<uint64_t>::max() && timestamp_list[i] > 0 &&
-        timestamp_list[i] >= timestamp_buf)
+    uint64_t ts = timestamp_list[i].load();
+
+    if (ts != std::numeric_limits<uint64_t>::max() && ts > 0 && ts >= timestamp_buf)
     {
-      timestamp_buf         = timestamp_list[i];
+      timestamp_buf         = ts;
       newest_buffer         = i;
       found_valid_timestamp = true;
     }
@@ -250,9 +256,6 @@ RingBuffer::getNewestBufferNum()
 
   timestamp_us = timestamp_buf;
 
-  // struct timespec ts;
-  // clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-  // uint64_t current_time_us = ((uint64_t)ts.tv_sec * 1000000L) + ((uint64_t)ts.tv_nsec / 1000L);
   uint64_t current_time_us =
       std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch())
           .count();

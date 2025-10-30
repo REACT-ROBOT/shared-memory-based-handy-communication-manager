@@ -183,6 +183,7 @@ public:
 
   virtual bool connect(size_t size = 0) = 0;
   virtual int disconnect() = 0;
+  virtual int disconnectAndUnlink() = 0;
   size_t getSize() const;
   unsigned char* getPtr();
 
@@ -211,7 +212,8 @@ public:
 
   virtual bool connect(size_t size = 0);
   virtual int disconnect();
-  
+  virtual int disconnectAndUnlink();
+
   virtual bool isDisconnected() const;
 
 protected:

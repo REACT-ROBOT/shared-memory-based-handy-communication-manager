@@ -119,7 +119,41 @@ SharedMemoryPosix::connect(size_t size)
 int
 SharedMemoryPosix::disconnect()
 {
-  return disconnectMemory(shm_name);
+  int result = 0;
+
+  // Unmap memory if it was mapped
+  if (shm_ptr != nullptr && shm_ptr != MAP_FAILED && shm_size > 0)
+  {
+    result = munmap(shm_ptr, shm_size);
+    shm_ptr = nullptr;
+  }
+
+  // Close file descriptor
+  if (shm_fd >= 0)
+  {
+    close(shm_fd);
+    shm_fd = -1;
+  }
+
+  // Reset size
+  shm_size = 0;
+
+  // NOTE: We do NOT call disconnectMemory(shm_unlink) here.
+  // This allows reconnection to the same shared memory.
+  // To completely remove shared memory, call disconnectAndUnlink() instead.
+  return result;
+}
+
+
+int
+SharedMemoryPosix::disconnectAndUnlink()
+{
+  // First disconnect (unmap and close fd)
+  disconnect();
+
+  // Then unlink shared memory
+  int result = disconnectMemory(shm_name);
+  return result;
 }
 
 
