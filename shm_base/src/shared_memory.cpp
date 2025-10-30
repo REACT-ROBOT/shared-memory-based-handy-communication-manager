@@ -148,12 +148,31 @@ SharedMemoryPosix::disconnect()
 int
 SharedMemoryPosix::disconnectAndUnlink()
 {
+  // Check if other processes/threads are still using this shared memory
+  struct stat shm_stat;
+  bool should_unlink = false;
+
+  if (shm_fd >= 0 && fstat(shm_fd, &shm_stat) == 0)
+  {
+    // st_nlink indicates how many references exist to this shared memory
+    // If st_nlink > 1, other processes/threads are still connected
+    // Only unlink if we're the last one (st_nlink <= 1)
+    if (shm_stat.st_nlink <= 1)
+    {
+      should_unlink = true;
+    }
+  }
+
   // First disconnect (unmap and close fd)
   disconnect();
 
-  // Then unlink shared memory
-  int result = disconnectMemory(shm_name);
-  return result;
+  // Only unlink if no other processes/threads are using it
+  if (should_unlink)
+  {
+    return disconnectMemory(shm_name);
+  }
+
+  return 0;
 }
 
 
