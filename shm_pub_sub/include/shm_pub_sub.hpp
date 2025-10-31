@@ -189,10 +189,10 @@ Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm)
 
     // Enhanced initialization synchronization for ARM processors
     // Wait for pthread structures to be properly initialized
-    auto       start_time = std::chrono::steady_clock::now();
-    const auto timeout    = std::chrono::milliseconds(1000);  // 1 second timeout
+    uint64_t       start_time = getCurrentTimeUSec();
+    const uint64_t timeout    = 1000;  // 1 second timeout
 
-    while (std::chrono::steady_clock::now() - start_time < timeout)
+    while (getCurrentTimeUSec() - start_time < timeout)
     {
       if (RingBuffer::checkInitialized(shared_memory->getPtr()))
       {
@@ -265,9 +265,7 @@ Publisher<T>::publish(const T &data)
   // clock_gettime(CLOCK_MONOTONIC_RAW, &t);
   // ring_buffer->setTimestamp_us(((uint64_t) t.tv_sec * 1000000L) + ((uint64_t) t.tv_nsec / 1000L), oldest_buffer);
 
-  uint64_t current_time_us =
-      std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch())
-          .count();
+  uint64_t current_time_us = getCurrentTimeUSec();
   ring_buffer->setTimestamp_us(current_time_us, oldest_buffer);
 
   ring_buffer->signal();

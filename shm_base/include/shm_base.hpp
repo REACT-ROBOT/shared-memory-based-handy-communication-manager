@@ -167,7 +167,7 @@ namespace shm
 // ****************************************************************************
 
 int disconnectMemory(std::string name);
-int disconnectMemory(int id);
+uint64_t getCurrentTimeUSec();
 
 // ****************************************************************************
 //! @class SharedMemory

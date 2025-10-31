@@ -168,9 +168,7 @@ namespace irlab
         std::memcpy(first_ptr, data.data(), sizeof(T) * vector_size);
       }
 
-      uint64_t current_time_us =
-        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch())
-            .count();
+      uint64_t current_time_us = getCurrentTimeUSec();
       ring_buffer->setTimestamp_us(current_time_us, oldest_buffer);
 
       ring_buffer->signal();

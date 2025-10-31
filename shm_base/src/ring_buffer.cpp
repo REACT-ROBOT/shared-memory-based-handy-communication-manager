@@ -10,6 +10,14 @@ namespace irlab
 namespace shm
 {
 
+uint64_t
+getCurrentTimeUSec()
+{
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return ((uint64_t)t.tv_sec * 1000000L) + ((uint64_t)t.tv_nsec / 1000L);
+} 
+
 size_t
 RingBuffer::getSize(size_t element_size, int buffer_num)
 {
@@ -34,12 +42,12 @@ RingBuffer::checkInitialized(unsigned char *first_ptr)
 bool
 RingBuffer::waitForInitialization(unsigned char *first_ptr, uint64_t timeout_usec)
 {
-  auto start_time       = std::chrono::steady_clock::now();
-  auto timeout_duration = std::chrono::microseconds(timeout_usec);
+  auto start_time       = getCurrentTimeUSec();
+  auto timeout_duration = timeout_usec;
 
   while (!RingBuffer::checkInitialized(first_ptr))
   {
-    auto current_time = std::chrono::steady_clock::now();
+    auto current_time = getCurrentTimeUSec();
     if (current_time - start_time >= timeout_duration)
     {
       return false;
@@ -187,7 +195,6 @@ RingBuffer::initializeExclusiveAccess()
   pthread_condattr_t cond_attr;
   pthread_condattr_init(&cond_attr);
   pthread_condattr_setpshared(&cond_attr, PTHREAD_PROCESS_SHARED);
-  // Set clock to CLOCK_MONOTONIC to match steady_clock usage
   pthread_condattr_setclock(&cond_attr, CLOCK_MONOTONIC);
   pthread_cond_init(condition, &cond_attr);
   pthread_condattr_destroy(&cond_attr);
@@ -258,9 +265,7 @@ RingBuffer::getNewestBufferNum()
 
   timestamp_us = timestamp_buf;
 
-  uint64_t current_time_us =
-      std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch())
-          .count();
+  uint64_t current_time_us = getCurrentTimeUSec();
 
   if (current_time_us - timestamp_us < data_expiry_time_us)
   {
@@ -329,7 +334,7 @@ RingBuffer::waitFor(uint64_t timeout_usec)
   struct timespec ts;
   long            sec     = static_cast<long>(timeout_usec / 1000000);
   long            mod_sec = static_cast<long>(timeout_usec % 1000000);
-  // Use CLOCK_MONOTONIC to match steady_clock usage and avoid NTP time sync issues
+  // Use CLOCK_MONOTONIC to avoid NTP time sync issues
   clock_gettime(CLOCK_MONOTONIC, &ts);
   ts.tv_sec += sec;
   ts.tv_nsec += mod_sec * 1000;
