@@ -187,6 +187,8 @@ RingBuffer::initializeExclusiveAccess()
   pthread_condattr_t cond_attr;
   pthread_condattr_init(&cond_attr);
   pthread_condattr_setpshared(&cond_attr, PTHREAD_PROCESS_SHARED);
+  // Set clock to CLOCK_MONOTONIC to match steady_clock usage
+  pthread_condattr_setclock(&cond_attr, CLOCK_MONOTONIC);
   pthread_cond_init(condition, &cond_attr);
   pthread_condattr_destroy(&cond_attr);
 
@@ -320,13 +322,15 @@ RingBuffer::signal()
 //! @return bool トピックが更新されたかどうか
 //! @details 待ち時間の間、トピックの更新を待ち続ける．更新された場合または待ち時間が経過した場合、関数を終了する．
 //! @note 単純なループによる待ち方に比べて動作が軽量となるはずであるが、未確認
+//! @note CLOCK_MONOTONIC を使用することで、NTPによる時刻同期の影響を受けないようにしている
 bool
 RingBuffer::waitFor(uint64_t timeout_usec)
 {
   struct timespec ts;
   long            sec     = static_cast<long>(timeout_usec / 1000000);
   long            mod_sec = static_cast<long>(timeout_usec % 1000000);
-  clock_gettime(CLOCK_REALTIME, &ts);
+  // Use CLOCK_MONOTONIC to match steady_clock usage and avoid NTP time sync issues
+  clock_gettime(CLOCK_MONOTONIC, &ts);
   ts.tv_sec += sec;
   ts.tv_nsec += mod_sec * 1000;
   if (1000000000 <= ts.tv_nsec)
