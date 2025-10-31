@@ -147,9 +147,7 @@ ServiceServer<Req, Res>::ServiceServer(std::string name, Res (*input_func)(Req r
 
   initializeExclusiveAccess();
 
-  struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-  *request_timestamp_usec = ((uint64_t) ts.tv_sec * 1000000L) + ((uint64_t) ts.tv_nsec / 1000L);
+  *request_timestamp_usec = getCurrentTimeUSec();
   *response_timestamp_usec = *request_timestamp_usec;
   current_request_timestamp_usec = *request_timestamp_usec;
 
@@ -247,9 +245,7 @@ ServiceServer<Req, Res>::loop()
     // Update response under mutex protection
     pthread_mutex_lock(response_mutex);
     *response_ptr = *result_ptr;
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-    *response_timestamp_usec = ((uint64_t) ts.tv_sec * 1000000L) + ((uint64_t) ts.tv_nsec / 1000L);
+    *response_timestamp_usec = getCurrentTimeUSec();
     pthread_mutex_unlock(response_mutex);
 
     pthread_cond_broadcast(response_condition);
@@ -268,9 +264,7 @@ ServiceClient<Req, Res>::ServiceClient(std::string name)
   }
   shared_memory = new SharedMemoryPosix(shm_name, O_RDWR, static_cast<PERM>(0));
 
-  struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-  current_response_timestamp_usec = ((uint64_t) ts.tv_sec * 1000000L) + ((uint64_t) ts.tv_nsec / 1000L);
+  current_response_timestamp_usec = getCurrentTimeUSec();
 }
 
 template <class Req, class Res>
@@ -323,21 +317,18 @@ ServiceClient<Req, Res>::call(Req request, Res *response, unsigned long timeout_
 
   // Set request to shared memory
   *request_ptr = request;
-  struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-  *request_timestamp_usec = ((uint64_t) ts.tv_sec * 1000000L) + ((uint64_t) ts.tv_nsec / 1000L);
+  *request_timestamp_usec = getCurrentTimeUSec();
 
   pthread_cond_broadcast(request_condition);
 
   // Simple timeout implementation using loop with small delays
   uint64_t start_time = *request_timestamp_usec;
   uint64_t end_time = start_time + timeout_usec;
-  
+
   while (current_response_timestamp_usec >= *response_timestamp_usec)
   {
     // Check timeout
-    clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-    uint64_t current_time = ((uint64_t) ts.tv_sec * 1000000L) + ((uint64_t) ts.tv_nsec / 1000L);
+    uint64_t current_time = getCurrentTimeUSec();
     if (current_time > end_time)
     {
       return false; // Timeout

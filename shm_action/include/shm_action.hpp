@@ -185,9 +185,7 @@ ActionServer<Goal, Result, Feedback>::ActionServer(std::string name, PERM perm)
 
   *status_ptr = SUCCEEDED;
 
-  struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-  *cancel_timestamp_us = ((uint64_t) ts.tv_sec * 1000000L) + ((uint64_t) ts.tv_nsec / 1000L);
+  *cancel_timestamp_us = getCurrentTimeUSec();
   start_timestamp_us = *cancel_timestamp_us;
   *goal_timestamp_us = *cancel_timestamp_us;
   *result_timestamp_us = *cancel_timestamp_us;
@@ -212,6 +210,8 @@ ActionServer<Goal, Result, Feedback>::initializeExclusiveAccess()
   pthread_condattr_t goal_cond_attr;
   pthread_condattr_init(&goal_cond_attr);
   pthread_condattr_setpshared(&goal_cond_attr, PTHREAD_PROCESS_SHARED);
+  // Set clock to CLOCK_MONOTONIC to match getCurrentTimeUSec() usage
+  pthread_condattr_setclock(&goal_cond_attr, CLOCK_MONOTONIC);
   pthread_cond_init(goal_condition, &goal_cond_attr);
   pthread_condattr_destroy(&goal_cond_attr);
 
@@ -224,6 +224,8 @@ ActionServer<Goal, Result, Feedback>::initializeExclusiveAccess()
   pthread_condattr_t result_cond_attr;
   pthread_condattr_init(&result_cond_attr);
   pthread_condattr_setpshared(&result_cond_attr, PTHREAD_PROCESS_SHARED);
+  // Set clock to CLOCK_MONOTONIC to match getCurrentTimeUSec() usage
+  pthread_condattr_setclock(&result_cond_attr, CLOCK_MONOTONIC);
   pthread_cond_init(result_condition, &result_cond_attr);
   pthread_condattr_destroy(&result_cond_attr);
 
@@ -254,9 +256,7 @@ ActionServer<Goal, Result, Feedback>::acceptNewGoal()
 {
   pthread_mutex_lock(goal_mutex);
   *status_ptr = ACTIVE;
-  struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-  start_timestamp_us = ((uint64_t) ts.tv_sec * 1000000L) + ((uint64_t) ts.tv_nsec / 1000L);
+  start_timestamp_us = getCurrentTimeUSec();
   current_goal_timestamp_usec = *goal_timestamp_us;
   Goal goal_copy = *goal_ptr;
   pthread_mutex_unlock(goal_mutex);
@@ -290,9 +290,7 @@ ActionServer<Goal, Result, Feedback>::setPreempted()
 {
   *status_ptr = PREEMPTED;
 
-  struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-  *result_timestamp_us = ((uint64_t) ts.tv_sec * 1000000L) + ((uint64_t) ts.tv_nsec / 1000L);
+  *result_timestamp_us = getCurrentTimeUSec();
 
   pthread_cond_broadcast(result_condition);
 }
@@ -305,9 +303,7 @@ ActionServer<Goal, Result, Feedback>::publishResult(const Result& result)
   *result_ptr = result;
   *status_ptr = SUCCEEDED;
 
-  struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-  *result_timestamp_us = ((uint64_t) ts.tv_sec * 1000000L) + ((uint64_t) ts.tv_nsec / 1000L);
+  *result_timestamp_us = getCurrentTimeUSec();
   pthread_mutex_unlock(result_mutex);
 
   pthread_cond_broadcast(result_condition);
@@ -401,9 +397,7 @@ ActionClient<Goal, Result, Feedback>::sendGoal(Goal goal)
 
   // Set request to shared memory
   *goal_ptr = goal;
-  struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-  *goal_timestamp_us = ((uint64_t) ts.tv_sec * 1000000L) + ((uint64_t) ts.tv_nsec / 1000L);
+  *goal_timestamp_us = getCurrentTimeUSec();
   pthread_cond_broadcast(goal_condition);
 
   return true;
@@ -437,9 +431,7 @@ template <class Goal, class Result, class Feedback>
 void
 ActionClient<Goal, Result, Feedback>::cancelGoal()
 {
-  struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-  *cancel_timestamp_us = ((uint64_t) ts.tv_sec * 1000000L) + ((uint64_t) ts.tv_nsec / 1000L);
+  *cancel_timestamp_us = getCurrentTimeUSec();
 }
 
 template <class Goal, class Result, class Feedback>
@@ -449,7 +441,8 @@ ActionClient<Goal, Result, Feedback>::waitForResult(unsigned long wait_time_us)
   struct timespec ts;
   long sec  = static_cast<long>(wait_time_us / 1000000);
   long mod_sec = static_cast<long>(wait_time_us % 1000000);
-  clock_gettime(CLOCK_REALTIME, &ts);
+  // Use CLOCK_MONOTONIC to avoid NTP time sync issues
+  clock_gettime(CLOCK_MONOTONIC, &ts);
   ts.tv_sec += sec;
   ts.tv_nsec+= mod_sec * 1000;
   if (1000000000 <= ts.tv_nsec)
