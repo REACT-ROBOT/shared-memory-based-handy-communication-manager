@@ -265,6 +265,12 @@ RingBuffer::getNewestBufferNum()
 
   timestamp_us = timestamp_buf;
 
+  // If data_expiry_time_us is 0, disable expiry check
+  if (data_expiry_time_us <= 0)
+  {
+    return newest_buffer;
+  }
+
   uint64_t current_time_us = getCurrentTimeUSec();
 
   if (current_time_us - timestamp_us < data_expiry_time_us)
