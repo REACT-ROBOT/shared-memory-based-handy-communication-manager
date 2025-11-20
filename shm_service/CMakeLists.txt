@@ -33,7 +33,7 @@ target_include_directories(shm_service PUBLIC
 #    ${tomlplusplus_INCLUDE_DIRS}
     ${Python3_INCLUDE_DIRS}
 )
-target_link_libraries(shm_service PRIVATE rt pthread shm_base ${Boost_LIBRARIES} ${Python3_LIBRARIES})
+target_link_libraries(shm_service PUBLIC pthread PRIVATE rt shm_base ${Boost_LIBRARIES} ${Python3_LIBRARIES})
 set_target_properties(shm_service PROPERTIES PREFIX "") # 接頭辞'lib'を省略するため
 set_target_properties(shm_service PROPERTIES
 	PUBLIC_HEADER include/shm_service.hpp
