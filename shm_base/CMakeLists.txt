@@ -22,12 +22,21 @@ endif()
 ##libshm_pub_sub.a
 
 add_library(shm_base SHARED src/shared_memory.cpp src/ring_buffer.cpp)
+
+# Explicitly set C++17 for this target
+target_compile_features(shm_base PUBLIC cxx_std_17)
+
 target_include_directories(shm_base PUBLIC
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> 
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(shm_base PRIVATE rt pthread)
-set_target_properties(shm_base PROPERTIES PREFIX "") # 接頭辞'lib'を省略するため
+set_target_properties(shm_base PROPERTIES
+    PREFIX ""  # 接頭辞'lib'を省略するため
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+)
 set_target_properties(shm_base PROPERTIES
 	PUBLIC_HEADER include/shm_base.hpp
 )

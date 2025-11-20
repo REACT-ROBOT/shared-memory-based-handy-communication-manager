@@ -27,14 +27,23 @@ find_package(Boost COMPONENTS python REQUIRED)
 ##libshm_service.a
 
 add_library(shm_service SHARED src/shm_service.cpp)
+
+# Explicitly set C++17 for this target
+target_compile_features(shm_service PUBLIC cxx_std_17)
+
 target_include_directories(shm_service PUBLIC
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> 
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 #    ${tomlplusplus_INCLUDE_DIRS}
     ${Python3_INCLUDE_DIRS}
 )
 target_link_libraries(shm_service PUBLIC pthread PRIVATE rt shm_base ${Boost_LIBRARIES} ${Python3_LIBRARIES})
-set_target_properties(shm_service PROPERTIES PREFIX "") # 接頭辞'lib'を省略するため
+set_target_properties(shm_service PROPERTIES
+    PREFIX ""  # 接頭辞'lib'を省略するため
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+)
 set_target_properties(shm_service PROPERTIES
 	PUBLIC_HEADER include/shm_service.hpp
 )

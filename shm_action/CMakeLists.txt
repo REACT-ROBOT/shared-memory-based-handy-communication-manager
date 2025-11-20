@@ -26,14 +26,23 @@ find_package(Boost COMPONENTS python REQUIRED)
 ##libshm_action.a
 
 add_library(shm_action SHARED src/shm_action.cpp)
+
+# Explicitly set C++17 for this target
+target_compile_features(shm_action PUBLIC cxx_std_17)
+
 target_include_directories(shm_action PUBLIC
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> 
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 #    ${tomlplusplus_INCLUDE_DIRS}
     ${Python3_INCLUDE_DIRS}
 )
 target_link_libraries(shm_action PRIVATE rt pthread shm_base ${Boost_LIBRARIES} ${Python3_LIBRARIES})
-set_target_properties(shm_action PROPERTIES PREFIX "") # 接頭辞'lib'を省略するため
+set_target_properties(shm_action PROPERTIES
+    PREFIX ""  # 接頭辞'lib'を省略するため
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+)
 set_target_properties(shm_action PROPERTIES
 	PUBLIC_HEADER include/shm_action.hpp
 )

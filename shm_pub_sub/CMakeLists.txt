@@ -26,13 +26,22 @@ find_package(Boost COMPONENTS python REQUIRED)
 ##libshm_pub_sub.a
 
 add_library(shm_pub_sub SHARED src/shm_pub_sub.cpp src/shm_pub_sub_python.cpp)
+
+# Explicitly set C++17 for this target
+target_compile_features(shm_pub_sub PUBLIC cxx_std_17)
+
 target_include_directories(shm_pub_sub PUBLIC
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> 
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
     ${Python3_INCLUDE_DIRS}
 )
 target_link_libraries(shm_pub_sub PUBLIC shm_base PRIVATE rt pthread ${Boost_LIBRARIES} ${Python3_LIBRARIES})
-set_target_properties(shm_pub_sub PROPERTIES PREFIX "") # 接頭辞'lib'を省略するため
+set_target_properties(shm_pub_sub PROPERTIES
+    PREFIX ""  # 接頭辞'lib'を省略するため
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+)
 set_target_properties(shm_pub_sub PROPERTIES
 	PUBLIC_HEADER include/shm_pub_sub.hpp
 )
