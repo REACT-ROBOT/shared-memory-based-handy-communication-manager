@@ -375,7 +375,9 @@ RingBuffer::isUpdated() const
 {
   for (size_t i = 0; i < *buf_num; i++)
   {
-    if (timestamp_us < timestamp_list[i])
+    uint64_t ts = timestamp_list[i].load();
+    // Skip buffers being allocated (UINT64_MAX) and invalid timestamps (0)
+    if (ts != std::numeric_limits<uint64_t>::max() && ts > 0 && timestamp_us < ts)
     {
       return true;
     }
