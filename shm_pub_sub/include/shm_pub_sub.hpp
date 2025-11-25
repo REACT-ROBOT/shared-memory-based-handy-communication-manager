@@ -112,6 +112,8 @@ public:
   const T &subscribe(bool *state);
   bool     waitFor(uint64_t timeout_usec);
   void     setDataExpiryTime_us(uint64_t time_us);
+  // 共有メモリが存在し、初期化済みかを確認。未接続なら接続を試み、初期化を待つ。ring_bufferは作らない。
+  bool existsPublisherMemory();
 
 private:
   std::string                   shm_name;
@@ -373,6 +375,20 @@ Subscriber<T>::subscribe(bool *is_success)
     }
     ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
   }
+  // 既に接続済みだが ring_buffer が未初期化の場合に対応
+  else if (ring_buffer == nullptr)
+  {
+    try
+    {
+      ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
+      ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
+    }
+    catch (const std::bad_alloc &e)
+    {
+      *is_success = false;
+      return return_buffer_;
+    }
+  }
 
   int newest_buffer = ring_buffer->getNewestBufferNum();
   if (newest_buffer < 0)
@@ -436,6 +452,19 @@ Subscriber<T>::waitFor(uint64_t timeout_usec)
     ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
     ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
   }
+  // 既に接続済みだが ring_buffer が未初期化の場合に対応
+  else if (ring_buffer == nullptr)
+  {
+    try
+    {
+      ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
+      ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
+    }
+    catch (const std::bad_alloc &e)
+    {
+      return false;
+    }
+  }
 
   return ring_buffer->waitFor(timeout_usec);
 }
@@ -449,6 +478,32 @@ Subscriber<T>::setDataExpiryTime_us(uint64_t time_us)
   {
     ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
   }
+}
+
+template <typename T>
+bool
+Subscriber<T>::existsPublisherMemory()
+{
+  // safety check
+  if (shared_memory == nullptr)
+  {
+    return false;
+  }
+
+  // 既に接続済みで初期化済みなら true
+  if (!shared_memory->isDisconnected())
+  {
+    unsigned char *ptr = shared_memory->getPtr();
+    if (ptr != nullptr && RingBuffer::checkInitialized(ptr))
+    {
+      return true;
+    }
+  }
+
+  // 未接続の場合：OS レベルで共有メモリの存在確認のみ
+  // connect() は呼ばず、exists() で存在と初期化を確認
+  // ファイルが存在して未初期化なら、タイムアウト付きで初期化待ち
+  return shared_memory->isExists(500000);  // 500ms timeout
 }
 
 }  // namespace shm
