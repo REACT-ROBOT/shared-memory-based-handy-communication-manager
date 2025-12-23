@@ -28,16 +28,14 @@ disconnectMemory(std::string name)
   return shm_unlink(str_buf.c_str());
 }
 
-
 SharedMemory::SharedMemory(int oflag, PERM perm)
-: shm_fd(-1)
-, shm_oflag(oflag)
-, shm_perm(perm)
-, shm_size(0)
-, shm_ptr(nullptr)
+  : shm_fd(-1)
+  , shm_oflag(oflag)
+  , shm_perm(perm)
+  , shm_size(0)
+  , shm_ptr(nullptr)
 {
 }
-
 
 size_t
 SharedMemory::getSize() const
@@ -45,23 +43,21 @@ SharedMemory::getSize() const
   return shm_size;
 }
 
-
-unsigned char*
+unsigned char *
 SharedMemory::getPtr()
 {
   return shm_ptr;
 }
 
 SharedMemoryPosix::SharedMemoryPosix(std::string name, int oflag, PERM perm)
-: SharedMemory(oflag, perm)
-, shm_name(name)
+  : SharedMemory(oflag, perm)
+  , shm_name(name)
 {
   if (shm_name[0] == '/')
   {
     shm_name = shm_name.erase(0, 1);
   }
 }
-
 
 SharedMemoryPosix::~SharedMemoryPosix()
 {
@@ -71,13 +67,12 @@ SharedMemoryPosix::~SharedMemoryPosix()
   }
 }
 
-
 bool
 SharedMemoryPosix::connect(size_t size)
 {
   std::string str_buf = "/shm_" + regex_replace(shm_name, std::regex("/"), "_");
 
-  shm_fd = shm_open(str_buf.c_str(), shm_oflag, static_cast<mode_t>(shm_perm));  
+  shm_fd = shm_open(str_buf.c_str(), shm_oflag, static_cast<mode_t>(shm_perm));
   if (shm_fd < 0)
   {
     return false;
@@ -87,7 +82,9 @@ SharedMemoryPosix::connect(size_t size)
   if (size == 0)
   {
     shm_size = stat.st_size;
-  } else {
+  }
+  else
+  {
     shm_size = size;
     if (stat.st_size < shm_size)
     {
@@ -99,14 +96,10 @@ SharedMemoryPosix::connect(size_t size)
       fstat(shm_fd, &stat);
     }
   }
-  shm_ptr = reinterpret_cast<unsigned char *>(mmap(NULL,
-          stat.st_size,
-          PROT_READ|PROT_WRITE,
-          MAP_SHARED,
-          shm_fd,
-            0));
+  shm_ptr = reinterpret_cast<unsigned char *>(mmap(NULL, stat.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0));
 
-  if (shm_ptr == MAP_FAILED) {
+  if (shm_ptr == MAP_FAILED)
+  {
     close(shm_fd);
     shm_fd = -1;
     return false;
@@ -115,13 +108,63 @@ SharedMemoryPosix::connect(size_t size)
   return true;
 }
 
-
 int
 SharedMemoryPosix::disconnect()
 {
-  return disconnectMemory(shm_name);
+  int result = 0;
+
+  // Unmap memory if it was mapped
+  if (shm_ptr != nullptr && shm_ptr != MAP_FAILED && shm_size > 0)
+  {
+    result  = munmap(shm_ptr, shm_size);
+    shm_ptr = nullptr;
+  }
+
+  // Close file descriptor
+  if (shm_fd >= 0)
+  {
+    close(shm_fd);
+    shm_fd = -1;
+  }
+
+  // Reset size
+  shm_size = 0;
+
+  // NOTE: We do NOT call disconnectMemory(shm_unlink) here.
+  // This allows reconnection to the same shared memory.
+  // To completely remove shared memory, call disconnectAndUnlink() instead.
+  return result;
 }
 
+int
+SharedMemoryPosix::disconnectAndUnlink()
+{
+  // Check if other processes/threads are still using this shared memory
+  struct stat shm_stat;
+  bool        should_unlink = false;
+
+  if (shm_fd >= 0 && fstat(shm_fd, &shm_stat) == 0)
+  {
+    // st_nlink indicates how many references exist to this shared memory
+    // If st_nlink > 1, other processes/threads are still connected
+    // Only unlink if we're the last one (st_nlink <= 1)
+    if (shm_stat.st_nlink <= 1)
+    {
+      should_unlink = true;
+    }
+  }
+
+  // First disconnect (unmap and close fd)
+  disconnect();
+
+  // Only unlink if no other processes/threads are using it
+  if (should_unlink)
+  {
+    return disconnectMemory(shm_name);
+  }
+
+  return 0;
+}
 
 bool
 SharedMemoryPosix::isDisconnected() const
@@ -140,8 +183,52 @@ SharedMemoryPosix::isDisconnected() const
   return false;
 }
 
+bool
+SharedMemoryPosix::isExists(uint64_t timeout_usec) const
+{
+  std::string str_buf = "/shm_" + regex_replace(shm_name, std::regex("/"), "_");
 
+  // Try to open the shared memory (read-only, no create)
+  int fd = shm_open(str_buf.c_str(), O_RDONLY, 0);
+  if (fd < 0)
+  {
+    // Shared memory file does not exist
+    return false;
+  }
+
+  bool result = false;
+
+  struct stat st;
+  if (fstat(fd, &st) == 0 && st.st_size > 0)
+  {
+    // Map the memory (read-only) to check initialization
+    size_t         map_size = std::min((size_t)st.st_size, (size_t)4096);  // Map at least first 4KB
+    unsigned char *ptr      = reinterpret_cast<unsigned char *>(mmap(NULL, map_size, PROT_READ, MAP_SHARED, fd, 0));
+
+    if (ptr != MAP_FAILED)
+    {
+      // Check if already initialized
+      if (RingBuffer::checkInitialized(ptr))
+      {
+        result = true;
+      }
+      else
+      {
+        // Not initialized yet, wait for initialization with timeout
+        if (RingBuffer::waitForInitialization(ptr, timeout_usec))
+        {
+          result = true;
+        }
+      }
+
+      munmap(ptr, map_size);
+    }
+  }
+
+  close(fd);
+  return result;
 }
 
-}
+}  // namespace shm
 
+}  // namespace irlab

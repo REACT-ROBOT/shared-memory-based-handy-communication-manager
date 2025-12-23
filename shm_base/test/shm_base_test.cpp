@@ -131,13 +131,17 @@ TEST_F(SharedMemoryPosixTest, MultipleConnections) {
     strcpy(reinterpret_cast<char*>(shm1.getPtr()), test_data);
     EXPECT_STREQ(reinterpret_cast<char*>(shm2.getPtr()), test_data);
     
-    // Note: disconnect() calls shm_unlink(), so only the first disconnect will succeed
-    // The second will fail with -1 because the shared memory is already unlinked
+    // Note: disconnect() no longer calls shm_unlink(), it only unmaps memory and closes fd
+    // Both disconnects should succeed (return 0)
     int result1 = shm1.disconnect();
     int result2 = shm2.disconnect();
-    
-    // One should succeed (0) and one should fail (-1), but we don't know which order
-    EXPECT_TRUE((result1 == 0 && result2 == -1) || (result1 == -1 && result2 == 0));
+
+    // Both should succeed since disconnect() only cleans up local resources
+    EXPECT_EQ(result1, 0);
+    EXPECT_EQ(result2, 0);
+
+    // Clean up the shared memory explicitly
+    disconnectMemory("/test_multiple_connections");
 }
 
 TEST_F(SharedMemoryPosixTest, MemoryReuse) {
@@ -246,8 +250,8 @@ TEST_F(RingBufferTest, BasicOperations) {
 TEST_F(RingBufferTest, TimestampManagement) {
     // Use current time-based timestamps to avoid expiration issues
     auto now = std::chrono::steady_clock::now();
-    auto base_time_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
-    
+    uint64_t base_time_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+
     std::vector<uint64_t> timestamps = {
         base_time_us + 10000,   // +10ms
         base_time_us + 20000,   // +20ms  
@@ -454,8 +458,8 @@ TEST(SHMBaseIntegrationTest, MultipleRingBuffers) {
     // Verify data integrity
     EXPECT_EQ(data1[buffer_id1], 42);
     EXPECT_DOUBLE_EQ(data2[buffer_id2], 3.14159);
-    
-    // Note: disconnect() may fail if memory is already unlinked
+
+    // Clean up: disconnect() only unmaps memory, then explicitly unlink
     shm.disconnect();
     disconnectMemory("test_multiple_rings");
 }
@@ -514,8 +518,8 @@ TEST(SHMBasePerformanceTest, RingBufferThroughput) {
     
     // Performance check: should be able to do 1000 operations reasonably quickly
     EXPECT_LT(duration.count(), 100000); // Less than 100ms for 1000 operations
-    
-    // Note: disconnect() may fail if memory is already unlinked
+
+    // Clean up: disconnect() only unmaps memory, then explicitly unlink
     shm.disconnect();
     disconnectMemory("test_performance");
 }

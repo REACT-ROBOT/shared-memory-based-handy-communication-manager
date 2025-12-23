@@ -4,6 +4,8 @@ project(shm_pub_sub CXX)
 
 set(package_version 20100204)
 option(DEBUG "switch on debug option" OFF)
+option(BUILD_TESTS "Build test programs" OFF)
+option(BUILD_EXAMPLES "Build examples" OFF)
 #for check memory leak
 if (DEBUG)
   set(DEBUG_OPTION "-fsanitize=address -fno-omit-frame-pointer")
@@ -14,7 +16,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(PkgConfig)
-pkg_search_module(GTEST REQUIRED gtest_main)
+if(BUILD_TESTS)
+    pkg_search_module(GTEST REQUIRED gtest_main)
+endif()
 find_package(Python3 COMPONENTS Interpreter Development)
 set(Boost_USE_STATIC_LIBS OFF)
 find_package(Boost COMPONENTS python REQUIRED)
@@ -22,20 +26,30 @@ find_package(Boost COMPONENTS python REQUIRED)
 ##libshm_pub_sub.a
 
 add_library(shm_pub_sub SHARED src/shm_pub_sub.cpp src/shm_pub_sub_python.cpp)
+
+# Explicitly set C++17 for this target
+target_compile_features(shm_pub_sub PUBLIC cxx_std_17)
+
 target_include_directories(shm_pub_sub PUBLIC
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> 
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
     ${Python3_INCLUDE_DIRS}
 )
-target_link_libraries(shm_pub_sub PRIVATE rt pthread shm_base ${Boost_LIBRARIES} ${Python3_LIBRARIES})
-target_link_libraries(shm_pub_sub PUBLIC shm_base )
-set_target_properties(shm_pub_sub PROPERTIES PREFIX "") # 接頭辞'lib'を省略するため
+target_link_libraries(shm_pub_sub PUBLIC shm_base PRIVATE rt pthread ${Boost_LIBRARIES} ${Python3_LIBRARIES})
+set_target_properties(shm_pub_sub PROPERTIES
+    PREFIX ""  # 接頭辞'lib'を省略するため
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+)
 set_target_properties(shm_pub_sub PROPERTIES
 	PUBLIC_HEADER "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/shm_pub_sub.hpp>"
 )
 
 ##sample
+if(BUILD_EXAMPLES)
 add_subdirectory(samples)
+endif()
 
 ##install
 install(TARGETS shm_pub_sub EXPORT shm_pub_subExport
@@ -133,16 +147,19 @@ __author__ = \"Masaaki HIJIKATA\"
     )
 endif()
 
-# shm_frame_cppy_test
-include(GoogleTest)
-include_directories(test)
-add_executable(shm_pub_sub_test   test/shm_pub_sub_test.cpp)
-target_link_libraries(shm_pub_sub_test
-    PRIVATE
-    shm_base
-    shm_pub_sub 
-    # Google Testをリンクする
-    ${GTEST_LDFLAGS}
-)
-gtest_add_tests(TARGET shm_pub_sub_test)
+if(BUILD_TESTS)
+    # shm_frame_cppy_test
+    include(GoogleTest)
+    include_directories(test)
+    add_executable(shm_pub_sub_test
+        test/shm_pub_sub_test.cpp
+      )
+    target_link_libraries(shm_pub_sub_test
+        PRIVATE
+        shm_pub_sub 
+        # Google Testをリンクする
+        ${GTEST_LDFLAGS}
+      )
+    gtest_add_tests(TARGET shm_pub_sub_test)
+endif()
 

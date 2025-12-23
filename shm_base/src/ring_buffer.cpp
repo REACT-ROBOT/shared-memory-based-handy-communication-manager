@@ -1,6 +1,8 @@
 #include <shm_base.hpp>
 #include <condition_variable>
 #include <limits>
+#include <chrono>
+#include <thread>
 
 namespace irlab
 {
@@ -8,45 +10,178 @@ namespace irlab
 namespace shm
 {
 
+uint64_t
+getCurrentTimeUSec()
+{
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return ((uint64_t)t.tv_sec * 1000000L) + ((uint64_t)t.tv_nsec / 1000L);
+} 
+
 size_t
 RingBuffer::getSize(size_t element_size, int buffer_num)
 {
-  return (sizeof(size_t) + sizeof(std::mutex) + sizeof(std::condition_variable) + sizeof(size_t) + (sizeof(std::atomic<uint64_t>)+element_size)*buffer_num);
+  // Use aligned layout calculation for accurate size
+  size_t mutex_offset, cond_offset, element_size_offset, buf_num_offset, timestamp_offset, data_offset;
+  return calculateAlignedLayout(element_size, buffer_num, mutex_offset, cond_offset, element_size_offset,
+                                buf_num_offset, timestamp_offset, data_offset);
+}
+
+bool
+RingBuffer::checkInitialized(unsigned char *first_ptr)
+{
+  if (first_ptr == nullptr)
+  {
+    return false;
+  }
+
+  std::atomic<uint32_t> *initialization_flag = reinterpret_cast<std::atomic<uint32_t> *>(first_ptr);
+  return (initialization_flag->load(std::memory_order_relaxed) == RingBuffer::INITIALIZED);
+}
+
+bool
+RingBuffer::waitForInitialization(unsigned char *first_ptr, uint64_t timeout_usec)
+{
+  auto start_time       = getCurrentTimeUSec();
+  auto timeout_duration = timeout_usec;
+
+  while (!RingBuffer::checkInitialized(first_ptr))
+  {
+    auto current_time = getCurrentTimeUSec();
+    if (current_time - start_time >= timeout_duration)
+    {
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::microseconds(50));  // Reduced wait interval for faster response
+  }
+
+  return true;
+}
+
+size_t
+RingBuffer::calculateAlignedLayout(size_t element_size, int buffer_num, size_t &mutex_offset, size_t &cond_offset,
+                                   size_t &element_size_offset, size_t &buf_num_offset, size_t &timestamp_offset,
+                                   size_t &data_offset)
+{
+  size_t current_offset = 0;
+
+  // 1. initialization_flag (std::atomic<uint32_t>) - starts at beginning
+  current_offset = 0;
+
+  // 2. pthread_init_flag (std::atomic<uint32_t>) - aligned to 8 bytes for ARM
+  current_offset += get_aligned_size<std::atomic<uint32_t>>(1);
+
+  // 3. mutex (pthread_mutex_t) - aligned to 8 bytes for ARM
+  mutex_offset   = (current_offset + get_alignment<pthread_mutex_t>() - 1) & ~(get_alignment<pthread_mutex_t>() - 1);
+  current_offset = mutex_offset + sizeof(pthread_mutex_t);
+
+  // 4. condition (pthread_cond_t) - aligned to 8 bytes for ARM
+  cond_offset    = (current_offset + get_alignment<pthread_cond_t>() - 1) & ~(get_alignment<pthread_cond_t>() - 1);
+  current_offset = cond_offset + sizeof(pthread_cond_t);
+
+  // 5. element_size (size_t) - aligned to 8 bytes for ARM
+  element_size_offset = (current_offset + get_alignment<size_t>() - 1) & ~(get_alignment<size_t>() - 1);
+  current_offset      = element_size_offset + sizeof(size_t);
+
+  // 6. buf_num (size_t) - aligned to 8 bytes for ARM
+  buf_num_offset = (current_offset + get_alignment<size_t>() - 1) & ~(get_alignment<size_t>() - 1);
+  current_offset = buf_num_offset + sizeof(size_t);
+
+  // 7. timestamp_list (std::atomic<uint64_t> * buffer_num) - aligned to 8 bytes for ARM
+  timestamp_offset =
+      (current_offset + get_alignment<std::atomic<uint64_t>>() - 1) & ~(get_alignment<std::atomic<uint64_t>>() - 1);
+  current_offset = timestamp_offset + sizeof(std::atomic<uint64_t>) * buffer_num;
+
+  // 8. data_list (aligned for element type) - use maximum alignment for safety
+  const size_t data_alignment =
+      std::max(get_alignment<uint64_t>(), static_cast<size_t>(8));  // At least 8-byte aligned on ARM
+  data_offset    = (current_offset + data_alignment - 1) & ~(data_alignment - 1);
+  current_offset = data_offset + element_size * buffer_num;
+
+  return current_offset;
 }
 
 //! @brief コンストラクタ
 //! @param [in] 共有メモリ名
 //! @return なし
 //! @details 共有メモリへのアクセスを行う．
-RingBuffer::RingBuffer(unsigned char* first_ptr, size_t size, int buffer_num)
-: memory_ptr(first_ptr)
-, timestamp_us(0)
-, data_expiry_time_us(2000000)
+RingBuffer::RingBuffer(unsigned char *first_ptr, size_t size, int buffer_num)
+  : memory_ptr(first_ptr)
+  , timestamp_us(0)
+  , data_expiry_time_us(2000000)
 {
-  unsigned char* temp_ptr = memory_ptr;
-  mutex          = reinterpret_cast<pthread_mutex_t *>(temp_ptr);
-  temp_ptr      += sizeof(pthread_mutex_t);
-  condition      = reinterpret_cast<pthread_cond_t *>(temp_ptr);
-  temp_ptr      += sizeof(pthread_cond_t);
-  element_size   = reinterpret_cast<size_t *>(temp_ptr);
-  if (size != 0)
+  // Use aligned layout calculation for ARM compatibility
+  size_t mutex_offset, cond_offset, element_size_offset, buf_num_offset, timestamp_offset, data_offset;
+
+  if (buffer_num != 0 && size != 0)
+  {
+    // Calculate aligned layout for new buffer creation
+    calculateAlignedLayout(size, buffer_num, mutex_offset, cond_offset, element_size_offset, buf_num_offset,
+                           timestamp_offset, data_offset);
+  }
+  else
+  {
+    // Reading existing buffer - need to extract parameters first
+    // IMPORTANT: Must use aligned offsets, not sizeof() sum, to match the writer's layout
+    size_t temp_mutex_offset, temp_cond_offset, temp_element_size_offset, temp_buf_num_offset, temp_timestamp_offset, temp_data_offset;
+
+    // First pass: calculate offsets with dummy values to find element_size and buf_num locations
+    calculateAlignedLayout(0, 1, temp_mutex_offset, temp_cond_offset, temp_element_size_offset, temp_buf_num_offset,
+                           temp_timestamp_offset, temp_data_offset);
+
+    // Now read element_size and buf_num using aligned offsets
+    element_size = reinterpret_cast<size_t *>(memory_ptr + temp_element_size_offset);
+    buf_num = reinterpret_cast<size_t *>(memory_ptr + temp_buf_num_offset);
+
+    // Second pass: calculate aligned layout based on actual parameters from shared memory
+    calculateAlignedLayout(*element_size, *buf_num, mutex_offset, cond_offset, element_size_offset, buf_num_offset,
+                           timestamp_offset, data_offset);
+  }
+
+  // Initialize pointers using calculated aligned offsets
+  initialization_flag = reinterpret_cast<std::atomic<uint32_t> *>(memory_ptr);
+  pthread_init_flag =
+      reinterpret_cast<std::atomic<uint32_t> *>(memory_ptr + get_aligned_size<std::atomic<uint32_t>>(1));
+  mutex          = reinterpret_cast<pthread_mutex_t *>(memory_ptr + mutex_offset);
+  condition      = reinterpret_cast<pthread_cond_t *>(memory_ptr + cond_offset);
+  element_size   = reinterpret_cast<size_t *>(memory_ptr + element_size_offset);
+  buf_num        = reinterpret_cast<size_t *>(memory_ptr + buf_num_offset);
+  timestamp_list = reinterpret_cast<std::atomic<uint64_t> *>(memory_ptr + timestamp_offset);
+  data_list      = memory_ptr + data_offset;
+
+  // Initialize values for new buffers
+  if (buffer_num != 0)
   {
     *element_size = size;
   }
-  temp_ptr      += sizeof(size_t);
-  buf_num        = reinterpret_cast<size_t *>(temp_ptr);
   if (buffer_num != 0)
   {
     *buf_num = buffer_num;
   }
-  temp_ptr      += sizeof(size_t);
-  timestamp_list = reinterpret_cast<std::atomic<uint64_t> *>(temp_ptr);
-  temp_ptr += sizeof(std::atomic<uint64_t>) * *buf_num;
-  data_list      = temp_ptr;
 
   if (buffer_num != 0)
   {
+    // Mark as not initialized first
+    initialization_flag->store(NOT_INITIALIZED, std::memory_order_relaxed);
+
     initializeExclusiveAccess();
+
+    // Initialize all timestamp buffers to 0
+    for (size_t i = 0; i < *buf_num; ++i)
+    {
+      timestamp_list[i].store(0, std::memory_order_relaxed);
+    }
+
+    // Ensure all memory operations are complete before marking as initialized
+    std::atomic_thread_fence(std::memory_order_release);
+
+    // Mark as initialized after all setup is complete
+    initialization_flag->store(INITIALIZED, std::memory_order_release);
+  }
+  else
+  {
+    // For subscriber accessing existing memory, just set up pointers
+    // Initialization check will be done via checkInitialized()
   }
 }
 
@@ -54,13 +189,13 @@ RingBuffer::~RingBuffer()
 {
 }
 
-
 void
 RingBuffer::initializeExclusiveAccess()
 {
   pthread_condattr_t cond_attr;
   pthread_condattr_init(&cond_attr);
   pthread_condattr_setpshared(&cond_attr, PTHREAD_PROCESS_SHARED);
+  pthread_condattr_setclock(&cond_attr, CLOCK_MONOTONIC);
   pthread_cond_init(condition, &cond_attr);
   pthread_condattr_destroy(&cond_attr);
 
@@ -71,14 +206,13 @@ RingBuffer::initializeExclusiveAccess()
   pthread_mutexattr_destroy(&m_attr);
 }
 
-
 size_t
 RingBuffer::getElementSize() const
 {
   return *element_size;
 }
 
-unsigned char*
+unsigned char *
 RingBuffer::getDataList()
 {
   return data_list;
@@ -94,7 +228,6 @@ RingBuffer::getTimestamp_us() const
   return timestamp_us;
 }
 
-
 //! @brief タイムスタンプ取得
 //! @param なし
 //! @return なし
@@ -105,42 +238,50 @@ RingBuffer::setTimestamp_us(uint64_t input_time_us, int buffer_num)
   timestamp_list[buffer_num] = input_time_us;
 }
 
-
 int
 RingBuffer::getNewestBufferNum()
 {
-  uint64_t timestamp_buf = 0;
-  size_t newest_buffer = -1;
-  bool found_valid_timestamp = false;
-  
+  uint64_t timestamp_buf         = 0;
+  size_t   newest_buffer         = -1;
+  bool     found_valid_timestamp = false;
+
   for (size_t i = 0; i < *buf_num; i++)
   {
-    if (timestamp_list[i] != std::numeric_limits<uint64_t>::max() && timestamp_list[i] > 0 && timestamp_list[i] >= timestamp_buf)
+    uint64_t ts = timestamp_list[i].load();
+
+    if (ts != std::numeric_limits<uint64_t>::max() && ts > 0 && ts >= timestamp_buf)
     {
-      timestamp_buf = timestamp_list[i];
-      newest_buffer = i;
+      timestamp_buf         = ts;
+      newest_buffer         = i;
       found_valid_timestamp = true;
     }
   }
-  
+
   // If no valid timestamp found, return -1
   if (!found_valid_timestamp)
   {
     return -1;
   }
-  
+
   timestamp_us = timestamp_buf;
 
-  struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-  uint64_t current_time_us = ((uint64_t) ts.tv_sec * 1000000L) + ((uint64_t) ts.tv_nsec / 1000L);
+  // If data_expiry_time_us is 0, disable expiry check
+  if (data_expiry_time_us <= 0)
+  {
+    return newest_buffer;
+  }
+
+  uint64_t current_time_us = getCurrentTimeUSec();
+
   if (current_time_us - timestamp_us < data_expiry_time_us)
   {
     return newest_buffer;
   }
+  // std::cerr << "Data is expiry By time. (duration: " << current_time_us - timestamp_us
+  //           << ", expiry time: " << data_expiry_time_us << ")" << std::endl;
+
   return -1;
 }
-
 
 int
 RingBuffer::getOldestBufferNum()
@@ -150,7 +291,7 @@ RingBuffer::getOldestBufferNum()
     timestamp_us = UINT64_MAX;
   }
   uint64_t timestamp_buf = timestamp_list[0];
-  size_t oldest_buffer = 0;
+  size_t   oldest_buffer = 0;
   for (size_t i = 0; i < *buf_num; i++)
   {
     if (timestamp_list[i] < timestamp_buf)
@@ -159,11 +300,10 @@ RingBuffer::getOldestBufferNum()
       oldest_buffer = i;
     }
   }
-  
+
   timestamp_us = timestamp_buf;
   return oldest_buffer;
 }
-
 
 bool
 RingBuffer::allocateBuffer(int buffer_num)
@@ -178,8 +318,7 @@ RingBuffer::allocateBuffer(int buffer_num)
     // The buffer is already allocated
     return false;
   }
-  return timestamp_list[buffer_num].compare_exchange_weak(temp_buffer_timestamp,
-                                                          std::numeric_limits<uint64_t>::max(),
+  return timestamp_list[buffer_num].compare_exchange_weak(temp_buffer_timestamp, std::numeric_limits<uint64_t>::max(),
                                                           std::memory_order_relaxed);
 }
 
@@ -194,21 +333,23 @@ RingBuffer::signal()
 //! @return bool トピックが更新されたかどうか
 //! @details 待ち時間の間、トピックの更新を待ち続ける．更新された場合または待ち時間が経過した場合、関数を終了する．
 //! @note 単純なループによる待ち方に比べて動作が軽量となるはずであるが、未確認
+//! @note CLOCK_MONOTONIC を使用することで、NTPによる時刻同期の影響を受けないようにしている
 bool
 RingBuffer::waitFor(uint64_t timeout_usec)
 {
   struct timespec ts;
-  long sec  = static_cast<long>(timeout_usec / 1000000);
-  long mod_sec = static_cast<long>(timeout_usec % 1000000);
-  clock_gettime(CLOCK_REALTIME, &ts);
+  long            sec     = static_cast<long>(timeout_usec / 1000000);
+  long            mod_sec = static_cast<long>(timeout_usec % 1000000);
+  // Use CLOCK_MONOTONIC to avoid NTP time sync issues
+  clock_gettime(CLOCK_MONOTONIC, &ts);
   ts.tv_sec += sec;
-  ts.tv_nsec+= mod_sec * 1000;
+  ts.tv_nsec += mod_sec * 1000;
   if (1000000000 <= ts.tv_nsec)
   {
     ts.tv_nsec -= 1000000000;
-    ts.tv_sec  += 1;
+    ts.tv_sec += 1;
   }
-  
+
   while (!isUpdated())
   {
     // Wait on the condvar
@@ -224,7 +365,6 @@ RingBuffer::waitFor(uint64_t timeout_usec)
   return true;
 }
 
-
 //! @brief 共有メモリの更新確認
 //! @param なし
 //! @return bool
@@ -235,7 +375,9 @@ RingBuffer::isUpdated() const
 {
   for (size_t i = 0; i < *buf_num; i++)
   {
-    if (timestamp_us < timestamp_list[i])
+    uint64_t ts = timestamp_list[i].load();
+    // Skip buffers being allocated (UINT64_MAX) and invalid timestamps (0)
+    if (ts != std::numeric_limits<uint64_t>::max() && ts > 0 && timestamp_us < ts)
     {
       return true;
     }
@@ -243,15 +385,18 @@ RingBuffer::isUpdated() const
   return false;
 }
 
-
 void
 RingBuffer::setDataExpiryTime_us(uint64_t time_us)
 {
   data_expiry_time_us = time_us;
 }
 
-
+void
+RingBuffer::markAsInitialized()
+{
+  initialization_flag->store(INITIALIZED, std::memory_order_release);
 }
 
-}
+}  // namespace shm
 
+}  // namespace irlab

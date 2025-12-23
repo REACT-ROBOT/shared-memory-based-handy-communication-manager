@@ -4,6 +4,8 @@ project(shm_action CXX)
 
 set(package_version 20230222)
 option(DEBUG "switch on debug option" OFF)
+option(BUILD_TESTS "Build test programs" OFF)
+option(BUILD_EXAMPLES "Build examples" OFF)
 #for check memory leak
 if (DEBUG)
 set(DEBUG_OPTION "-fsanitize=address -fno-omit-frame-pointer")
@@ -14,7 +16,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(PkgConfig)
-pkg_search_module(GTEST REQUIRED gtest_main)
+if(BUILD_TESTS)
+    pkg_search_module(GTEST REQUIRED gtest_main)
+endif()
 find_package(Python3 COMPONENTS Interpreter Development)
 set(Boost_USE_STATIC_LIBS OFF)
 find_package(Boost COMPONENTS python REQUIRED)
@@ -22,20 +26,31 @@ find_package(Boost COMPONENTS python REQUIRED)
 ##libshm_action.a
 
 add_library(shm_action SHARED src/shm_action.cpp)
+
+# Explicitly set C++17 for this target
+target_compile_features(shm_action PUBLIC cxx_std_17)
+
 target_include_directories(shm_action PUBLIC
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> 
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 #    ${tomlplusplus_INCLUDE_DIRS}
     ${Python3_INCLUDE_DIRS}
 )
 target_link_libraries(shm_action PRIVATE rt pthread shm_base ${Boost_LIBRARIES} ${Python3_LIBRARIES})
-set_target_properties(shm_action PROPERTIES PREFIX "") # 接頭辞'lib'を省略するため
+set_target_properties(shm_action PROPERTIES
+    PREFIX ""  # 接頭辞'lib'を省略するため
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+)
 set_target_properties(shm_action PROPERTIES
 	PUBLIC_HEADER include/shm_action.hpp
 )
 
 ##sample
+if (BUILD_EXAMPLES)
 add_subdirectory(samples)
+endif()
 
 ##install
 install(TARGETS shm_action EXPORT shm_actionExport
@@ -66,7 +81,9 @@ find_program(PYTHON "python3")
 #endif()
 
 # shm_action_test
+if(BUILD_TESTS)
 add_subdirectory(test)
+endif()
 
 #FIND_PACKAGE(Doxygen)
 #IF(DOXYGEN_FOUND)

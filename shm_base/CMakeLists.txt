@@ -4,6 +4,7 @@ project(shm_base CXX)
 
 set(package_version 20100204)
 option(DEBUG "switch on debug option" OFF)
+option(BUILD_TESTS "Build test programs" OFF)
 #for check memory leak
 if (DEBUG)
 set(DEBUG_OPTION "-fsanitize=address -fno-omit-frame-pointer")
@@ -14,17 +15,28 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(PkgConfig)
-pkg_search_module(GTEST REQUIRED gtest_main)
+if(BUILD_TESTS)
+    pkg_search_module(GTEST REQUIRED gtest_main)
+endif()
 
 ##libshm_pub_sub.a
 
 add_library(shm_base SHARED src/shared_memory.cpp src/ring_buffer.cpp)
+
+# Explicitly set C++17 for this target
+target_compile_features(shm_base PUBLIC cxx_std_17)
+
 target_include_directories(shm_base PUBLIC
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> 
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(shm_base PRIVATE rt pthread)
-set_target_properties(shm_base PROPERTIES PREFIX "") # 接頭辞'lib'を省略するため
+set_target_properties(shm_base PROPERTIES
+    PREFIX ""  # 接頭辞'lib'を省略するため
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+)
 set_target_properties(shm_base PROPERTIES
 	PUBLIC_HEADER include/shm_base.hpp
 )
@@ -41,18 +53,20 @@ install(EXPORT shm_baseExport
 )
 
 # shm_base_test
-include(GoogleTest)
-include_directories(test)
-add_executable(shm_base_test
-    test/shm_base_test.cpp
-  )
-target_link_libraries(shm_base_test
-  PRIVATE
-    shm_base
-    # Google Testをリンクする
-    ${GTEST_LDFLAGS}
-  )
-gtest_add_tests(TARGET shm_base_test)
+if(BUILD_TESTS)
+  include(GoogleTest)
+  include_directories(test)
+  add_executable(shm_base_test
+      test/shm_base_test.cpp
+    )
+  target_link_libraries(shm_base_test
+    PRIVATE
+      shm_base
+      # Google Testをリンクする
+      ${GTEST_LDFLAGS}
+    )
+  gtest_add_tests(TARGET shm_base_test)
+endif()
 
 FIND_PACKAGE(Doxygen)
 IF(DOXYGEN_FOUND)
