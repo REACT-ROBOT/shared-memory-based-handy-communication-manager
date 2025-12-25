@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(shm CXX)
+project(shm C CXX)
 
 # Global options
 option(DEBUG "switch on debug option" OFF)
@@ -39,7 +39,9 @@ endif()
 
 #project(core_cpp CXX)
 add_subdirectory(shm_base)
+add_subdirectory(shm_base_c)
 add_subdirectory(shm_pub_sub)
+add_subdirectory(shm_pub_sub_c)
 add_subdirectory(shm_service)
 add_subdirectory(shm_action)
 add_subdirectory(tools)
