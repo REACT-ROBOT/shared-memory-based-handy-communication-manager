@@ -266,7 +266,7 @@ public:
   RingBuffer(unsigned char *first_ptr, size_t size = 0, int buffer_num = 0);
   ~RingBuffer();
 
-  const uint64_t getTimestamp_us() const;
+  uint64_t       getTimestamp_us() const;
   void           setTimestamp_us(uint64_t input_time_us, int buffer_num);
   int            getNewestBufferNum();
   int            getOldestBufferNum();

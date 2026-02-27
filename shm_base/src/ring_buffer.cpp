@@ -222,7 +222,7 @@ RingBuffer::getDataList()
 //! @param なし
 //! @return なし
 //! @details 直近で読み込んだトピックのタイムスタンプを返す．
-const uint64_t
+uint64_t
 RingBuffer::getTimestamp_us() const
 {
   return timestamp_us;
