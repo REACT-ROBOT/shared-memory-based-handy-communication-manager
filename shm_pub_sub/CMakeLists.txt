@@ -19,9 +19,9 @@ find_package(PkgConfig)
 if(BUILD_TESTS)
     pkg_search_module(GTEST REQUIRED gtest_main)
 endif()
-find_package(Python3 COMPONENTS Interpreter Development)
+find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
 set(Boost_USE_STATIC_LIBS OFF)
-find_package(Boost COMPONENTS python REQUIRED)
+find_package(Boost COMPONENTS python${Python3_VERSION_MAJOR}${Python3_VERSION_MINOR} REQUIRED)
 
 ##libshm_pub_sub.a
 
