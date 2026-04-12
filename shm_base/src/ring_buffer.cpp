@@ -202,6 +202,7 @@ RingBuffer::initializeExclusiveAccess()
   pthread_mutexattr_t m_attr;
   pthread_mutexattr_init(&m_attr);
   pthread_mutexattr_setpshared(&m_attr, PTHREAD_PROCESS_SHARED);
+  pthread_mutexattr_setrobust(&m_attr, PTHREAD_MUTEX_ROBUST);
   pthread_mutex_init(mutex, &m_attr);
   pthread_mutexattr_destroy(&m_attr);
 }
@@ -325,41 +326,38 @@ RingBuffer::allocateBuffer(int buffer_num)
 void
 RingBuffer::signal()
 {
-  pthread_cond_broadcast(condition);
+  // NOTE: pthread_cond_broadcast は プロセス間で使用すると永久にブロックする可能性がある。
+  // Subscriberプロセスが pthread_cond_timedwait の内部プロトコル実行中に終了すると、
+  // condition variable の内部状態（waiterカウンタ）が壊れ、
+  // 次の pthread_cond_broadcast が __condvar_quiesce_and_switch_g1 内の
+  // futex_wait で永久にブロックする。
+  // PTHREAD_MUTEX_ROBUST は mutex の問題をカバーするが、
+  // condition variable には同等の仕組み（PTHREAD_COND_ROBUST）が存在しない。
+  //
+  // データの更新有無は timestamp_list の atomic 操作で判定可能なため、
+  // condition variable によるシグナリングは不要。
+  // Subscriber 側は waitFor() 内で isUpdated() をポーリングして検知する。
 }
 
 //! @brief トピックの更新待ち
 //! @param timeout_usec 待ち時間[usec]
 //! @return bool トピックが更新されたかどうか
-//! @details 待ち時間の間、トピックの更新を待ち続ける．更新された場合または待ち時間が経過した場合、関数を終了する．
-//! @note 単純なループによる待ち方に比べて動作が軽量となるはずであるが、未確認
-//! @note CLOCK_MONOTONIC を使用することで、NTPによる時刻同期の影響を受けないようにしている
+//! @details 待ち時間の間、トピックの更新をポーリングで待ち続ける．
+//!          更新された場合または待ち時間が経過した場合、関数を終了する．
+//! @note pthread_cond_timedwait を使用しない理由は signal() のコメントを参照
 bool
 RingBuffer::waitFor(uint64_t timeout_usec)
 {
-  struct timespec ts;
-  long            sec     = static_cast<long>(timeout_usec / 1000000);
-  long            mod_sec = static_cast<long>(timeout_usec % 1000000);
-  // Use CLOCK_MONOTONIC to avoid NTP time sync issues
-  clock_gettime(CLOCK_MONOTONIC, &ts);
-  ts.tv_sec += sec;
-  ts.tv_nsec += mod_sec * 1000;
-  if (1000000000 <= ts.tv_nsec)
-  {
-    ts.tv_nsec -= 1000000000;
-    ts.tv_sec += 1;
-  }
+  uint64_t start_time = getCurrentTimeUSec();
 
   while (!isUpdated())
   {
-    // Wait on the condvar
-    pthread_mutex_lock(mutex);
-    int ret = pthread_cond_timedwait(condition, mutex, &ts);
-    pthread_mutex_unlock(mutex);
-    if (ret == ETIMEDOUT)
+    uint64_t elapsed = getCurrentTimeUSec() - start_time;
+    if (elapsed >= timeout_usec)
     {
       return false;
     }
+    std::this_thread::sleep_for(std::chrono::microseconds(100));
   }
 
   return true;
