@@ -97,14 +97,16 @@ __author__ = \"Masaaki HIJIKATA\"
     # Write __init__.py file
     file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/__init__.py" "${INIT_PY_CONTENT}")
     
-    # Install the shared library as a Python module
-    install(TARGETS shm_pub_sub 
-        LIBRARY DESTINATION "${PYTHON_INSTALL_DIR}/shm_pub_sub"
+    # Install the built Python extension without re-installing target headers.
+    install(FILES "$<TARGET_FILE:shm_pub_sub>"
+        DESTINATION "${PYTHON_INSTALL_DIR}/shm_pub_sub"
+        COMPONENT python_module
     )
     
     # Install __init__.py
     install(FILES "${CMAKE_CURRENT_BINARY_DIR}/__init__.py"
         DESTINATION "${PYTHON_INSTALL_DIR}/shm_pub_sub"
+        COMPONENT python_module
     )
     
     # Create custom target for Python module installation
@@ -153,4 +155,3 @@ if(BUILD_TESTS)
       )
     gtest_add_tests(TARGET shm_pub_sub_test)
 endif()
-
