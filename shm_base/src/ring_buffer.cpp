@@ -14,7 +14,7 @@ uint64_t
 getCurrentTimeUSec()
 {
   struct timespec t;
-  clock_gettime(CLOCK_MONOTONIC, &t);
+  clock_gettime(CLOCK_MONOTONIC_RAW, &t);
   return ((uint64_t)t.tv_sec * 1000000L) + ((uint64_t)t.tv_nsec / 1000L);
 } 
 
