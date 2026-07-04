@@ -6,6 +6,7 @@ set(package_version 20100204)
 option(DEBUG "switch on debug option" OFF)
 option(BUILD_TESTS "Build test programs" OFF)
 option(BUILD_EXAMPLES "Build examples" OFF)
+option(SHM_PUB_SUB_BUILD_PYTHON_BINDINGS "Build shm_pub_sub Python bindings" ON)
 #for check memory leak
 if (DEBUG)
   set(DEBUG_OPTION "-fsanitize=address -fno-omit-frame-pointer")
@@ -19,32 +20,47 @@ find_package(PkgConfig)
 if(BUILD_TESTS)
     pkg_search_module(GTEST REQUIRED gtest_main)
 endif()
-find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
-set(Boost_USE_STATIC_LIBS OFF)
-find_package(Boost COMPONENTS python${Python3_VERSION_MAJOR}${Python3_VERSION_MINOR} REQUIRED)
 
-##libshm_pub_sub.a
+if(SHM_PUB_SUB_BUILD_PYTHON_BINDINGS)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
+    set(Boost_USE_STATIC_LIBS OFF)
+    find_package(Boost COMPONENTS python${Python3_VERSION_MAJOR}${Python3_VERSION_MINOR} REQUIRED)
+endif()
 
-add_library(shm_pub_sub SHARED src/shm_pub_sub.cpp src/shm_pub_sub_python.cpp)
+## shm_pub_sub C++ interface
+
+add_library(shm_pub_sub INTERFACE)
 
 # Explicitly set C++17 for this target
-target_compile_features(shm_pub_sub PUBLIC cxx_std_17)
+target_compile_features(shm_pub_sub INTERFACE cxx_std_17)
 
-target_include_directories(shm_pub_sub PUBLIC
+target_include_directories(shm_pub_sub INTERFACE
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
-    ${Python3_INCLUDE_DIRS}
 )
-target_link_libraries(shm_pub_sub PUBLIC shm_base PRIVATE rt pthread ${Boost_LIBRARIES} ${Python3_LIBRARIES})
-set_target_properties(shm_pub_sub PROPERTIES
-    PREFIX ""  # 接頭辞'lib'を省略するため
-    CXX_STANDARD 17
-    CXX_STANDARD_REQUIRED ON
-    CXX_EXTENSIONS OFF
-)
-set_target_properties(shm_pub_sub PROPERTIES
-	PUBLIC_HEADER "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/shm_pub_sub.hpp>"
-)
+target_link_libraries(shm_pub_sub INTERFACE shm_base rt pthread)
+
+if(SHM_PUB_SUB_BUILD_PYTHON_BINDINGS)
+    add_library(shm_pub_sub_python MODULE src/shm_pub_sub_python.cpp)
+    target_compile_features(shm_pub_sub_python PRIVATE cxx_std_17)
+    target_include_directories(shm_pub_sub_python PRIVATE
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+        ${Python3_INCLUDE_DIRS}
+    )
+    target_link_libraries(shm_pub_sub_python PRIVATE
+        shm_pub_sub
+        ${Boost_LIBRARIES}
+        ${Python3_LIBRARIES}
+    )
+    set_target_properties(shm_pub_sub_python PROPERTIES
+        PREFIX ""
+        OUTPUT_NAME "shm_pub_sub"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/python_module"
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+endif()
 
 ##sample
 if(BUILD_EXAMPLES)
@@ -53,9 +69,10 @@ endif()
 
 ##install
 install(TARGETS shm_pub_sub EXPORT shm_pub_subExport
-	LIBRARY		DESTINATION lib
-	INCLUDES	DESTINATION include
-	PUBLIC_HEADER	DESTINATION include)
+	INCLUDES	DESTINATION include)
+install(FILES ${PROJECT_SOURCE_DIR}/include/shm_pub_sub.hpp
+	DESTINATION include
+)
 install(FILES ${PROJECT_SOURCE_DIR}/include/shm_pub_sub_vector.hpp
 	DESTINATION include
 )
@@ -82,7 +99,7 @@ install(EXPORT shm_pub_subExport
 #                  execute_process(COMMAND pip install ${PROJECT_BINARY_DIR} --prefix=${INSTALL_PATH})")
 #endif()
 # Python module installation - CMake only approach
-if(Python3_FOUND)
+if(SHM_PUB_SUB_BUILD_PYTHON_BINDINGS)
     # Set installation directory (prefer user site-packages for development)
     set(PYTHON_INSTALL_DIR "${CMAKE_BINARY_DIR}/python" CACHE STRING "Python module installation directory")
     
@@ -107,7 +124,7 @@ __author__ = \"Masaaki HIJIKATA\"
     file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/__init__.py" "${INIT_PY_CONTENT}")
     
     # Install the built Python extension without re-installing target headers.
-    install(FILES "$<TARGET_FILE:shm_pub_sub>"
+    install(FILES "$<TARGET_FILE:shm_pub_sub_python>"
         DESTINATION "${PYTHON_INSTALL_DIR}/shm_pub_sub"
         COMPONENT python_module
     )
@@ -121,7 +138,7 @@ __author__ = \"Masaaki HIJIKATA\"
     # Create custom target for Python module installation
     add_custom_target(install_python_module
         COMMAND ${CMAKE_COMMAND} --install ${CMAKE_BINARY_DIR} --component python_module
-        DEPENDS shm_pub_sub
+        DEPENDS shm_pub_sub_python
         COMMENT "Installing Python module to ${PYTHON_INSTALL_DIR}"
     )
     
@@ -133,18 +150,20 @@ __author__ = \"Masaaki HIJIKATA\"
         
         # Add alternative target for virtual environment
         add_custom_target(install_python_module_venv
-            COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:shm_pub_sub> "${VENV_SITELIB}/shm_pub_sub/"
-            COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/__init__.py" "${VENV_SITELIB}/shm_pub_sub/"
             COMMAND ${CMAKE_COMMAND} -E make_directory "${VENV_SITELIB}/shm_pub_sub"
-            DEPENDS shm_pub_sub
+            COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:shm_pub_sub_python> "${VENV_SITELIB}/shm_pub_sub/"
+            COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/__init__.py" "${VENV_SITELIB}/shm_pub_sub/"
+            DEPENDS shm_pub_sub_python
             COMMENT "Installing Python module to virtual environment"
         )
     endif()
     
     # Add test target to verify Python module
     add_custom_target(test_python_module
-        COMMAND ${Python3_EXECUTABLE} -c "import shm_pub_sub; print('Python module imported successfully')"
-        DEPENDS shm_pub_sub
+        COMMAND ${CMAKE_COMMAND} -E env "PYTHONPATH=${PYTHON_INSTALL_DIR}"
+                ${Python3_EXECUTABLE} -c "import shm_pub_sub"
+        DEPENDS install_python_module
+        WORKING_DIRECTORY "${PYTHON_INSTALL_DIR}"
         COMMENT "Testing Python module import"
     )
 endif()

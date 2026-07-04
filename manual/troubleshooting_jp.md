@@ -55,11 +55,15 @@ undefined reference to `irlab::shm::ActionClient<int,int,int>::sendGoal(int cons
 ```bash
 # 1. ライブラリファイルの確認
 ls build/
-# libshm_pub_sub.so, libshm_service.so, libshm_action.so などがあることを確認
+# shm_base.so, shm_service.so, shm_action.so などがあることを確認
+```
 
-# 2. リンク時のライブラリ指定
-g++ your_program.cpp -L./build -lshm_pub_sub -lshm_service -lshm_action
+```cmake
+# 2. CMakeでのtarget指定
+target_link_libraries(your_program PRIVATE shm_pub_sub shm_service shm_action)
+```
 
+```bash
 # 3. 実行時のライブラリパス設定
 export LD_LIBRARY_PATH=./build:$LD_LIBRARY_PATH
 ```

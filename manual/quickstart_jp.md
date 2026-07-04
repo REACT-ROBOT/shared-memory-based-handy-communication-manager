@@ -86,11 +86,16 @@ int main() {
 
 ### 4. コンパイル・実行（1分）
 
-```bash
-# コンパイル
-g++ -std=c++17 -I../include sender.cpp -L. -lshm_pub_sub -o sender
-g++ -std=c++17 -I../include receiver.cpp -L. -lshm_pub_sub -o receiver
+```cmake
+# CMakeLists.txt
+add_executable(sender sender.cpp)
+target_link_libraries(sender PRIVATE shm_pub_sub)
 
+add_executable(receiver receiver.cpp)
+target_link_libraries(receiver PRIVATE shm_pub_sub)
+```
+
+```bash
 # 実行（2つのターミナルで）
 # ターミナル1
 ./receiver
@@ -235,7 +240,7 @@ ls ../include/
 ```bash
 # ライブラリファイルを確認
 ls *.so
-# libshm_pub_sub.so や libudp_comm.so があることを確認
+# shm_base.so や udp_comm.so があることを確認
 
 # LD_LIBRARY_PATHを設定
 export LD_LIBRARY_PATH=.:$LD_LIBRARY_PATH
