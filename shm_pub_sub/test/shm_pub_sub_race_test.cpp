@@ -169,12 +169,15 @@ TEST_F(SHMPubSubRaceTest, PublishMustNotWriteToUnallocatedBuffer) {
   irlab::shm::RingBuffer rb(shm.getPtr());
   ASSERT_EQ(rb.getElementSize(), sizeof(BigMsg));
 
-  // データ領域を既知のパターンで埋め、確保中マークを立てる
+  // データ領域を既知のパターンで埋め、「生きている writer が全バッファを
+  // 確保している」状態を作る。allocateBuffer() のマーカーには確保時刻が
+  // 埋め込まれるため、新鮮なマーカー = 生きている writer と判定される
+  // （クラッシュ writer の古いマーカーの回収は別テストで検証する）。
   unsigned char* data = rb.getDataList();
   const size_t data_bytes = sizeof(BigMsg) * buffer_num;
   std::memset(data, 0xDD, data_bytes);
   for (int i = 0; i < buffer_num; ++i) {
-    rb.setTimestamp_us(std::numeric_limits<uint64_t>::max(), i);
+    ASSERT_TRUE(rb.allocateBuffer(i));
   }
   std::vector<unsigned char> snapshot(data, data + data_bytes);
 

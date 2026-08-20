@@ -246,7 +246,7 @@ RingBuffer::getTimestamp_us(int buffer_num) const
 bool
 RingBuffer::isBeingWritten(uint64_t timestamp)
 {
-  return timestamp == std::numeric_limits<uint64_t>::max();
+  return (timestamp & WRITING_FLAG) != 0;
 }
 
 //! @brief タイムスタンプ取得
@@ -308,22 +308,36 @@ RingBuffer::getNewestBufferNum()
 int
 RingBuffer::getOldestBufferNum()
 {
-  if (timestamp_us == 0)
-  {
-    timestamp_us = UINT64_MAX;
-  }
-  uint64_t timestamp_buf = timestamp_list[0];
-  size_t   oldest_buffer = 0;
+  uint64_t now_us        = getCurrentTimeUSec();
+  uint64_t oldest_value  = std::numeric_limits<uint64_t>::max();
+  int      oldest_buffer = 0;
+  bool     found         = false;
   for (size_t i = 0; i < *buf_num; i++)
   {
-    if (timestamp_list[i] < timestamp_buf)
+    uint64_t ts = timestamp_list[i].load(std::memory_order_acquire);
+    if (isBeingWritten(ts))
     {
-      timestamp_buf = timestamp_list[i];
-      oldest_buffer = i;
+      uint64_t alloc_time_us = ts & ~WRITING_FLAG;
+      if (now_us - alloc_time_us < STALE_WRITE_TIMEOUT_US)
+      {
+        // 生きている writer が書き込み中 → 候補から除外
+        continue;
+      }
+      // クラッシュした writer の残骸 → 最優先で再利用する
+      ts = 0;
+    }
+    if (!found || ts < oldest_value)
+    {
+      oldest_value  = ts;
+      oldest_buffer = static_cast<int>(i);
+      found         = true;
     }
   }
 
-  timestamp_us = timestamp_buf;
+  if (found)
+  {
+    timestamp_us = oldest_value;
+  }
   return oldest_buffer;
 }
 
@@ -337,11 +351,18 @@ RingBuffer::allocateBuffer(int buffer_num)
   uint64_t temp_buffer_timestamp = timestamp_list[buffer_num].load(std::memory_order_acquire);
   if (isBeingWritten(temp_buffer_timestamp))
   {
-    // The buffer is already allocated
-    return false;
+    // マーカーに埋め込まれた確保時刻が新しければ、生きている writer が
+    // 書き込み中なので確保失敗。古ければクラッシュした writer の残骸
+    // なので奪って再利用する（CAS で競合しても片方だけが成功する）。
+    uint64_t alloc_time_us = temp_buffer_timestamp & ~WRITING_FLAG;
+    if (getCurrentTimeUSec() - alloc_time_us < STALE_WRITE_TIMEOUT_US)
+    {
+      return false;
+    }
   }
-  if (!timestamp_list[buffer_num].compare_exchange_strong(
-          temp_buffer_timestamp, std::numeric_limits<uint64_t>::max(), std::memory_order_acq_rel))
+  uint64_t writing_marker = getCurrentTimeUSec() | WRITING_FLAG;
+  if (!timestamp_list[buffer_num].compare_exchange_strong(temp_buffer_timestamp, writing_marker,
+                                                          std::memory_order_acq_rel))
   {
     return false;
   }

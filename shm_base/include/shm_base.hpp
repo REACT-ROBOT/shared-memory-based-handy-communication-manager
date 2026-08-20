@@ -304,6 +304,15 @@ private:
   static constexpr uint32_t NOT_INITIALIZED         = 0;
   static constexpr uint32_t PTHREAD_INITIALIZED     = 1;
   static constexpr uint32_t PTHREAD_NOT_INITIALIZED = 0;
+
+  // 「書き込み途中」マーカー: 最上位ビットを立て、下位に確保時刻[usec]を
+  // 埋め込む（時刻は起動からの経過なので最上位ビットが立つことはない）。
+  // 保持していた writer がクラッシュした場合、マーカーが STALE_WRITE_TIMEOUT_US
+  // より古くなった時点で他の writer が奪って再利用する。
+  // 旧形式のマーカー (UINT64_MAX) も最上位ビットが立っているため
+  // 「確保時刻不明 = 十分古い」として回収対象になる。
+  static constexpr uint64_t WRITING_FLAG           = 1ULL << 63;
+  static constexpr uint64_t STALE_WRITE_TIMEOUT_US = 1000000;  // 1s
 };
 
 }  // namespace shm
