@@ -174,4 +174,15 @@ if(BUILD_TESTS)
         ${GTEST_LDFLAGS}
       )
     gtest_add_tests(TARGET shm_pub_sub_race_test)
+
+    # タイムスタンプ整合性テスト
+    add_executable(shm_pub_sub_timestamp_test
+        test/shm_pub_sub_timestamp_test.cpp
+      )
+    target_link_libraries(shm_pub_sub_timestamp_test
+        PRIVATE
+        shm_pub_sub
+        ${GTEST_LDFLAGS}
+      )
+    gtest_add_tests(TARGET shm_pub_sub_timestamp_test)
 endif()

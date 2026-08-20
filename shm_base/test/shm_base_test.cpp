@@ -235,54 +235,47 @@ TEST_F(RingBufferTest, BasicOperations) {
     EXPECT_TRUE(ring_buffer->allocateBuffer(oldest));
     
     // Test timestamp operations
-    uint64_t current_time = 1000000; // 1 second in microseconds
+    // NOTE: ライブラリの期限判定は getCurrentTimeUSec() (CLOCK_MONOTONIC_RAW)
+    // と比較されるため、テストのスタンプも同じクロックで打つこと
+    uint64_t current_time = getCurrentTimeUSec();
     ring_buffer->setTimestamp_us(current_time, oldest);
-    
-    // After setting timestamp, check if newest buffer is now valid
+
+    // After setting timestamp, the newest buffer must be valid
     int newest = ring_buffer->getNewestBufferNum();
-    if (newest >= 0) {
-        EXPECT_EQ(newest, oldest);
-        EXPECT_EQ(ring_buffer->getTimestamp_us(), current_time);
-    } else {
-        // If newest is still -1, the timestamp might not be recent enough
-        // This could be due to data expiration time checking
-        EXPECT_LT(newest, 0);
-    }
+    ASSERT_GE(newest, 0);
+    EXPECT_EQ(newest, oldest);
+    EXPECT_EQ(ring_buffer->getTimestamp_us(), current_time);
 }
 
 TEST_F(RingBufferTest, TimestampManagement) {
-    // Use current time-based timestamps to avoid expiration issues
-    auto now = std::chrono::steady_clock::now();
-    uint64_t base_time_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+    // ライブラリの期限判定と同じクロック getCurrentTimeUSec() でスタンプする。
+    // 未来のタイムスタンプは期限切れ扱いになるため、過去に向かって並べる。
+    uint64_t base_time_us = getCurrentTimeUSec();
 
     std::vector<uint64_t> timestamps = {
-        base_time_us + 10000,   // +10ms
-        base_time_us + 20000,   // +20ms  
-        base_time_us + 30000    // +30ms
+        base_time_us - 30000,   // -30ms
+        base_time_us - 20000,   // -20ms
+        base_time_us - 10000    // -10ms (最新)
     };
-    
+
     for (int i = 0; i < buffer_num; ++i) {
         int buffer_id = ring_buffer->getOldestBufferNum();
         EXPECT_TRUE(ring_buffer->allocateBuffer(buffer_id));
         ring_buffer->setTimestamp_us(timestamps[i], buffer_id);
-        
+
         // Write test data
         int* data_ptr = reinterpret_cast<int*>(ring_buffer->getDataList());
         data_ptr[buffer_id] = 100 + i;
     }
-    
-    // Newest buffer should be the one with the latest timestamp
+
+    // Newest buffer must be the one with the latest timestamp
     int newest = ring_buffer->getNewestBufferNum();
-    if (newest >= 0) {
-        EXPECT_EQ(ring_buffer->getTimestamp_us(), timestamps[2]); // Latest timestamp
-        
-        // Verify data integrity
-        int* data_ptr = reinterpret_cast<int*>(ring_buffer->getDataList());
-        EXPECT_EQ(data_ptr[newest], 102); // Should be the data from the newest buffer
-    } else {
-        // If no valid buffer found, check if all timestamps are considered expired
-        EXPECT_LT(newest, 0);
-    }
+    ASSERT_GE(newest, 0);
+    EXPECT_EQ(ring_buffer->getTimestamp_us(), timestamps[2]); // Latest timestamp
+
+    // Verify data integrity
+    int* data_ptr = reinterpret_cast<int*>(ring_buffer->getDataList());
+    EXPECT_EQ(data_ptr[newest], 102); // Should be the data from the newest buffer
 }
 
 TEST_F(RingBufferTest, DataExpiration) {
@@ -291,28 +284,21 @@ TEST_F(RingBufferTest, DataExpiration) {
     
     int buffer_id = ring_buffer->getOldestBufferNum();
     EXPECT_TRUE(ring_buffer->allocateBuffer(buffer_id));
-    
-    // Set timestamp to current time
-    auto now = std::chrono::steady_clock::now();
-    auto timestamp_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
-    ring_buffer->setTimestamp_us(timestamp_us, buffer_id);
-    
-    // Data should be valid initially (check immediately)
+
+    // ライブラリの期限判定と同じクロックでスタンプする
+    ring_buffer->setTimestamp_us(getCurrentTimeUSec(), buffer_id);
+
+    // Data must be valid initially (check immediately)
     int newest_before = ring_buffer->getNewestBufferNum();
-    if (newest_before >= 0) {
-        EXPECT_EQ(newest_before, buffer_id);
-        
-        // Wait for expiration
-        std::this_thread::sleep_for(std::chrono::milliseconds(150));
-        
-        // Data should be expired now
-        int newest_after = ring_buffer->getNewestBufferNum();
-        EXPECT_LT(newest_after, 0);
-    } else {
-        // If data is not immediately valid, it might be due to timing or implementation
-        // Just verify the basic functionality
-        EXPECT_LT(newest_before, 0);
-    }
+    ASSERT_GE(newest_before, 0);
+    EXPECT_EQ(newest_before, buffer_id);
+
+    // Wait for expiration
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+    // Data must be expired now
+    int newest_after = ring_buffer->getNewestBufferNum();
+    EXPECT_LT(newest_after, 0);
 }
 
 TEST_F(RingBufferTest, ConcurrentAccess) {
@@ -332,8 +318,7 @@ TEST_F(RingBufferTest, ConcurrentAccess) {
                     data_ptr[buffer_id] = t * 1000 + i;
                     
                     // Set timestamp
-                    auto timestamp_us = std::chrono::duration_cast<std::chrono::microseconds>(
-                        std::chrono::steady_clock::now().time_since_epoch()).count();
+                    auto timestamp_us = getCurrentTimeUSec();  // ライブラリの期限判定と同じクロック
                     ring_buffer->setTimestamp_us(timestamp_us, buffer_id);
                     
                     ring_buffer->signal(); // Notify waiting threads
@@ -377,8 +362,7 @@ TEST_F(RingBufferTest, WaitForWithData) {
         
         int buffer_id = ring_buffer->getOldestBufferNum();
         if (ring_buffer->allocateBuffer(buffer_id)) {
-            auto timestamp_us = std::chrono::duration_cast<std::chrono::microseconds>(
-                std::chrono::steady_clock::now().time_since_epoch()).count();
+            auto timestamp_us = getCurrentTimeUSec();  // ライブラリの期限判定と同じクロック
             ring_buffer->setTimestamp_us(timestamp_us, buffer_id);
             ring_buffer->signal();
         }
@@ -406,8 +390,7 @@ TEST_F(RingBufferTest, IsUpdated) {
     int buffer_id = ring_buffer->getOldestBufferNum();
     EXPECT_TRUE(ring_buffer->allocateBuffer(buffer_id));
     
-    auto timestamp_us = std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
+    auto timestamp_us = getCurrentTimeUSec();  // ライブラリの期限判定と同じクロック
     ring_buffer->setTimestamp_us(timestamp_us, buffer_id);
     
     // Should detect update
@@ -510,8 +493,7 @@ TEST(SHMBasePerformanceTest, RingBufferThroughput) {
             int* data_ptr = reinterpret_cast<int*>(ring_buffer.getDataList());
             data_ptr[buffer_id] = i;
             
-            auto timestamp_us = std::chrono::duration_cast<std::chrono::microseconds>(
-                std::chrono::steady_clock::now().time_since_epoch()).count();
+            auto timestamp_us = getCurrentTimeUSec();  // ライブラリの期限判定と同じクロック
             ring_buffer.setTimestamp_us(timestamp_us, buffer_id);
         }
     }
@@ -912,8 +894,7 @@ TEST_F(CondVarCorruptionTest, PollingApproachIsImmune) {
     int buffer_id = rb.getOldestBufferNum();
     EXPECT_TRUE(rb.allocateBuffer(buffer_id));
 
-    auto ts = std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
+    auto ts = getCurrentTimeUSec();  // ライブラリの期限判定と同じクロック
     rb.setTimestamp_us(ts, buffer_id);
 
     // signal() は no-op だが呼び出しても問題なし
