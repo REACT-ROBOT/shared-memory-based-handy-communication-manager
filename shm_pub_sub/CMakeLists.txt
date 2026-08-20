@@ -163,4 +163,15 @@ if(BUILD_TESTS)
         ${GTEST_LDFLAGS}
       )
     gtest_add_tests(TARGET shm_pub_sub_test)
+
+    # データ破損・レースコンディション回帰テスト
+    add_executable(shm_pub_sub_race_test
+        test/shm_pub_sub_race_test.cpp
+      )
+    target_link_libraries(shm_pub_sub_race_test
+        PRIVATE
+        shm_pub_sub
+        ${GTEST_LDFLAGS}
+      )
+    gtest_add_tests(TARGET shm_pub_sub_race_test)
 endif()
