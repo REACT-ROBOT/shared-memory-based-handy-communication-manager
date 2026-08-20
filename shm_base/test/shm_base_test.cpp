@@ -222,6 +222,23 @@ TEST_F(RingBufferTest, SizeCalculation) {
     EXPECT_GT(RingBuffer::getSize(sizeof(int), 0), 0);
 }
 
+// getSize() の返り値は 8 バイト境界の倍数でなければならない。
+// MultipleRingBuffers テストのように getSize() を使って複数のリングバッファを
+// 同一共有メモリ上に連結配置すると、次のリングの先頭がこの返り値の分だけ
+// オフセットされる。8 の倍数でないと atomic<uint64_t> や pthread 構造体が
+// 非アライン配置になり、ARM (Raspberry Pi) では SIGBUS で即死する
+// （x86 は非アラインでも動くため CI では検出できない）。
+TEST_F(RingBufferTest, SizeIsAlignmentSafeForTiling) {
+    const size_t element_sizes[] = {1, 2, 3, 4, 7, 8, 12, 100, sizeof(double)};
+    for (size_t es : element_sizes) {
+        for (int bn = 1; bn <= 5; ++bn) {
+            EXPECT_EQ(RingBuffer::getSize(es, bn) % 8, 0u)
+                << "getSize(" << es << ", " << bn << ") が 8 の倍数でない: "
+                << "連結配置した次のリングバッファが ARM で Bus error になる";
+        }
+    }
+}
+
 TEST_F(RingBufferTest, BasicOperations) {
     EXPECT_EQ(ring_buffer->getElementSize(), element_size);
     EXPECT_NE(ring_buffer->getDataList(), nullptr);

@@ -98,6 +98,12 @@ RingBuffer::calculateAlignedLayout(size_t element_size, int buffer_num, size_t &
   data_offset    = (current_offset + data_alignment - 1) & ~(data_alignment - 1);
   current_offset = data_offset + element_size * buffer_num;
 
+  // 合計サイズは 8 バイト境界に切り上げる。getSize() を使って複数の
+  // リングバッファを同一共有メモリ上に連結配置したとき、次のリングの
+  // atomic 変数や pthread 構造体が非アライン配置になって ARM で SIGBUS
+  // するのを防ぐため（返り値のパディングのみで、各オフセットは不変）。
+  current_offset = (current_offset + data_alignment - 1) & ~(data_alignment - 1);
+
   return current_offset;
 }
 
@@ -110,6 +116,14 @@ RingBuffer::RingBuffer(unsigned char *first_ptr, size_t size, int buffer_num)
   , timestamp_us(0)
   , data_expiry_time_us(2000000)
 {
+  // 先頭ポインタは 8 バイト境界必須。非アラインだと atomic 変数や
+  // pthread 構造体へのアクセスが ARM では SIGBUS になる（x86 では動いて
+  // しまう）ため、プラットフォームによらずここで即時に検出する。
+  if (reinterpret_cast<uintptr_t>(first_ptr) % 8 != 0)
+  {
+    throw std::runtime_error("RingBuffer: first_ptr must be 8-byte aligned!");
+  }
+
   // Use aligned layout calculation for ARM compatibility
   size_t mutex_offset, cond_offset, element_size_offset, buf_num_offset, timestamp_offset, data_offset;
 
