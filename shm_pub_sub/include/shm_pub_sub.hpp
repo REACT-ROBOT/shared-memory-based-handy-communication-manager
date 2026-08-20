@@ -115,6 +115,19 @@ public:
   // 共有メモリが存在し、初期化済みかを確認。未接続なら接続を試み、初期化を待つ。ring_bufferは作らない。
   bool existsPublisherMemory();
 
+  // 競合カウンタ: publisher の書き込みが購読側の読み出しに対して速すぎる
+  // （コピー中にリングを一周して上書きされる）状況の検出用。
+  // retry はコピーのやり直しが起きた累積回数、failure はリトライ上限まで
+  // 一貫した読み出しができず subscribe が失敗した累積回数。
+  // 正常なレート設計ではどちらも 0 に留まる。
+  uint64_t getContentionRetryCount() const { return contention_retry_count_; }
+  uint64_t getContentionFailureCount() const { return contention_failure_count_; }
+  void     resetContentionCounts()
+  {
+    contention_retry_count_   = 0;
+    contention_failure_count_ = 0;
+  }
+
 private:
   std::string                   shm_name;
   std::unique_ptr<SharedMemory> shared_memory;
@@ -122,6 +135,8 @@ private:
   int                           current_reading_buffer;
   uint64_t                      data_expiry_time_us;
   T                             return_buffer_;
+  uint64_t                      contention_retry_count_   = 0;
+  uint64_t                      contention_failure_count_ = 0;
 };
 
 // ****************************************************************************
@@ -403,11 +418,13 @@ Subscriber<T>::subscribe(bool *is_success)
   // タイムスタンプが変化するため、変化を検出したら選択からやり直す。
   // これを行わないと新旧データの混ざった値 (torn read) を返すことがある。
   constexpr int MAX_READ_RETRY = 5;
+  bool          no_data        = false;
   for (int attempt = 0; attempt < MAX_READ_RETRY; ++attempt)
   {
     int newest_buffer = ring_buffer->getNewestBufferNum();
     if (newest_buffer < 0)
     {
+      no_data = true;
       break;
     }
 
@@ -415,6 +432,7 @@ Subscriber<T>::subscribe(bool *is_success)
     if (RingBuffer::isBeingWritten(timestamp_before) || timestamp_before == 0)
     {
       // 選択直後に書き換えが始まった（または初期化された）
+      ++contention_retry_count_;
       continue;
     }
 
@@ -453,10 +471,15 @@ Subscriber<T>::subscribe(bool *is_success)
       return return_buffer_;
     }
     // コピー中に上書きされた → やり直し
+    ++contention_retry_count_;
   }
 
   // 一貫したスナップショットを取得できなかった。
   // return_buffer_ の内容は不定なので is_success を必ず確認すること。
+  if (!no_data)
+  {
+    ++contention_failure_count_;
+  }
   *is_success = false;
   return return_buffer_;
 }

@@ -78,6 +78,15 @@ public:
   bool                  waitFor(uint64_t timeout_usec);
   void                  setDataExpiryTime_us(uint64_t time_us);
 
+  // 競合カウンタ（詳細は Subscriber<T> 本体のコメントを参照）
+  uint64_t getContentionRetryCount() const { return contention_retry_count_; }
+  uint64_t getContentionFailureCount() const { return contention_failure_count_; }
+  void     resetContentionCounts()
+  {
+    contention_retry_count_   = 0;
+    contention_failure_count_ = 0;
+  }
+
 private:
   std::string                   shm_name;
   std::unique_ptr<SharedMemory> shared_memory;
@@ -87,6 +96,8 @@ private:
 
   size_t         vector_size;
   std::vector<T> return_buffer_;
+  uint64_t       contention_retry_count_   = 0;
+  uint64_t       contention_failure_count_ = 0;
 };
 
 // ****************************************************************************
@@ -294,17 +305,20 @@ Subscriber<std::vector<T>>::subscribe(bool *is_success)
   // seqlock 方式の読み出し: バッファ選択 → コピー → タイムスタンプ再確認。
   // コピー中の上書き (torn read) を検出したら選択からやり直す。
   constexpr int MAX_READ_RETRY = 5;
+  bool          no_data        = false;
   for (int attempt = 0; attempt < MAX_READ_RETRY; ++attempt)
   {
     int newest_buffer = ring_buffer->getNewestBufferNum();
     if (newest_buffer < 0)
     {
+      no_data = true;
       break;
     }
 
     uint64_t timestamp_before = ring_buffer->getTimestamp_us(newest_buffer);
     if (RingBuffer::isBeingWritten(timestamp_before) || timestamp_before == 0)
     {
+      ++contention_retry_count_;
       continue;
     }
 
@@ -323,10 +337,15 @@ Subscriber<std::vector<T>>::subscribe(bool *is_success)
       current_reading_buffer = newest_buffer;
       return return_buffer_;
     }
+    ++contention_retry_count_;
   }
 
   // 一貫したスナップショットを取得できなかった。
   // return_buffer_ の内容は不定なので is_success を必ず確認すること。
+  if (!no_data)
+  {
+    ++contention_failure_count_;
+  }
   *is_success = false;
   return return_buffer_;
 }

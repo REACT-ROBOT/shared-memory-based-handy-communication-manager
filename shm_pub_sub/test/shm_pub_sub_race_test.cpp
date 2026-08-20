@@ -108,6 +108,8 @@ protected:
     irlab::shm::disconnectMemory("race_torn_single");
     irlab::shm::disconnectMemory("race_unallocated_write");
     irlab::shm::disconnectMemory("race_slot_reclaim");
+    irlab::shm::disconnectMemory("race_contention_fast");
+    irlab::shm::disconnectMemory("race_contention_sane");
   }
 };
 
@@ -251,4 +253,88 @@ TEST_F(SHMPubSubRaceTest, CrashedWriterSlotsMustBeReclaimed) {
   };
   EXPECT_FALSE(slotStillLeaked(1) && slotStillLeaked(2))
       << "クラッシュ writer が残した確保中バッファが一切回収されていない";
+}
+
+// -----------------------------------------------------------------------------
+// 競合カウンタ: 「publisher の書き込みが購読側に対して速すぎる」を検出できる
+//
+// 実運用（例: rplidar_daemon → lidar_2D_to_point_cloud_2D）で書き込みレートが
+// 読み出し処理に対して速すぎないかを定量チェックするための仕組み。
+// 過負荷条件ではカウンタが上がり、正常なレート設計ではほぼ 0 に留まる。
+// -----------------------------------------------------------------------------
+TEST_F(SHMPubSubRaceTest, ContentionCountersDetectWriterOutpacingReader) {
+  // 過負荷条件: 単一バッファ + 全力 publish → 競合が必ず観測される
+  {
+    const std::string topic = "/race_contention_fast";
+    std::atomic<bool> stop(false);
+
+    std::thread pub_thread([&]() {
+      irlab::shm::Publisher<BigMsg> pub(topic, 1);
+      BigMsg msg;
+      for (uint32_t seq = 1; !stop.load(std::memory_order_relaxed); ++seq) {
+        msg.fill(seq);
+        pub.publish(msg);
+      }
+    });
+
+    irlab::shm::Subscriber<BigMsg> sub(topic);
+    uint64_t reads = 0;
+    auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
+    while (std::chrono::steady_clock::now() < end) {
+      bool success = false;
+      sub.subscribe(&success);
+      if (success) ++reads;
+    }
+    stop.store(true);
+    pub_thread.join();
+
+    std::cout << "overload: reads=" << reads
+              << " retry=" << sub.getContentionRetryCount()
+              << " failure=" << sub.getContentionFailureCount() << std::endl;
+    EXPECT_GT(sub.getContentionRetryCount(), 0u)
+        << "過負荷条件で競合が一度も観測されなかった（カウンタが機能していない）";
+
+    // reset の確認
+    sub.resetContentionCounts();
+    EXPECT_EQ(sub.getContentionRetryCount(), 0u);
+    EXPECT_EQ(sub.getContentionFailureCount(), 0u);
+  }
+
+  // 正常レート条件: 3面バッファ + 5ms 間隔 publish → 競合はほぼ 0
+  {
+    const std::string topic = "/race_contention_sane";
+    std::atomic<bool> stop(false);
+
+    std::thread pub_thread([&]() {
+      irlab::shm::Publisher<BigMsg> pub(topic);  // buffer_num = 3
+      BigMsg msg;
+      uint32_t seq = 0;
+      while (!stop.load(std::memory_order_relaxed)) {
+        msg.fill(++seq);
+        pub.publish(msg);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      }
+    });
+
+    irlab::shm::Subscriber<BigMsg> sub(topic);
+    uint64_t reads = 0;
+    auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
+    while (std::chrono::steady_clock::now() < end) {
+      bool success = false;
+      sub.subscribe(&success);
+      if (success) ++reads;
+    }
+    stop.store(true);
+    pub_thread.join();
+
+    std::cout << "sane rate: reads=" << reads
+              << " retry=" << sub.getContentionRetryCount()
+              << " failure=" << sub.getContentionFailureCount() << std::endl;
+    ASSERT_GT(reads, 0u);
+    // まれなプリエンプションによる単発リトライは許容するが、
+    // レート設計が正しければ読み出しの 1% を超えることはない
+    EXPECT_LE(sub.getContentionRetryCount(), reads / 100 + 1)
+        << "正常なレートで競合が多発している";
+    EXPECT_EQ(sub.getContentionFailureCount(), 0u);
+  }
 }
