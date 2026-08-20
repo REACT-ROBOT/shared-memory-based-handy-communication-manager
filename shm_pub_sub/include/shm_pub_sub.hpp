@@ -390,41 +390,67 @@ Subscriber<T>::subscribe(bool *is_success)
     }
   }
 
-  int newest_buffer = ring_buffer->getNewestBufferNum();
-  if (newest_buffer < 0)
+  // seqlock 方式の読み出し: バッファ選択 → コピー → タイムスタンプ再確認。
+  // コピー中に publisher がリングを一周して同じバッファを再確保・上書きすると
+  // タイムスタンプが変化するため、変化を検出したら選択からやり直す。
+  // これを行わないと新旧データの混ざった値 (torn read) を返すことがある。
+  constexpr int MAX_READ_RETRY = 5;
+  for (int attempt = 0; attempt < MAX_READ_RETRY; ++attempt)
   {
-    *is_success = false;
-    return return_buffer_;
-  }
-  // Cross-platform aligned memory access
-  unsigned char *data_ptr      = ring_buffer->getDataList();
-  size_t         buffer_offset = newest_buffer * sizeof(T);
-
-  *is_success            = true;
-  current_reading_buffer = newest_buffer;
-
-  if constexpr (is_arm_platform())
-  {
-    // ARM: Use safer memory copy approach
-    if (!irlab::shm::is_aligned<T>(data_ptr + buffer_offset))
+    int newest_buffer = ring_buffer->getNewestBufferNum();
+    if (newest_buffer < 0)
     {
-      // Use memcpy for unaligned access on ARM
-      std::memcpy(&return_buffer_, data_ptr + buffer_offset, sizeof(T));
+      break;
+    }
+
+    uint64_t timestamp_before = ring_buffer->getTimestamp_us(newest_buffer);
+    if (RingBuffer::isBeingWritten(timestamp_before) || timestamp_before == 0)
+    {
+      // 選択直後に書き換えが始まった（または初期化された）
+      continue;
+    }
+
+    // Cross-platform aligned memory access
+    unsigned char *data_ptr      = ring_buffer->getDataList();
+    size_t         buffer_offset = newest_buffer * sizeof(T);
+
+    if constexpr (is_arm_platform())
+    {
+      // ARM: Use safer memory copy approach
+      if (!irlab::shm::is_aligned<T>(data_ptr + buffer_offset))
+      {
+        // Use memcpy for unaligned access on ARM
+        std::memcpy(&return_buffer_, data_ptr + buffer_offset, sizeof(T));
+      }
+      else
+      {
+        T *typed_ptr   = irlab::shm::align_pointer<T>(data_ptr + buffer_offset);
+        return_buffer_ = *typed_ptr;
+      }
     }
     else
     {
-      T *typed_ptr   = irlab::shm::align_pointer<T>(data_ptr + buffer_offset);
+      // x86/x64: Direct cast is safe
+      T *typed_ptr   = reinterpret_cast<T *>(data_ptr + buffer_offset);
       return_buffer_ = *typed_ptr;
     }
-    return return_buffer_;
+
+    // コピーの読み込みが完了してからタイムスタンプを再読みする（load-load 順序の固定）
+    std::atomic_thread_fence(std::memory_order_acquire);
+
+    if (ring_buffer->getTimestamp_us(newest_buffer) == timestamp_before)
+    {
+      *is_success            = true;
+      current_reading_buffer = newest_buffer;
+      return return_buffer_;
+    }
+    // コピー中に上書きされた → やり直し
   }
-  else
-  {
-    // x86/x64: Direct cast is safe
-    T *typed_ptr   = reinterpret_cast<T *>(data_ptr + buffer_offset);
-    return_buffer_ = *typed_ptr;
-    return return_buffer_;
-  }
+
+  // 一貫したスナップショットを取得できなかった。
+  // return_buffer_ の内容は不定なので is_success を必ず確認すること。
+  *is_success = false;
+  return return_buffer_;
 }
 
 template <typename T>

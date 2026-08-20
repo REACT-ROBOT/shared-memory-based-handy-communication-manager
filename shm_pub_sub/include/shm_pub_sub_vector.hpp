@@ -283,33 +283,44 @@ Subscriber<std::vector<T>>::subscribe(bool *is_success)
       return return_buffer_;
     }
   }
-  int newest_buffer = ring_buffer->getNewestBufferNum();
-  if (newest_buffer < 0)
+  // seqlock 方式の読み出し: バッファ選択 → コピー → タイムスタンプ再確認。
+  // コピー中の上書き (torn read) を検出したら選択からやり直す。
+  constexpr int MAX_READ_RETRY = 5;
+  for (int attempt = 0; attempt < MAX_READ_RETRY; ++attempt)
   {
-    *is_success = false;
-    return return_buffer_;
-  }
+    int newest_buffer = ring_buffer->getNewestBufferNum();
+    if (newest_buffer < 0)
+    {
+      break;
+    }
 
-  *is_success            = true;
-  current_reading_buffer = newest_buffer;
+    uint64_t timestamp_before = ring_buffer->getTimestamp_us(newest_buffer);
+    if (RingBuffer::isBeingWritten(timestamp_before) || timestamp_before == 0)
+    {
+      continue;
+    }
 
-  // Cross-platform aligned memory access for successful case
-  unsigned char *data_ptr      = ring_buffer->getDataList();
-  size_t         buffer_offset = newest_buffer * vector_size * sizeof(T);
+    // Cross-platform aligned memory access
+    unsigned char *data_ptr      = ring_buffer->getDataList();
+    size_t         buffer_offset = newest_buffer * vector_size * sizeof(T);
 
-  if constexpr (is_arm_platform())
-  {
-    // ARM: Use safer memory copy approach for vectors
     std::memcpy(return_buffer_.data(), data_ptr + buffer_offset, sizeof(T) * vector_size);
-    return return_buffer_;
+
+    // コピーの読み込みが完了してからタイムスタンプを再読みする（load-load 順序の固定）
+    std::atomic_thread_fence(std::memory_order_acquire);
+
+    if (ring_buffer->getTimestamp_us(newest_buffer) == timestamp_before)
+    {
+      *is_success            = true;
+      current_reading_buffer = newest_buffer;
+      return return_buffer_;
+    }
   }
-  else
-  {
-    // x86/x64: Direct pointer construction is safe
-    T *first_ptr = reinterpret_cast<T *>(data_ptr + buffer_offset);
-    std::memcpy(return_buffer_.data(), first_ptr, sizeof(T) * vector_size);
-    return return_buffer_;
-  }
+
+  // 一貫したスナップショットを取得できなかった。
+  // return_buffer_ の内容は不定なので is_success を必ず確認すること。
+  *is_success = false;
+  return return_buffer_;
 }
 
 template <typename T>

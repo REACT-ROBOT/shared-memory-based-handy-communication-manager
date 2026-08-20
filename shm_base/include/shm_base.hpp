@@ -267,6 +267,8 @@ public:
   ~RingBuffer();
 
   uint64_t       getTimestamp_us() const;
+  uint64_t       getTimestamp_us(int buffer_num) const;
+  static bool    isBeingWritten(uint64_t timestamp);
   void           setTimestamp_us(uint64_t input_time_us, int buffer_num);
   int            getNewestBufferNum();
   int            getOldestBufferNum();

@@ -229,6 +229,26 @@ RingBuffer::getTimestamp_us() const
   return timestamp_us;
 }
 
+//! @brief 指定バッファのタイムスタンプ取得
+//! @param [in] buffer_num バッファ番号
+//! @return uint64_t タイムスタンプ
+//! @details 指定したバッファの現在のタイムスタンプを読み込む．
+//!          読み出し側の整合性検証（コピー前後の比較）に使用する．
+uint64_t
+RingBuffer::getTimestamp_us(int buffer_num) const
+{
+  return timestamp_list[buffer_num].load(std::memory_order_acquire);
+}
+
+//! @brief タイムスタンプ値が「書き込み途中」マーカーかどうかを判定する
+//! @param [in] timestamp 判定するタイムスタンプ値
+//! @return bool 書き込み途中なら真
+bool
+RingBuffer::isBeingWritten(uint64_t timestamp)
+{
+  return timestamp == std::numeric_limits<uint64_t>::max();
+}
+
 //! @brief タイムスタンプ取得
 //! @param なし
 //! @return なし
@@ -236,7 +256,8 @@ RingBuffer::getTimestamp_us() const
 void
 RingBuffer::setTimestamp_us(uint64_t input_time_us, int buffer_num)
 {
-  timestamp_list[buffer_num] = input_time_us;
+  // release: データ本体の書き込みがタイムスタンプより先に可視になることを保証する
+  timestamp_list[buffer_num].store(input_time_us, std::memory_order_release);
 }
 
 int
@@ -250,7 +271,7 @@ RingBuffer::getNewestBufferNum()
   {
     uint64_t ts = timestamp_list[i].load();
 
-    if (ts != std::numeric_limits<uint64_t>::max() && ts > 0 && ts >= timestamp_buf)
+    if (!isBeingWritten(ts) && ts > 0 && ts >= timestamp_buf)
     {
       timestamp_buf         = ts;
       newest_buffer         = i;
@@ -314,13 +335,20 @@ RingBuffer::allocateBuffer(int buffer_num)
     return false;
   }
   uint64_t temp_buffer_timestamp = timestamp_list[buffer_num].load(std::memory_order_acquire);
-  if (temp_buffer_timestamp == std::numeric_limits<uint64_t>::max())
+  if (isBeingWritten(temp_buffer_timestamp))
   {
     // The buffer is already allocated
     return false;
   }
-  return timestamp_list[buffer_num].compare_exchange_weak(temp_buffer_timestamp, std::numeric_limits<uint64_t>::max(),
-                                                          std::memory_order_relaxed);
+  if (!timestamp_list[buffer_num].compare_exchange_strong(
+          temp_buffer_timestamp, std::numeric_limits<uint64_t>::max(), std::memory_order_acq_rel))
+  {
+    return false;
+  }
+  // 書き込み途中マーカーが、後続のデータ書き込みより先に他プロセスから
+  // 見えることを保証する（逆順に見えると読み手の整合性検証が破れる）
+  std::atomic_thread_fence(std::memory_order_seq_cst);
+  return true;
 }
 
 void
@@ -374,8 +402,8 @@ RingBuffer::isUpdated() const
   for (size_t i = 0; i < *buf_num; i++)
   {
     uint64_t ts = timestamp_list[i].load();
-    // Skip buffers being allocated (UINT64_MAX) and invalid timestamps (0)
-    if (ts != std::numeric_limits<uint64_t>::max() && ts > 0 && timestamp_us < ts)
+    // Skip buffers being written and invalid timestamps (0)
+    if (!isBeingWritten(ts) && ts > 0 && timestamp_us < ts)
     {
       return true;
     }
