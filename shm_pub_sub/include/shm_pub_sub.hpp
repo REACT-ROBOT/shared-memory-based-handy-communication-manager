@@ -227,15 +227,23 @@ template <typename T>
 void
 Publisher<T>::publish(const T &data)
 {
-  int oldest_buffer = ring_buffer->getOldestBufferNum();
+  // 確保できないままの書き込みは、他の writer が書き込み途中のバッファを
+  // 破壊し購読可能にしてしまうため許されない。確保成功を必須とする。
+  int  oldest_buffer = -1;
+  bool allocated     = false;
   for (size_t i = 0; i < 10; i++)
   {
+    oldest_buffer = ring_buffer->getOldestBufferNum();
     if (ring_buffer->allocateBuffer(oldest_buffer))
     {
+      allocated = true;
       break;
     }
     usleep(1000);  // Wait for 1ms
-    oldest_buffer = ring_buffer->getOldestBufferNum();
+  }
+  if (!allocated)
+  {
+    throw std::runtime_error("shm::Publisher: Could not allocate a buffer (all buffers are in use)!");
   }
 
   // Cross-platform aligned memory access
