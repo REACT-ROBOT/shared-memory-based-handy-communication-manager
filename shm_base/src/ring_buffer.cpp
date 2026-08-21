@@ -163,40 +163,108 @@ RingBuffer::RingBuffer(unsigned char *first_ptr, size_t size, int buffer_num)
   timestamp_list = reinterpret_cast<std::atomic<uint64_t> *>(memory_ptr + timestamp_offset);
   data_list      = memory_ptr + data_offset;
 
-  // Initialize values for new buffers
-  if (buffer_num != 0)
-  {
-    *element_size = size;
-  }
-  if (buffer_num != 0)
-  {
-    *buf_num = buffer_num;
-  }
+  // element_size / buf_num の書き込みは initializeOrAttach() 経由で行う。
+  // 初期化済みの共有メモリに接続するだけの場合は書き換えてはならない。
 
   if (buffer_num != 0)
   {
-    // Mark as not initialized first
-    initialization_flag->store(NOT_INITIALIZED, std::memory_order_relaxed);
-
-    initializeExclusiveAccess();
-
-    // Initialize all timestamp buffers to 0
-    for (size_t i = 0; i < *buf_num; ++i)
-    {
-      timestamp_list[i].store(0, std::memory_order_relaxed);
-    }
-
-    // Ensure all memory operations are complete before marking as initialized
-    std::atomic_thread_fence(std::memory_order_release);
-
-    // Mark as initialized after all setup is complete
-    initialization_flag->store(INITIALIZED, std::memory_order_release);
+    initializeOrAttach(size, buffer_num);
   }
   else
   {
     // For subscriber accessing existing memory, just set up pointers
     // Initialization check will be done via checkInitialized()
   }
+}
+
+//! @brief 初期化済みなら接続のみ、そうでなければ初期化を行う
+//! @param [in] element_size 要求する要素サイズ
+//! @param [in] buffer_num   要求するバッファ数
+//! @return なし
+//! @details 以前はこの経路が無条件に初期化を行っていたため、既に publish 済みの
+//!          共有メモリに対して後から同名トピックの writer が生成されるだけで
+//!          （publish しなくても、別プロセスからでも）全タイムスタンプが 0 に
+//!          クリアされ、購読側が「データ無し」と判定するようになっていた。
+//!          データ本体は残るため「値は生きているのにトピックだけ消える」症状に
+//!          なり、期限を無効化して値を保持する使い方（パラメータ保持）も
+//!          成立しなかった。
+//!          ここでは要求レイアウトが既存の共有メモリと一致する限り再初期化を
+//!          行わず、接続のみに留めることで既存の値とタイムスタンプを保存する。
+//! @note    レイアウトが一致しない場合（型のサイズやバッファ数を変えた場合）は
+//!          従来通り作り直すため、既存データは失われる。これはクラスの
+//!          ドキュメントに既知の制約として記載されている挙動である。
+void
+RingBuffer::initializeOrAttach(size_t element_size_arg, int buffer_num)
+{
+  // 既に初期化済みでレイアウトも一致 → 何もせず接続のみ
+  if (hasCompatibleLayout(element_size_arg, buffer_num))
+  {
+    return;
+  }
+
+  // 初期化権を CAS で獲得する。複数の writer がほぼ同時に起動した場合でも
+  // 実際に初期化するのは一者だけになる。
+  uint32_t expected = NOT_INITIALIZED;
+  if (!initialization_flag->compare_exchange_strong(expected, INITIALIZING, std::memory_order_acq_rel,
+                                                    std::memory_order_acquire))
+  {
+    if (expected == INITIALIZING)
+    {
+      // 他プロセスが初期化中 → 完了を待ち、レイアウトが合えば接続のみで済ませる
+      if (waitForInitialization(memory_ptr, INIT_WAIT_TIMEOUT_US) && hasCompatibleLayout(element_size_arg, buffer_num))
+      {
+        return;
+      }
+      // 待ちきれなかった（初期化中に落ちた残骸）か、レイアウトが違う → 作り直す
+    }
+    // expected == INITIALIZED でレイアウト不一致、または上記の作り直し。
+    // 初期化中であることを購読側に見せるため、一旦 INITIALIZING に落とす。
+    initialization_flag->store(INITIALIZING, std::memory_order_release);
+  }
+
+  initializeContents(element_size_arg, buffer_num);
+}
+
+//! @brief 共有メモリ上のレイアウトが要求と一致するか確認する
+//! @param [in] element_size 要求する要素サイズ
+//! @param [in] buffer_num   要求するバッファ数
+//! @return bool 初期化済みかつレイアウトが一致していれば真
+//! @details 初期化途中の共有メモリから element_size / buf_num を読むと
+//!          不定値を掴むため、必ず初期化フラグの確認を先に行う。
+bool
+RingBuffer::hasCompatibleLayout(size_t element_size_arg, int buffer_num) const
+{
+  if (initialization_flag->load(std::memory_order_acquire) != INITIALIZED)
+  {
+    return false;
+  }
+  return (*element_size == element_size_arg) && (*buf_num == static_cast<size_t>(buffer_num));
+}
+
+//! @brief リングバッファの実体を初期化する
+//! @param [in] element_size 要素サイズ
+//! @param [in] buffer_num   バッファ数
+//! @return なし
+//! @details 呼び出し側で初期化フラグを INITIALIZING にしてから呼ぶこと。
+void
+RingBuffer::initializeContents(size_t element_size_arg, int buffer_num)
+{
+  *element_size = element_size_arg;
+  *buf_num      = buffer_num;
+
+  initializeExclusiveAccess();
+
+  // Initialize all timestamp buffers to 0
+  for (size_t i = 0; i < *buf_num; ++i)
+  {
+    timestamp_list[i].store(0, std::memory_order_relaxed);
+  }
+
+  // Ensure all memory operations are complete before marking as initialized
+  std::atomic_thread_fence(std::memory_order_release);
+
+  // Mark as initialized after all setup is complete
+  initialization_flag->store(INITIALIZED, std::memory_order_release);
 }
 
 RingBuffer::~RingBuffer()

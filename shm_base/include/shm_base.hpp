@@ -285,6 +285,9 @@ private:
   void initializeExclusiveAccess();
   void initializeAlignedPointers();
   bool waitForPthreadInitialization(uint64_t timeout_usec);
+  void initializeOrAttach(size_t element_size, int buffer_num);
+  bool hasCompatibleLayout(size_t element_size, int buffer_num) const;
+  void initializeContents(size_t element_size, int buffer_num);
 
   unsigned char *memory_ptr;
 
@@ -302,6 +305,14 @@ private:
 
   static constexpr uint32_t INITIALIZED             = 1;
   static constexpr uint32_t NOT_INITIALIZED         = 0;
+  // 初期化を実行中であることを示す中間状態。NOT_INITIALIZED からの CAS で
+  // 一つの writer だけがこの状態に遷移でき、他は初期化の完了を待つ。
+  // checkInitialized() は INITIALIZED との一致で判定するため、この状態は
+  // 購読側からは「未初期化」として扱われる（＝初期化途中を読まない）。
+  static constexpr uint32_t INITIALIZING           = 2;
+  // 他プロセスによる初期化の完了を待つ上限。待ちきれなかった場合は
+  // 初期化中に落ちたプロセスの残骸とみなして自分で初期化し直す。
+  static constexpr uint64_t INIT_WAIT_TIMEOUT_US   = 500000;  // 500ms
   static constexpr uint32_t PTHREAD_INITIALIZED     = 1;
   static constexpr uint32_t PTHREAD_NOT_INITIALIZED = 0;
 

@@ -126,13 +126,29 @@ Publisher<std::vector<T>>::Publisher(std::string name, int buffer_num, PERM perm
   }
 
   shared_memory = std::make_unique<SharedMemoryPosix>(shm_name, O_RDWR | O_CREAT, shm_perm);
-  shared_memory->connect(RingBuffer::getSize(vector_size, shm_buf_num));
+  shared_memory->connect(RingBuffer::getSize(sizeof(T) * vector_size, shm_buf_num));
   if (shared_memory->isDisconnected())
   {
     throw std::runtime_error("shm::Publisher: Cannot get memory!");
   }
 
-  ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr(), vector_size, shm_buf_num);
+  // 既に初期化済みの共有メモリがある場合は、その要素サイズを引き継ぐ。
+  // 引き継がずに vector_size = 0 のままリングバッファを構築すると、
+  // element_size が 0 に書き換わりレイアウト不一致とみなされて作り直しになり、
+  // 既に publish 済みの値とタイムスタンプが失われる（後発 Publisher 問題）。
+  // 引き継いでおけば要素サイズが一致し、接続のみで済む。
+  unsigned char *first_ptr = shared_memory->getPtr();
+  if (RingBuffer::checkInitialized(first_ptr))
+  {
+    // 再初期化しない読み出し用の接続で既存の要素サイズを確認する
+    const size_t existing_element_size = RingBuffer(first_ptr).getElementSize();
+    if (existing_element_size != 0 && (existing_element_size % sizeof(T)) == 0)
+    {
+      vector_size = existing_element_size / sizeof(T);
+    }
+  }
+
+  ring_buffer = std::make_unique<RingBuffer>(first_ptr, sizeof(T) * vector_size, shm_buf_num);
 }
 
 //! @brief トピックの書き込み
