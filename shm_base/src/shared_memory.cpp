@@ -141,20 +141,17 @@ SharedMemoryPosix::disconnect()
 int
 SharedMemoryPosix::disconnectAndUnlink()
 {
-  // Check if other processes/threads are still using this shared memory
+  // NOTE: 以前ここには「st_nlink > 1 なら他プロセスが接続中なので unlink しない」
+  // という意図のガードがあったが、POSIX 共有メモリの st_nlink は名前が存在するか
+  // どうかを表すだけで、他プロセスが開いているかどうかとは無関係である
+  // (実測でも subscriber が開いた状態で st_nlink は 1 のままだった)。
+  // したがってこのガードは常に素通りしており、他の利用者を検出できていなかった。
+  // POSIX 共有メモリには接続数を知る移植性のある手段が無いため、
+  // 「他の利用者がいないことを呼び出し側が保証する」ことを前提とする API とする。
+  // 名前を消しても既存のマッピングは生き続けるので、破棄した後もそれを掴んだ
+  // プロセスは黙って読み書きを続けられる点に注意すること。
   struct stat shm_stat;
-  bool        should_unlink = false;
-
-  if (shm_fd >= 0 && fstat(shm_fd, &shm_stat) == 0)
-  {
-    // st_nlink indicates how many references exist to this shared memory
-    // If st_nlink > 1, other processes/threads are still connected
-    // Only unlink if we're the last one (st_nlink <= 1)
-    if (shm_stat.st_nlink <= 1)
-    {
-      should_unlink = true;
-    }
-  }
+  bool        should_unlink = (shm_fd >= 0 && fstat(shm_fd, &shm_stat) == 0);
 
   // First disconnect (unmap and close fd)
   disconnect();

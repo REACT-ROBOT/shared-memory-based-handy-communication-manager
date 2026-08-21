@@ -164,11 +164,23 @@ template <typename T>
 void
 Publisher<std::vector<T>>::publish(const std::vector<T> &data)
 {
-  if (data.size() != vector_size)
+  // ベクタ長が変わった場合と、別のプロセスが異なるレイアウトで初期化し直した
+  // 場合に、共有メモリを張り直してリングバッファを作り直す。
+  //
+  // 以前はベクタ長が変わるたびに disconnectAndUnlink() で共有メモリを破棄して
+  // 作り直していた。しかし unlink は名前を消すだけで、同じトピックの他の
+  // Publisher が掴んでいるマッピングはそのまま生き続けるため、その Publisher は
+  // 誰にも読まれない領域へ publish を続けることになっていた（例外も出ない）。
+  // 破棄せずにその場で作り直せば、他の Publisher や Subscriber は
+  // RingBuffer::isLayoutChanged() でレイアウトの変化に気付いて張り直せる。
+  // 共有メモリのファイルは connect() の ftruncate で伸びるだけなので、
+  // 張り直した側のマッピングは常に全体を覆う。
+  if (data.size() != vector_size || shared_memory->isDisconnected() || ring_buffer == nullptr ||
+      ring_buffer->isLayoutChanged())
   {
     vector_size = data.size();
     ring_buffer.reset();
-    shared_memory->disconnectAndUnlink();
+    shared_memory->disconnect();
     shared_memory->connect(RingBuffer::getSize(sizeof(T) * vector_size, shm_buf_num));
 
     if (shared_memory->isDisconnected())
@@ -261,6 +273,17 @@ template <typename T>
 const std::vector<T> &
 Subscriber<std::vector<T>>::subscribe(bool *is_success)
 {
+  // 別のプロセスが異なるレイアウトで初期化し直していないか確認する。
+  // ベクタ長が変わると要素サイズもデータ位置も変わるため、気付かずに古い
+  // vector_size とオフセットで読むと、長さの違う値や無関係な領域を返してしまう。
+  // 共有メモリのファイルは伸びている可能性があるので、ごと張り直す。
+  if (shared_memory != nullptr && !shared_memory->isDisconnected() && ring_buffer != nullptr &&
+      ring_buffer->isLayoutChanged())
+  {
+    ring_buffer.reset();
+    shared_memory->disconnect();
+  }
+
   if (shared_memory == nullptr || shared_memory->isDisconnected())
   {
     if (ring_buffer != nullptr)
@@ -297,7 +320,7 @@ Subscriber<std::vector<T>>::subscribe(bool *is_success)
       size_t element_size = ring_buffer->getElementSize();
       vector_size         = element_size / sizeof(T);
       return_buffers_[0].resize(vector_size);
-      return_buffers_[1].resize(vector_size);
+    return_buffers_[1].resize(vector_size);
     }
     catch (const std::bad_alloc &e)
     {
@@ -315,7 +338,7 @@ Subscriber<std::vector<T>>::subscribe(bool *is_success)
       size_t element_size = ring_buffer->getElementSize();
       vector_size         = element_size / sizeof(T);
       return_buffers_[0].resize(vector_size);
-      return_buffers_[1].resize(vector_size);
+    return_buffers_[1].resize(vector_size);
       ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
     }
     catch (const std::bad_alloc &e)
@@ -380,6 +403,17 @@ template <typename T>
 bool
 Subscriber<std::vector<T>>::waitFor(uint64_t timeout_usec)
 {
+  // 別のプロセスが異なるレイアウトで初期化し直していないか確認する。
+  // ベクタ長が変わると要素サイズもデータ位置も変わるため、気付かずに古い
+  // vector_size とオフセットで読むと、長さの違う値や無関係な領域を返してしまう。
+  // 共有メモリのファイルは伸びている可能性があるので、ごと張り直す。
+  if (shared_memory != nullptr && !shared_memory->isDisconnected() && ring_buffer != nullptr &&
+      ring_buffer->isLayoutChanged())
+  {
+    ring_buffer.reset();
+    shared_memory->disconnect();
+  }
+
   if (shared_memory->isDisconnected())
   {
     if (ring_buffer != nullptr)
@@ -402,7 +436,7 @@ Subscriber<std::vector<T>>::waitFor(uint64_t timeout_usec)
     size_t element_size = ring_buffer->getElementSize();
     vector_size         = element_size / sizeof(T);
     return_buffers_[0].resize(vector_size);
-      return_buffers_[1].resize(vector_size);
+    return_buffers_[1].resize(vector_size);
     ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
   }
   // 既に接続済みだが ring_buffer が未初期化の場合に対応
@@ -414,7 +448,7 @@ Subscriber<std::vector<T>>::waitFor(uint64_t timeout_usec)
       size_t element_size = ring_buffer->getElementSize();
       vector_size         = element_size / sizeof(T);
       return_buffers_[0].resize(vector_size);
-      return_buffers_[1].resize(vector_size);
+    return_buffers_[1].resize(vector_size);
       ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
     }
     catch (const std::bad_alloc &e)
