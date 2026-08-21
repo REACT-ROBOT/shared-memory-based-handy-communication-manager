@@ -24,6 +24,41 @@ namespace irlab
 namespace shm
 {
 
+//! @brief \~japanese-en ServiceServer / ServiceClient が使う共有メモリ上の配置
+//! @details \~japanese-en 以前は sizeof の総和で配置を決めていたため、
+//!          sizeof(Req) が 8 の倍数でないと後続の response_mutex /
+//!          response_condition / response_timestamp が非アラインになり、
+//!          ARM では 64bit アクセスが SIGBUS になっていた。
+//!          サーバとクライアントが必ず同じ計算を使うよう、ここに集約する。
+template <class Req, class Res>
+struct ServiceLayout
+{
+  size_t request_mutex;
+  size_t request_condition;
+  size_t request_timestamp;
+  size_t request_data;
+  size_t response_mutex;
+  size_t response_condition;
+  size_t response_timestamp;
+  size_t response_data;
+  size_t total_size;
+
+  ServiceLayout()
+  {
+    size_t offset      = 0;
+    request_mutex      = reserve_aligned<pthread_mutex_t>(offset);
+    request_condition  = reserve_aligned<pthread_cond_t>(offset);
+    request_timestamp  = reserve_aligned<uint64_t>(offset);
+    request_data       = reserve_aligned<Req>(offset);
+    response_mutex     = reserve_aligned<pthread_mutex_t>(offset);
+    response_condition = reserve_aligned<pthread_cond_t>(offset);
+    response_timestamp = reserve_aligned<uint64_t>(offset);
+    response_data      = reserve_aligned<Res>(offset);
+    // 末尾も 8 バイト境界へ切り上げる
+    total_size = (offset + 7) & ~static_cast<size_t>(7);
+  }
+};
+
 //! @brief 直前の値より必ず大きいタイムスタンプを返す
 //! @param [in] previous 共有メモリ上の現在のタイムスタンプ
 //! @return uint64_t 新しいタイムスタンプ
@@ -133,30 +168,25 @@ ServiceServer<Req, Res>::ServiceServer(std::string name, Res (*input_func)(Req r
     throw std::runtime_error("shm::ServiceServer: Be setted not POD class!");
   }
   
+  const ServiceLayout<Req, Res> layout;
+
   shared_memory = new SharedMemoryPosix(shm_name, O_RDWR|O_CREAT, shm_perm);
-  shared_memory->connect( (sizeof(pthread_mutex_t)+sizeof(pthread_cond_t)+sizeof(uint64_t)) * 2 + sizeof(Req) + sizeof(Res));
+  shared_memory->connect(layout.total_size);
   if (shared_memory->isDisconnected())
   {
     throw std::runtime_error("shm::Publisher: Cannot get memory!");
   }
 
-  uint8_t *data_ptr = shared_memory->getPtr();
-  memory_ptr = data_ptr;
-  request_mutex = reinterpret_cast<pthread_mutex_t *>(data_ptr);
-  data_ptr += sizeof(pthread_mutex_t);
-  request_condition = reinterpret_cast<pthread_cond_t *>(data_ptr);
-  data_ptr += sizeof(pthread_cond_t);
-  request_timestamp_usec = reinterpret_cast<uint64_t *>(data_ptr);
-  data_ptr += sizeof(uint64_t);
-  request_ptr = reinterpret_cast<Req *>(data_ptr);
-  data_ptr += sizeof(Req);
-  response_mutex = reinterpret_cast<pthread_mutex_t *>(data_ptr);
-  data_ptr += sizeof(pthread_mutex_t);
-  response_condition = reinterpret_cast<pthread_cond_t *>(data_ptr);
-  data_ptr += sizeof(pthread_cond_t);
-  response_timestamp_usec = reinterpret_cast<uint64_t *>(data_ptr);
-  data_ptr += sizeof(uint64_t);
-  response_ptr = reinterpret_cast<Res *>(data_ptr);
+  uint8_t *base = shared_memory->getPtr();
+  memory_ptr = base;
+  request_mutex           = reinterpret_cast<pthread_mutex_t *>(base + layout.request_mutex);
+  request_condition       = reinterpret_cast<pthread_cond_t *>(base + layout.request_condition);
+  request_timestamp_usec  = reinterpret_cast<uint64_t *>(base + layout.request_timestamp);
+  request_ptr             = reinterpret_cast<Req *>(base + layout.request_data);
+  response_mutex          = reinterpret_cast<pthread_mutex_t *>(base + layout.response_mutex);
+  response_condition      = reinterpret_cast<pthread_cond_t *>(base + layout.response_condition);
+  response_timestamp_usec = reinterpret_cast<uint64_t *>(base + layout.response_timestamp);
+  response_ptr            = reinterpret_cast<Res *>(base + layout.response_data);
 
   initializeExclusiveAccess();
 
@@ -322,23 +352,18 @@ ServiceClient<Req, Res>::call(Req request, Res *response, unsigned long timeout_
     {
       return false;
     }
-    uint8_t *data_ptr = shared_memory->getPtr();
-    memory_ptr = data_ptr;
-    request_mutex = reinterpret_cast<pthread_mutex_t *>(data_ptr);
-    data_ptr += sizeof(pthread_mutex_t);
-    request_condition = reinterpret_cast<pthread_cond_t *>(data_ptr);
-    data_ptr += sizeof(pthread_cond_t);
-    request_timestamp_usec = reinterpret_cast<uint64_t *>(data_ptr);
-    data_ptr += sizeof(uint64_t);
-    request_ptr = reinterpret_cast<Req *>(data_ptr);
-    data_ptr += sizeof(Req);
-    response_mutex = reinterpret_cast<pthread_mutex_t *>(data_ptr);
-    data_ptr += sizeof(pthread_mutex_t);
-    response_condition = reinterpret_cast<pthread_cond_t *>(data_ptr);
-    data_ptr += sizeof(pthread_cond_t);
-    response_timestamp_usec = reinterpret_cast<uint64_t *>(data_ptr);
-    data_ptr += sizeof(uint64_t);
-    response_ptr = reinterpret_cast<Res *>(data_ptr);
+    const ServiceLayout<Req, Res> layout;
+
+    uint8_t *base = shared_memory->getPtr();
+    memory_ptr = base;
+    request_mutex           = reinterpret_cast<pthread_mutex_t *>(base + layout.request_mutex);
+    request_condition       = reinterpret_cast<pthread_cond_t *>(base + layout.request_condition);
+    request_timestamp_usec  = reinterpret_cast<uint64_t *>(base + layout.request_timestamp);
+    request_ptr             = reinterpret_cast<Req *>(base + layout.request_data);
+    response_mutex          = reinterpret_cast<pthread_mutex_t *>(base + layout.response_mutex);
+    response_condition      = reinterpret_cast<pthread_cond_t *>(base + layout.response_condition);
+    response_timestamp_usec = reinterpret_cast<uint64_t *>(base + layout.response_timestamp);
+    response_ptr            = reinterpret_cast<Res *>(base + layout.response_data);
   }
 
   // リクエストの書き込みとタイムスタンプ更新は request_mutex を保持して行う。

@@ -113,6 +113,29 @@ get_aligned_size(size_t count = 1)
 }
 
 /*!
+ * \~english     Reserve space for `count` objects of type T in a shared-memory
+ *               layout, aligning the current offset first. Returns the offset
+ *               the objects were placed at and advances `offset` past them.
+ * \~japanese-en 共有メモリ上の配置を組み立てるためのヘルパ．
+ *               現在のオフセットを型 T の境界へ切り上げてから T を count 個分
+ *               確保し、確保した先頭オフセットを返す（offset は末尾へ進む）．
+ * \~japanese-en sizeof の総和で配置を決めると、8 の倍数でないサイズの型が
+ *               挟まった時点で以降の要素がすべて非アラインになる．
+ *               x86 では動いてしまうが ARM では 64bit アクセスが SIGBUS に
+ *               なるため、必ずこのヘルパを通して配置すること．
+ */
+template <typename T>
+inline size_t
+reserve_aligned(size_t &offset, size_t count = 1)
+{
+  const size_t alignment = get_alignment<T>();
+  offset                 = (offset + alignment - 1) & ~(alignment - 1);
+  const size_t reserved  = offset;
+  offset += sizeof(T) * count;
+  return reserved;
+}
+
+/*!
  * \~english     Check if pointer is properly aligned for type T
  * \~japanese-en ポインタが型Tに対して適切にアライメントされているかチェック
  */

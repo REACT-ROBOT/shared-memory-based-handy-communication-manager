@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(shm VERSION 1.0.0 LANGUAGES CXX)
+project(shm VERSION 1.1.0 LANGUAGES CXX)
 
 # ----------------------------------------------------------------------------
 # バージョン
@@ -23,6 +23,9 @@ project(shm VERSION 1.0.0 LANGUAGES CXX)
 #   MAJOR … 公開 API の削除・非互換変更
 #
 # 1.0.0: バージョン付与の開始。RingBuffer::isLayoutChanged() を含む。
+# 1.1.0: reserve_aligned() を追加。shm_service / shm_action の共有メモリ配置を
+#        境界揃えに変更（ARM の SIGBUS 修正）。配置が変わるため、この版と
+#        1.0.0 以前を混在させて同じトピックに接続してはならない。
 # ----------------------------------------------------------------------------
 set(SHM_VERSION "${PROJECT_VERSION}" CACHE INTERNAL
     "Version of shared-memory-based-handy-communication-manager in this build tree")

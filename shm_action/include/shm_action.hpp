@@ -31,6 +31,49 @@ enum ACTION_STATUS : uint8_t
   PREEMPTED,
 };
 
+//! @brief \~japanese-en ActionServer / ActionClient が使う共有メモリ上の配置
+//! @details \~japanese-en 以前は sizeof の総和で配置を決めていたため、
+//!          sizeof(Goal) などが 8 の倍数でないと後続の mutex / cond /
+//!          タイムスタンプが非アラインになり、ARM では 64bit アクセスが
+//!          SIGBUS になっていた。特に status は ACTION_STATUS (uint8_t) なので、
+//!          その直後の cancel_timestamp はほぼ常に非アラインだった。
+//!          サーバとクライアントが必ず同じ計算を使うよう、ここに集約する。
+template <class Goal, class Result, class Feedback>
+struct ActionLayout
+{
+  size_t goal_mutex;
+  size_t goal_condition;
+  size_t goal_timestamp;
+  size_t goal_data;
+  size_t result_mutex;
+  size_t result_condition;
+  size_t result_timestamp;
+  size_t result_data;
+  size_t feedback_data;
+  size_t status;
+  size_t cancel_timestamp;
+  size_t total_size;
+
+  ActionLayout()
+  {
+    size_t offset    = 0;
+    goal_mutex       = reserve_aligned<pthread_mutex_t>(offset);
+    goal_condition   = reserve_aligned<pthread_cond_t>(offset);
+    goal_timestamp   = reserve_aligned<uint64_t>(offset);
+    goal_data        = reserve_aligned<Goal>(offset);
+    result_mutex     = reserve_aligned<pthread_mutex_t>(offset);
+    result_condition = reserve_aligned<pthread_cond_t>(offset);
+    result_timestamp = reserve_aligned<uint64_t>(offset);
+    result_data      = reserve_aligned<Result>(offset);
+    feedback_data    = reserve_aligned<Feedback>(offset);
+    status           = reserve_aligned<ACTION_STATUS>(offset);
+    cancel_timestamp = reserve_aligned<uint64_t>(offset);
+    // 末尾も 8 バイト境界へ切り上げる
+    total_size = (offset + 7) & ~static_cast<size_t>(7);
+  }
+};
+
+
 // ****************************************************************************
 //! @class ActionServer
 //! @brief 共有メモリで受信したリクエストからレスポンスを返すサーバーを表現するクラス
@@ -150,36 +193,28 @@ ActionServer<Goal, Result, Feedback>::ActionServer(std::string name, PERM perm)
     throw std::runtime_error("shm::ActionServer: Be setted not POD class!");
   }
   
+  const ActionLayout<Goal, Result, Feedback> layout;
+
   shared_memory = new SharedMemoryPosix(shm_name, O_RDWR|O_CREAT, shm_perm);
-  shared_memory->connect( (sizeof(pthread_mutex_t)+sizeof(pthread_cond_t)+sizeof(uint64_t)) * 2 + sizeof(Goal) + sizeof(Result) + sizeof(Feedback) + sizeof(ACTION_STATUS) + sizeof(uint64_t));
+  shared_memory->connect(layout.total_size);
   if (shared_memory->isDisconnected())
   {
     throw std::runtime_error("shm::ActionServer: Cannot get memory!");
   }
 
-  uint8_t *data_ptr = shared_memory->getPtr();
-  memory_ptr = data_ptr;
-  goal_mutex = reinterpret_cast<pthread_mutex_t *>(data_ptr);
-  data_ptr += sizeof(pthread_mutex_t);
-  goal_condition = reinterpret_cast<pthread_cond_t *>(data_ptr);
-  data_ptr += sizeof(pthread_cond_t);
-  goal_timestamp_us = reinterpret_cast<uint64_t *>(data_ptr);
-  data_ptr += sizeof(uint64_t);
-  goal_ptr = reinterpret_cast<Goal *>(data_ptr);
-  data_ptr += sizeof(Goal);
-  result_mutex = reinterpret_cast<pthread_mutex_t *>(data_ptr);
-  data_ptr += sizeof(pthread_mutex_t);
-  result_condition = reinterpret_cast<pthread_cond_t *>(data_ptr);
-  data_ptr += sizeof(pthread_cond_t);
-  result_timestamp_us = reinterpret_cast<uint64_t *>(data_ptr);
-  data_ptr += sizeof(uint64_t);
-  result_ptr = reinterpret_cast<Result *>(data_ptr);
-  data_ptr += sizeof(Result);
-  feedback_ptr = reinterpret_cast<Feedback *>(data_ptr);
-  data_ptr += sizeof(Feedback);
-  status_ptr = reinterpret_cast<ACTION_STATUS *>(data_ptr);
-  data_ptr += sizeof(ACTION_STATUS);
-  cancel_timestamp_us = reinterpret_cast<uint64_t *>(data_ptr);
+  uint8_t *base = shared_memory->getPtr();
+  memory_ptr = base;
+  goal_mutex          = reinterpret_cast<pthread_mutex_t *>(base + layout.goal_mutex);
+  goal_condition      = reinterpret_cast<pthread_cond_t *>(base + layout.goal_condition);
+  goal_timestamp_us   = reinterpret_cast<uint64_t *>(base + layout.goal_timestamp);
+  goal_ptr            = reinterpret_cast<Goal *>(base + layout.goal_data);
+  result_mutex        = reinterpret_cast<pthread_mutex_t *>(base + layout.result_mutex);
+  result_condition    = reinterpret_cast<pthread_cond_t *>(base + layout.result_condition);
+  result_timestamp_us = reinterpret_cast<uint64_t *>(base + layout.result_timestamp);
+  result_ptr          = reinterpret_cast<Result *>(base + layout.result_data);
+  feedback_ptr        = reinterpret_cast<Feedback *>(base + layout.feedback_data);
+  status_ptr          = reinterpret_cast<ACTION_STATUS *>(base + layout.status);
+  cancel_timestamp_us = reinterpret_cast<uint64_t *>(base + layout.cancel_timestamp);
 
   initializeExclusiveAccess();
 
@@ -355,29 +390,21 @@ ActionClient<Goal, Result, Feedback>::isServerConnected()
     {
       return false;
     }
-    uint8_t *data_ptr = shared_memory->getPtr();
-    memory_ptr = data_ptr;
-    goal_mutex = reinterpret_cast<pthread_mutex_t *>(data_ptr);
-    data_ptr += sizeof(pthread_mutex_t);
-    goal_condition = reinterpret_cast<pthread_cond_t *>(data_ptr);
-    data_ptr += sizeof(pthread_cond_t);
-    goal_timestamp_us = reinterpret_cast<uint64_t *>(data_ptr);
-    data_ptr += sizeof(uint64_t);
-    goal_ptr = reinterpret_cast<Goal *>(data_ptr);
-    data_ptr += sizeof(Goal);
-    result_mutex = reinterpret_cast<pthread_mutex_t *>(data_ptr);
-    data_ptr += sizeof(pthread_mutex_t);
-    result_condition = reinterpret_cast<pthread_cond_t *>(data_ptr);
-    data_ptr += sizeof(pthread_cond_t);
-    result_timestamp_us = reinterpret_cast<uint64_t *>(data_ptr);
-    data_ptr += sizeof(uint64_t);
-    result_ptr = reinterpret_cast<Result *>(data_ptr);
-    data_ptr += sizeof(Result);
-    feedback_ptr = reinterpret_cast<Feedback *>(data_ptr);
-    data_ptr += sizeof(Feedback);
-    status_ptr = reinterpret_cast<ACTION_STATUS *>(data_ptr);
-    data_ptr += sizeof(ACTION_STATUS);
-    cancel_timestamp_us = reinterpret_cast<uint64_t *>(data_ptr);
+    const ActionLayout<Goal, Result, Feedback> layout;
+
+    uint8_t *base = shared_memory->getPtr();
+    memory_ptr = base;
+    goal_mutex          = reinterpret_cast<pthread_mutex_t *>(base + layout.goal_mutex);
+    goal_condition      = reinterpret_cast<pthread_cond_t *>(base + layout.goal_condition);
+    goal_timestamp_us   = reinterpret_cast<uint64_t *>(base + layout.goal_timestamp);
+    goal_ptr            = reinterpret_cast<Goal *>(base + layout.goal_data);
+    result_mutex        = reinterpret_cast<pthread_mutex_t *>(base + layout.result_mutex);
+    result_condition    = reinterpret_cast<pthread_cond_t *>(base + layout.result_condition);
+    result_timestamp_us = reinterpret_cast<uint64_t *>(base + layout.result_timestamp);
+    result_ptr          = reinterpret_cast<Result *>(base + layout.result_data);
+    feedback_ptr        = reinterpret_cast<Feedback *>(base + layout.feedback_data);
+    status_ptr          = reinterpret_cast<ACTION_STATUS *>(base + layout.status);
+    cancel_timestamp_us = reinterpret_cast<uint64_t *>(base + layout.cancel_timestamp);
   }
 
   return true;
