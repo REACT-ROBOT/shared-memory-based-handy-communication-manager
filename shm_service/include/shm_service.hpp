@@ -24,6 +24,19 @@ namespace irlab
 namespace shm
 {
 
+//! @brief 直前の値より必ず大きいタイムスタンプを返す
+//! @param [in] previous 共有メモリ上の現在のタイムスタンプ
+//! @return uint64_t 新しいタイムスタンプ
+//! @details getCurrentTimeUSec() は usec 分解能なので、同一 usec 内に 2 回
+//!          更新すると値が変わらず、待ち手の「前回より新しいか」という述語が
+//!          成立したままになって更新を取りこぼす。単調増加を保証する。
+inline uint64_t
+nextTimestamp(uint64_t previous)
+{
+  const uint64_t now = getCurrentTimeUSec();
+  return (now > previous) ? now : (previous + 1);
+}
+
 // ****************************************************************************
 //! @class ServiceServer
 //! @brief 共有メモリで受信したリクエストからレスポンスを返すサーバーを表現するクラス
@@ -178,9 +191,13 @@ template <class Req, class Res>
 void
 ServiceServer<Req, Res>::initializeExclusiveAccess()
 {
+  // pthread_cond_timedwait は絶対時刻を取るため、待ち時刻の計算に使う時計を
+  // condvar 側にも明示しておく。既定の CLOCK_REALTIME は NTP や手動設定で
+  // 飛ぶことがあり、待ち時間がその分だけ狂う。
   pthread_condattr_t request_cond_attr;
   pthread_condattr_init(&request_cond_attr);
   pthread_condattr_setpshared(&request_cond_attr, PTHREAD_PROCESS_SHARED);
+  pthread_condattr_setclock(&request_cond_attr, CLOCK_MONOTONIC);
   pthread_cond_init(request_condition, &request_cond_attr);
   pthread_condattr_destroy(&request_cond_attr);
 
@@ -193,6 +210,7 @@ ServiceServer<Req, Res>::initializeExclusiveAccess()
   pthread_condattr_t response_cond_attr;
   pthread_condattr_init(&response_cond_attr);
   pthread_condattr_setpshared(&response_cond_attr, PTHREAD_PROCESS_SHARED);
+  pthread_condattr_setclock(&response_cond_attr, CLOCK_MONOTONIC);
   pthread_cond_init(response_condition, &response_cond_attr);
   pthread_condattr_destroy(&response_cond_attr);
 
@@ -242,10 +260,18 @@ ServiceServer<Req, Res>::loop()
       break;
     }
     
-    // Update response under mutex protection
+    // 応答本体と述語（タイムスタンプ）の更新は必ず mutex を保持して行う。
+    // 待ち手も mutex を保持して述語を評価するため、こうしておけば
+    // broadcast 自体は解放後に出しても取りこぼされない
+    // （待ち手は待ちに入る前に必ず更新後の述語を見る）。
+    // 保持したまま broadcast すると、起こされた待ち手がすぐ mutex を取れず
+    // 余計なコンテキストスイッチが入るため、解放してから通知する。
     pthread_mutex_lock(response_mutex);
     *response_ptr = *result_ptr;
-    *response_timestamp_usec = getCurrentTimeUSec();
+    // タイムスタンプは usec 分解能なので、応答が同一 usec 内に収まると
+    // 待ち手の述語 (current >= *response_timestamp_usec) が成立したままになり
+    // 更新を検出できない。必ず前回より大きい値にする。
+    *response_timestamp_usec = nextTimestamp(*response_timestamp_usec);
     pthread_mutex_unlock(response_mutex);
 
     pthread_cond_broadcast(response_condition);
@@ -315,37 +341,58 @@ ServiceClient<Req, Res>::call(Req request, Res *response, unsigned long timeout_
     response_ptr = reinterpret_cast<Res *>(data_ptr);
   }
 
-  // Set request to shared memory
+  // リクエストの書き込みとタイムスタンプ更新は request_mutex を保持して行う。
+  // 以前は保持せずに更新して broadcast していたため、サーバが mutex を保持して
+  // 述語を評価してから pthread_cond_wait に入るまでの隙間に割り込むと通知が
+  // 捨てられ、サーバは次のリクエストが来るまで眠り続けていた（要求と応答が
+  // 交互に進む使い方では次のリクエストが発行されないので、クライアントが
+  // タイムアウトするまで戻らない）。
+  pthread_mutex_lock(request_mutex);
   *request_ptr = request;
-  *request_timestamp_usec = getCurrentTimeUSec();
+  // タイムスタンプは usec 分解能なので、複数のクライアントが同一 usec 内に
+  // リクエストを出すとサーバの述語が成立したままになり取りこぼす。
+  // 必ず前回より大きい値にする。
+  *request_timestamp_usec = nextTimestamp(*request_timestamp_usec);
+  pthread_mutex_unlock(request_mutex);
 
+  // 述語の更新を mutex 内で済ませてあるので、broadcast は解放後で取りこぼさない。
   pthread_cond_broadcast(request_condition);
 
-  // Simple timeout implementation using loop with small delays
-  uint64_t start_time = *request_timestamp_usec;
-  uint64_t end_time = start_time + timeout_usec;
+  // 応答待ち。述語の評価も response_mutex を保持したまま行う。
+  const uint64_t end_time = getCurrentTimeUSec() + timeout_usec;
 
+  pthread_mutex_lock(response_mutex);
   while (current_response_timestamp_usec >= *response_timestamp_usec)
   {
-    // Check timeout
-    uint64_t current_time = getCurrentTimeUSec();
-    if (current_time > end_time)
+    const uint64_t now = getCurrentTimeUSec();
+    if (now >= end_time)
     {
-      return false; // Timeout
+      pthread_mutex_unlock(response_mutex);
+      return false;  // Timeout
     }
-    
-    // Wait on the condvar with short timeout
-    pthread_mutex_lock(response_mutex);
+
+    // pthread_cond_timedwait は「絶対時刻」を取る。以前はここに相対時間
+    // (0 秒 + 10ms) を渡していたため、エポックから 10ms という過去の時刻となり
+    // 常に即座に ETIMEDOUT で戻る＝ビジーループになっていた。
+    // condvar の時計は CLOCK_MONOTONIC に設定してあるので、それに合わせる。
     struct timespec wait_time;
-    wait_time.tv_sec = 0;
-    wait_time.tv_nsec = 10000000; // 10ms
+    clock_gettime(CLOCK_MONOTONIC, &wait_time);
+    uint64_t remaining_usec = end_time - now;
+    if (remaining_usec > 10000)
+    {
+      remaining_usec = 10000;  // 最大 10ms ごとに起きてタイムアウトを再評価する
+    }
+    wait_time.tv_nsec += static_cast<long>(remaining_usec * 1000);
+    wait_time.tv_sec += wait_time.tv_nsec / 1000000000L;
+    wait_time.tv_nsec %= 1000000000L;
+
     pthread_cond_timedwait(response_condition, response_mutex, &wait_time);
-    pthread_mutex_unlock(response_mutex);
   }
   current_response_timestamp_usec = *response_timestamp_usec;
 
   // Get response from shared memory
   *response = *response_ptr;
+  pthread_mutex_unlock(response_mutex);
 
   return true;
 }
