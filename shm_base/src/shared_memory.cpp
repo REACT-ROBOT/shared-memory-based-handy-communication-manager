@@ -79,24 +79,26 @@ SharedMemoryPosix::connect(size_t size)
   }
   struct stat stat;
   fstat(shm_fd, &stat);
-  if (size == 0)
+  if (size != 0 && static_cast<size_t>(stat.st_size) < size)
   {
-    shm_size = stat.st_size;
-  }
-  else
-  {
-    shm_size = size;
-    if (stat.st_size < shm_size)
+    if (ftruncate(shm_fd, size) < 0)
     {
-      if (ftruncate(shm_fd, shm_size) < 0)
-      {
-        throw std::runtime_error("shm::getMemory(): Could not change shared memory size!");
-      }
-      // To Update stat.st_size
-      fstat(shm_fd, &stat);
+      throw std::runtime_error("shm::getMemory(): Could not change shared memory size!");
     }
+    // To Update stat.st_size
+    fstat(shm_fd, &stat);
   }
-  shm_ptr = reinterpret_cast<unsigned char *>(mmap(NULL, stat.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0));
+
+  // mmap はファイル全長で行うため、shm_size にも実際にマッピングした長さを
+  // 記録する。ここに引数の要求サイズを記録すると、既存ファイルの方が大きい場合に
+  // shm_size < マッピング長 となり、disconnect() の munmap(shm_ptr, shm_size) が
+  // マッピングの末尾を解放し損ねてアドレス空間が漏れる。
+  // 要求サイズより大きい共有メモリに接続するのは異常ではない: Publisher は
+  // 自分の型とバッファ数から計算したサイズで接続するため、より大きなレイアウトで
+  // 作られた既存の共有メモリに繋ぐと必ずこの状況になる。
+  shm_size = static_cast<size_t>(stat.st_size);
+
+  shm_ptr = reinterpret_cast<unsigned char *>(mmap(NULL, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0));
 
   if (shm_ptr == MAP_FAILED)
   {
