@@ -31,7 +31,10 @@ mkdir -p "$BUILD_DIR"
 # Configure with coverage
 echo "⚙️  Configuring CMake with coverage..."
 cd "$BUILD_DIR"
-cmake .. -DCMAKE_BUILD_TYPE=Debug -DDEBUG=ON -DENABLE_COVERAGE=ON
+# BUILD_TESTS を渡さないとテストが一切ビルドされず、ctest がテスト 0 件のまま
+# 終了コード 0 で返る。その結果 gcda が 1 つも生成されず、後段の
+# 「No coverage data found」で初めて失敗するという分かりにくい壊れ方をする。
+cmake .. -DCMAKE_BUILD_TYPE=Debug -DDEBUG=ON -DENABLE_COVERAGE=ON -DBUILD_TESTS=ON
 
 # Build
 echo "🔨 Building project..."
@@ -39,6 +42,11 @@ make -j$(nproc)
 
 # Run tests
 echo "🧪 Running tests..."
+# テストが 0 件でも ctest は終了コード 0 を返すので、登録件数を先に確認する
+if ! ctest -N | grep -qE "Total Tests: [1-9]"; then
+    echo "❌ No tests were registered. Check that BUILD_TESTS is enabled."
+    exit 1
+fi
 ctest --output-on-failure
 
 # Check for gcda files
