@@ -46,6 +46,16 @@ install(TARGETS shm_base EXPORT shm_baseExport
 	LIBRARY		DESTINATION lib
 	INCLUDES	DESTINATION include
 	PUBLIC_HEADER	DESTINATION include)
+# 参照側が find_package(shm_base <version>) でバージョンを確認できるようにする
+include(CMakePackageConfigHelpers)
+write_basic_package_version_file(
+	"${CMAKE_CURRENT_BINARY_DIR}/shm_base-config-version.cmake"
+	VERSION ${SHM_VERSION}
+	COMPATIBILITY SameMajorVersion
+)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/shm_base-config-version.cmake"
+	DESTINATION share/cmake/shm_base
+)
 install(EXPORT shm_baseExport
 	FILE shm_base-config.cmake
 	DESTINATION share/cmake/shm_base

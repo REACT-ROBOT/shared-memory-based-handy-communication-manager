@@ -59,6 +59,16 @@ install(TARGETS shm_pub_sub EXPORT shm_pub_subExport
 install(FILES ${PROJECT_SOURCE_DIR}/include/shm_pub_sub_vector.hpp
 	DESTINATION include
 )
+# 参照側が find_package(shm_pub_sub <version>) でバージョンを確認できるようにする
+include(CMakePackageConfigHelpers)
+write_basic_package_version_file(
+	"${CMAKE_CURRENT_BINARY_DIR}/shm_pub_sub-config-version.cmake"
+	VERSION ${SHM_VERSION}
+	COMPATIBILITY SameMajorVersion
+)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/shm_pub_sub-config-version.cmake"
+	DESTINATION share/cmake/shm_pub_sub
+)
 install(EXPORT shm_pub_subExport
 	FILE shm_pub_sub-config.cmake
 	DESTINATION share/cmake/shm_pub_sub

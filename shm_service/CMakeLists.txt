@@ -58,6 +58,16 @@ install(TARGETS shm_service EXPORT shm_serviceExport
 	LIBRARY		DESTINATION lib
 	INCLUDES	DESTINATION include
 	PUBLIC_HEADER	DESTINATION include)
+# 参照側が find_package(shm_service <version>) でバージョンを確認できるようにする
+include(CMakePackageConfigHelpers)
+write_basic_package_version_file(
+	"${CMAKE_CURRENT_BINARY_DIR}/shm_service-config-version.cmake"
+	VERSION ${SHM_VERSION}
+	COMPATIBILITY SameMajorVersion
+)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/shm_service-config-version.cmake"
+	DESTINATION share/cmake/shm_service
+)
 install(EXPORT shm_serviceExport
 	FILE shm_service-config.cmake
 	DESTINATION share/cmake/shm_service

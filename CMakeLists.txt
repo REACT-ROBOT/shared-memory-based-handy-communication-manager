@@ -1,6 +1,32 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(shm CXX)
+project(shm VERSION 1.0.0 LANGUAGES CXX)
+
+# ----------------------------------------------------------------------------
+# バージョン
+#
+# 参照側 (react_cv/shm_pub_sub_cv など) が「必要な API を備えた版か」を
+# configure 時に判定できるようにするために付与する。
+#
+#   - add_subdirectory で同一ビルドツリーに取り込まれる場合
+#       キャッシュ変数 SHM_VERSION を見る。
+#   - インストール済みを find_package する場合
+#       各サブプロジェクトが出力する <name>-config-version.cmake を見る。
+#       find_package(shm_base 1.0.0 REQUIRED) のように書ける。
+#
+# バージョンを持たない版 (この仕組みの導入以前) では SHM_VERSION が未定義に
+# なるため、参照側はそれを「古すぎる」として区別できる。
+#
+# 更新の目安:
+#   PATCH … 挙動の修正のみで、参照側のコード変更が不要なもの
+#   MINOR … 公開 API の追加。参照側が新 API を使うなら要求版を上げる
+#   MAJOR … 公開 API の削除・非互換変更
+#
+# 1.0.0: バージョン付与の開始。RingBuffer::isLayoutChanged() を含む。
+# ----------------------------------------------------------------------------
+set(SHM_VERSION "${PROJECT_VERSION}" CACHE INTERNAL
+    "Version of shared-memory-based-handy-communication-manager in this build tree")
+message(STATUS "shared-memory-based-handy-communication-manager version: ${SHM_VERSION}")
 
 # Global options
 option(DEBUG "switch on debug option" OFF)

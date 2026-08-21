@@ -57,6 +57,16 @@ install(TARGETS shm_action EXPORT shm_actionExport
 	LIBRARY		DESTINATION lib
 	INCLUDES	DESTINATION include
 	PUBLIC_HEADER	DESTINATION include)
+# 参照側が find_package(shm_action <version>) でバージョンを確認できるようにする
+include(CMakePackageConfigHelpers)
+write_basic_package_version_file(
+	"${CMAKE_CURRENT_BINARY_DIR}/shm_action-config-version.cmake"
+	VERSION ${SHM_VERSION}
+	COMPATIBILITY SameMajorVersion
+)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/shm_action-config-version.cmake"
+	DESTINATION share/cmake/shm_action
+)
 install(EXPORT shm_actionExport
 	FILE shm_action-config.cmake
 	DESTINATION share/cmake/shm_action
