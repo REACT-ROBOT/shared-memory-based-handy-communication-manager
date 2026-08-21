@@ -52,6 +52,7 @@ protected:
   void cleanup() {
     disconnectMemory("layout_vector_resize");
     disconnectMemory("layout_bufnum_mismatch");
+    disconnectMemory("layout_stale_publisher");
   }
 };
 
@@ -142,4 +143,39 @@ TEST_F(SHMLayoutTest, SubscribeMustNotReturnGarbageAfterLayoutChange) {
   const Msg&      fresh    = fresh_sub.subscribe(&ok_fresh);
   EXPECT_TRUE(ok_fresh);
   EXPECT_EQ(fresh.value, 200u) << "新規 Subscriber なら正しく読めるはず（既存 Subscriber との差が問題）";
+}
+
+// -----------------------------------------------------------------------------
+// 仕様: 自分が構築したときと違うレイアウトに作り直されたあとの publish() は、
+//       古いオフセットのまま書いてはならない。
+//
+// publish() は走査するバッファ数を共有メモリ上の値 (*buf_num) から読む一方、
+// 書き込み位置は構築時に計算したオフセットを使う。バッファ数が増えた状態で
+// 気付かずに書くと、確保していない位置——バッファ数によってはマッピングの外——
+// へ書き込むことになる。
+//
+// 現行実装: 取り残された Publisher の書き込みは、正しいレイアウトで読む
+//           Subscriber からは無関係な値に見える。FAIL する。
+// -----------------------------------------------------------------------------
+TEST_F(SHMLayoutTest, PublishMustNotUseStaleLayout) {
+  const std::string topic = "layout_stale_publisher";
+
+  Publisher<Msg> pub_3buf(topic, 3);
+  pub_3buf.publish(makeMsg(100));
+
+  // バッファ数の違う Publisher がリングバッファを作り直す
+  Publisher<Msg> pub_8buf(topic, 8);
+  pub_8buf.publish(makeMsg(200));
+
+  // 取り残された側が publish する
+  EXPECT_NO_THROW(pub_3buf.publish(makeMsg(300)));
+
+  // 現在のレイアウトで正しく読む Subscriber から見えるか
+  Subscriber<Msg> sub(topic);
+  bool            ok = false;
+  const Msg&      m  = sub.subscribe(&ok);
+  std::cout << "  取り残された Publisher の publish 後: success=" << ok << " value=" << m.value << std::endl;
+
+  EXPECT_TRUE(ok);
+  EXPECT_EQ(m.value, 300u) << "レイアウト変更に気付かない Publisher が古いオフセットへ書き込んだ";
 }

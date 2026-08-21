@@ -280,6 +280,7 @@ public:
   bool           isUpdated() const;
   void           setDataExpiryTime_us(uint64_t time_us);
   void           markAsInitialized();
+  bool           isLayoutChanged() const;
 
 private:
   void initializeExclusiveAccess();
@@ -302,6 +303,12 @@ private:
 
   uint64_t timestamp_us;
   uint64_t data_expiry_time_us;
+
+  // データ位置の計算に使ったレイアウト。共有メモリ上の値がこれと食い違ったら、
+  // 別のプロセスが異なるレイアウトで初期化し直したということなので、
+  // このインスタンスが持つオフセットは使えない（isLayoutChanged() 参照）。
+  size_t expected_element_size;
+  size_t expected_buf_num;
 
   static constexpr uint32_t INITIALIZED             = 1;
   static constexpr uint32_t NOT_INITIALIZED         = 0;

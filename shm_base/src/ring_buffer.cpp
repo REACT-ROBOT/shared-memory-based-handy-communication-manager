@@ -115,6 +115,8 @@ RingBuffer::RingBuffer(unsigned char *first_ptr, size_t size, int buffer_num)
   : memory_ptr(first_ptr)
   , timestamp_us(0)
   , data_expiry_time_us(2000000)
+  , expected_element_size(0)
+  , expected_buf_num(0)
 {
   // 先頭ポインタは 8 バイト境界必須。非アラインだと atomic 変数や
   // pthread 構造体へのアクセスが ARM では SIGBUS になる（x86 では動いて
@@ -132,6 +134,8 @@ RingBuffer::RingBuffer(unsigned char *first_ptr, size_t size, int buffer_num)
     // Calculate aligned layout for new buffer creation
     calculateAlignedLayout(size, buffer_num, mutex_offset, cond_offset, element_size_offset, buf_num_offset,
                            timestamp_offset, data_offset);
+    expected_element_size = size;
+    expected_buf_num      = static_cast<size_t>(buffer_num);
   }
   else
   {
@@ -150,6 +154,8 @@ RingBuffer::RingBuffer(unsigned char *first_ptr, size_t size, int buffer_num)
     // Second pass: calculate aligned layout based on actual parameters from shared memory
     calculateAlignedLayout(*element_size, *buf_num, mutex_offset, cond_offset, element_size_offset, buf_num_offset,
                            timestamp_offset, data_offset);
+    expected_element_size = *element_size;
+    expected_buf_num      = *buf_num;
   }
 
   // Initialize pointers using calculated aligned offsets
@@ -524,6 +530,26 @@ void
 RingBuffer::markAsInitialized()
 {
   initialization_flag->store(INITIALIZED, std::memory_order_release);
+}
+
+//! @brief 共有メモリ上のレイアウトが、このインスタンスの前提と食い違っているか
+//! @param なし
+//! @return bool 食い違っていれば真（このインスタンスは作り直しが必要）
+//! @details データ領域の開始位置はバッファ数に依存するため、別のプロセスが
+//!          異なるバッファ数や要素サイズで初期化し直すと、このインスタンスが
+//!          保持する data_list のオフセットは無効になる。気付かずに使い続けると
+//!          読み手は無関係な領域を success として返し、書き手はバッファ数だけ
+//!          共有メモリから読む（*buf_num）ため、割り当てたつもりのない位置へ
+//!          書き込んでマッピング外に出る危険がある。
+//!          初期化途中も「使えない」として真を返す。
+bool
+RingBuffer::isLayoutChanged() const
+{
+  if (initialization_flag->load(std::memory_order_acquire) != INITIALIZED)
+  {
+    return true;
+  }
+  return (*element_size != expected_element_size) || (*buf_num != expected_buf_num);
 }
 
 }  // namespace shm

@@ -77,6 +77,8 @@ public:
   void publish(const T &data);
 
 private:
+  void connectAndPrepare();
+
   std::string                   shm_name;
   int                           shm_buf_num;
   PERM                          shm_perm;
@@ -195,37 +197,47 @@ Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm)
   try
   {
     shared_memory = std::make_unique<SharedMemoryPosix>(shm_name, O_RDWR | O_CREAT, shm_perm);
-    shared_memory->connect(RingBuffer::getSize(sizeof(T), shm_buf_num));
-
-    if (shared_memory->isDisconnected())
-    {
-      throw std::runtime_error("shm::Publisher: Cannot get memory!");
-    }
-
-    ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr(), sizeof(T), shm_buf_num);
-
-    // Enhanced initialization synchronization for ARM processors
-    // Wait for pthread structures to be properly initialized
-    uint64_t       start_time = getCurrentTimeUSec();
-    const uint64_t timeout    = 1000;  // 1 second timeout
-
-    while (getCurrentTimeUSec() - start_time < timeout)
-    {
-      if (RingBuffer::checkInitialized(shared_memory->getPtr()))
-      {
-        break;
-      }
-      std::this_thread::sleep_for(std::chrono::microseconds(100));
-    }
-
-    if (!RingBuffer::checkInitialized(shared_memory->getPtr()))
-    {
-      throw std::runtime_error("shm::Publisher: RingBuffer initialization timeout");
-    }
+    connectAndPrepare();
   }
   catch (const std::runtime_error &e)
   {
     throw std::runtime_error("shm::Publisher: " + std::string(e.what()));
+  }
+}
+
+//! @brief \~japanese-en 共有メモリへ接続し、リングバッファを用意する
+//! @return  \~japanese-en なし
+//! @details \~japanese-en コンストラクタと、レイアウト変更を検知した publish() から呼ばれる．
+template <typename T>
+void
+Publisher<T>::connectAndPrepare()
+{
+  shared_memory->connect(RingBuffer::getSize(sizeof(T), shm_buf_num));
+
+  if (shared_memory->isDisconnected())
+  {
+    throw std::runtime_error("shm::Publisher: Cannot get memory!");
+  }
+
+  ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr(), sizeof(T), shm_buf_num);
+
+  // Enhanced initialization synchronization for ARM processors
+  // Wait for pthread structures to be properly initialized
+  uint64_t       start_time = getCurrentTimeUSec();
+  const uint64_t timeout    = 1000;  // 1 second timeout
+
+  while (getCurrentTimeUSec() - start_time < timeout)
+  {
+    if (RingBuffer::checkInitialized(shared_memory->getPtr()))
+    {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::microseconds(100));
+  }
+
+  if (!RingBuffer::checkInitialized(shared_memory->getPtr()))
+  {
+    throw std::runtime_error("shm::Publisher: RingBuffer initialization timeout");
   }
 }
 
@@ -242,6 +254,19 @@ template <typename T>
 void
 Publisher<T>::publish(const T &data)
 {
+  // 別のプロセスが異なるレイアウトで初期化し直していないか確認する。
+  // バッファ数は共有メモリ上の値 (*buf_num) を見て走査する一方、書き込み位置は
+  // 自分が構築時に計算したオフセットを使うため、食い違ったまま書くと
+  // 確保していない位置——場合によってはマッピングの外——へ書き込むことになる。
+  // バッファ数が増えていればファイルも ftruncate で伸びているので、
+  // リングバッファだけでなく共有メモリごと張り直す。
+  if (shared_memory->isDisconnected() || ring_buffer == nullptr || ring_buffer->isLayoutChanged())
+  {
+    ring_buffer.reset();
+    shared_memory->disconnect();
+    connectAndPrepare();
+  }
+
   // 確保できないままの書き込みは、他の writer が書き込み途中のバッファを
   // 破壊し購読可能にしてしまうため許されない。確保成功を必須とする。
   int  oldest_buffer = -1;
@@ -364,6 +389,16 @@ template <typename T>
 const T &
 Subscriber<T>::subscribe(bool *is_success)
 {
+  // 別のプロセスが異なるレイアウトで初期化し直していないか確認する。
+  // バッファ数が増えていると共有メモリのファイル自体が ftruncate で伸びており、
+  // 古いマッピングのままでは新しいデータ位置がマッピングの外に出る。
+  // リングバッファだけでなく共有メモリごと張り直す必要がある。
+  if (!shared_memory->isDisconnected() && ring_buffer != nullptr && ring_buffer->isLayoutChanged())
+  {
+    ring_buffer.reset();
+    shared_memory->disconnect();
+  }
+
   if (shared_memory->isDisconnected())
   {
     if (ring_buffer != nullptr)
@@ -401,6 +436,12 @@ Subscriber<T>::subscribe(bool *is_success)
   // 既に接続済みだが ring_buffer が未初期化の場合に対応
   else if (ring_buffer == nullptr)
   {
+    // 初期化途中のレイアウトを読むと誤ったオフセットを掴むため完了を待つ
+    if (!RingBuffer::waitForInitialization(shared_memory->getPtr(), 500000))
+    {
+      *is_success = false;
+      return return_buffer_;
+    }
     try
     {
       ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
@@ -488,6 +529,16 @@ template <typename T>
 bool
 Subscriber<T>::waitFor(uint64_t timeout_usec)
 {
+  // 別のプロセスが異なるレイアウトで初期化し直していないか確認する。
+  // バッファ数が増えていると共有メモリのファイル自体が ftruncate で伸びており、
+  // 古いマッピングのままでは新しいデータ位置がマッピングの外に出る。
+  // リングバッファだけでなく共有メモリごと張り直す必要がある。
+  if (!shared_memory->isDisconnected() && ring_buffer != nullptr && ring_buffer->isLayoutChanged())
+  {
+    ring_buffer.reset();
+    shared_memory->disconnect();
+  }
+
   if (shared_memory->isDisconnected())
   {
     if (ring_buffer != nullptr)
@@ -512,6 +563,11 @@ Subscriber<T>::waitFor(uint64_t timeout_usec)
   // 既に接続済みだが ring_buffer が未初期化の場合に対応
   else if (ring_buffer == nullptr)
   {
+    // 初期化途中のレイアウトを読むと誤ったオフセットを掴むため完了を待つ
+    if (!RingBuffer::waitForInitialization(shared_memory->getPtr(), 500000))
+    {
+      return false;
+    }
     try
     {
       ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
