@@ -31,3 +31,13 @@ endif()
 # Enable testing
 enable_testing()
 add_test(NAME shm_service_test COMMAND shm_service_test)
+
+# 共有メモリ配置のアライメント回帰テスト
+add_executable(shm_service_alignment_test shm_service_alignment_test.cpp)
+target_link_libraries(shm_service_alignment_test ${GTEST_LIBRARIES} pthread rt shm_base)
+target_compile_options(shm_service_alignment_test PRIVATE ${GTEST_CFLAGS_OTHER})
+if (DEBUG)
+    target_compile_options(shm_service_alignment_test PRIVATE -fsanitize=address -fno-omit-frame-pointer)
+    target_link_options(shm_service_alignment_test PRIVATE -fsanitize=address)
+endif()
+add_test(NAME shm_service_alignment_test COMMAND shm_service_alignment_test)
