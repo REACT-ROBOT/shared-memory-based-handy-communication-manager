@@ -136,7 +136,12 @@ private:
   std::unique_ptr<RingBuffer>   ring_buffer;
   int                           current_reading_buffer;
   uint64_t                      data_expiry_time_us;
-  T                             return_buffer_;
+  // 返り値はダブルバッファで持つ。読み出しは常に「今返していない方」へ行い、
+  // 一貫性を確認できたときだけ有効な側を入れ替える。こうしないと、失敗した
+  // subscribe() が直前に返した値を上書きしてしまう（const T& を返すため、
+  // 呼び出し側が保持している参照の中身が黙って壊れる）。
+  T                             return_buffers_[2];
+  int                           return_index_;
   uint64_t                      contention_retry_count_   = 0;
   uint64_t                      contention_failure_count_ = 0;
 };
@@ -336,7 +341,8 @@ Subscriber<T>::Subscriber(std::string name)
   , ring_buffer(nullptr)
   , current_reading_buffer(0)
   , data_expiry_time_us(2000000)
-  , return_buffer_()
+  , return_buffers_{}
+  , return_index_(0)
 {
   // Enhanced type checking for shared memory compatibility
   if (!std::is_standard_layout<T>::value)
@@ -409,27 +415,27 @@ Subscriber<T>::subscribe(bool *is_success)
     if (shared_memory->isDisconnected())
     {
       *is_success = false;
-      return return_buffer_;
+      return return_buffers_[return_index_];
     }
     try
     {
       if (shared_memory->getPtr() == nullptr)
       {
         *is_success = false;
-        return return_buffer_;
+        return return_buffers_[return_index_];
       }
       // Wait for initialization to complete
       if (!RingBuffer::waitForInitialization(shared_memory->getPtr(), 500000))
       {  // 500ms timeout (increased)
         *is_success = false;
-        return return_buffer_;
+        return return_buffers_[return_index_];
       }
       ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
     }
     catch (const std::bad_alloc &e)
     {
       *is_success = false;
-      return return_buffer_;
+      return return_buffers_[return_index_];
     }
     ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
   }
@@ -440,7 +446,7 @@ Subscriber<T>::subscribe(bool *is_success)
     if (!RingBuffer::waitForInitialization(shared_memory->getPtr(), 500000))
     {
       *is_success = false;
-      return return_buffer_;
+      return return_buffers_[return_index_];
     }
     try
     {
@@ -450,7 +456,7 @@ Subscriber<T>::subscribe(bool *is_success)
     catch (const std::bad_alloc &e)
     {
       *is_success = false;
-      return return_buffer_;
+      return return_buffers_[return_index_];
     }
   }
 
@@ -481,25 +487,28 @@ Subscriber<T>::subscribe(bool *is_success)
     unsigned char *data_ptr      = ring_buffer->getDataList();
     size_t         buffer_offset = newest_buffer * sizeof(T);
 
+    // 今返していない側へ読み込む。失敗しても直前に返した値は壊れない。
+    T &scratch = return_buffers_[1 - return_index_];
+
     if constexpr (is_arm_platform())
     {
       // ARM: Use safer memory copy approach
       if (!irlab::shm::is_aligned<T>(data_ptr + buffer_offset))
       {
         // Use memcpy for unaligned access on ARM
-        std::memcpy(&return_buffer_, data_ptr + buffer_offset, sizeof(T));
+        std::memcpy(&scratch, data_ptr + buffer_offset, sizeof(T));
       }
       else
       {
-        T *typed_ptr   = irlab::shm::align_pointer<T>(data_ptr + buffer_offset);
-        return_buffer_ = *typed_ptr;
+        T *typed_ptr = irlab::shm::align_pointer<T>(data_ptr + buffer_offset);
+        scratch      = *typed_ptr;
       }
     }
     else
     {
       // x86/x64: Direct cast is safe
-      T *typed_ptr   = reinterpret_cast<T *>(data_ptr + buffer_offset);
-      return_buffer_ = *typed_ptr;
+      T *typed_ptr = reinterpret_cast<T *>(data_ptr + buffer_offset);
+      scratch      = *typed_ptr;
     }
 
     // コピーの読み込みが完了してからタイムスタンプを再読みする（load-load 順序の固定）
@@ -509,20 +518,21 @@ Subscriber<T>::subscribe(bool *is_success)
     {
       *is_success            = true;
       current_reading_buffer = newest_buffer;
-      return return_buffer_;
+      return_index_          = 1 - return_index_;
+      return return_buffers_[return_index_];
     }
     // コピー中に上書きされた → やり直し
     ++contention_retry_count_;
   }
 
-  // 一貫したスナップショットを取得できなかった。
-  // return_buffer_ の内容は不定なので is_success を必ず確認すること。
+  // 一貫したスナップショットを取得できなかった。返るのは直前に成功した値
+  // （一度も成功していなければ T の既定値）なので、is_success を必ず確認すること。
   if (!no_data)
   {
     ++contention_failure_count_;
   }
   *is_success = false;
-  return return_buffer_;
+  return return_buffers_[return_index_];
 }
 
 template <typename T>

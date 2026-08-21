@@ -95,7 +95,10 @@ private:
   uint64_t                      data_expiry_time_us;
 
   size_t         vector_size;
-  std::vector<T> return_buffer_;
+  // 返り値はダブルバッファで持つ。理由はスカラ版と同じ（失敗した subscribe() が
+  // 直前に返した値を壊さないようにするため）。
+  std::vector<T> return_buffers_[2];
+  int            return_index_;
   uint64_t       contention_retry_count_   = 0;
   uint64_t       contention_failure_count_ = 0;
 };
@@ -239,7 +242,8 @@ Subscriber<std::vector<T>>::Subscriber(std::string name)
   , ring_buffer(nullptr)
   , current_reading_buffer(0)
   , data_expiry_time_us(2000000)
-  , return_buffer_(0)
+  , return_buffers_{}
+  , return_index_(0)
 {
   if (!std::is_standard_layout<T>::value)
   {
@@ -270,7 +274,7 @@ Subscriber<std::vector<T>>::subscribe(bool *is_success)
     if (shared_memory->isDisconnected())
     {
       *is_success = false;
-      return return_buffer_;
+      return return_buffers_[return_index_];
     }
 
     try
@@ -278,7 +282,7 @@ Subscriber<std::vector<T>>::subscribe(bool *is_success)
       if (shared_memory->getPtr() == nullptr)
       {
         *is_success = false;
-        return return_buffer_;
+        return return_buffers_[return_index_];
       }
 
       std::cerr << "[Subscriber::subscribe] Waiting for initialization..." << std::endl;
@@ -286,18 +290,19 @@ Subscriber<std::vector<T>>::subscribe(bool *is_success)
       if (!RingBuffer::waitForInitialization(shared_memory->getPtr(), 500000))
       {  // 500ms timeout (increased)
         *is_success = false;
-        return return_buffer_;
+        return return_buffers_[return_index_];
       }
 
       ring_buffer         = std::make_unique<RingBuffer>(shared_memory->getPtr());
       size_t element_size = ring_buffer->getElementSize();
       vector_size         = element_size / sizeof(T);
-      return_buffer_.resize(vector_size);
+      return_buffers_[0].resize(vector_size);
+      return_buffers_[1].resize(vector_size);
     }
     catch (const std::bad_alloc &e)
     {
       *is_success = false;
-      return return_buffer_;
+      return return_buffers_[return_index_];
     }
     ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
   }
@@ -309,13 +314,14 @@ Subscriber<std::vector<T>>::subscribe(bool *is_success)
       ring_buffer         = std::make_unique<RingBuffer>(shared_memory->getPtr());
       size_t element_size = ring_buffer->getElementSize();
       vector_size         = element_size / sizeof(T);
-      return_buffer_.resize(vector_size);
+      return_buffers_[0].resize(vector_size);
+      return_buffers_[1].resize(vector_size);
       ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
     }
     catch (const std::bad_alloc &e)
     {
       *is_success = false;
-      return return_buffer_;
+      return return_buffers_[return_index_];
     }
   }
   // seqlock 方式の読み出し: バッファ選択 → コピー → タイムスタンプ再確認。
@@ -342,7 +348,10 @@ Subscriber<std::vector<T>>::subscribe(bool *is_success)
     unsigned char *data_ptr      = ring_buffer->getDataList();
     size_t         buffer_offset = newest_buffer * vector_size * sizeof(T);
 
-    std::memcpy(return_buffer_.data(), data_ptr + buffer_offset, sizeof(T) * vector_size);
+    // 今返していない側へ読み込む。失敗しても直前に返した値は壊れない。
+    std::vector<T> &scratch = return_buffers_[1 - return_index_];
+
+    std::memcpy(scratch.data(), data_ptr + buffer_offset, sizeof(T) * vector_size);
 
     // コピーの読み込みが完了してからタイムスタンプを再読みする（load-load 順序の固定）
     std::atomic_thread_fence(std::memory_order_acquire);
@@ -351,19 +360,20 @@ Subscriber<std::vector<T>>::subscribe(bool *is_success)
     {
       *is_success            = true;
       current_reading_buffer = newest_buffer;
-      return return_buffer_;
+      return_index_          = 1 - return_index_;
+      return return_buffers_[return_index_];
     }
     ++contention_retry_count_;
   }
 
   // 一貫したスナップショットを取得できなかった。
-  // return_buffer_ の内容は不定なので is_success を必ず確認すること。
+  // 返るのは直前に成功した値なので、is_success を必ず確認すること。
   if (!no_data)
   {
     ++contention_failure_count_;
   }
   *is_success = false;
-  return return_buffer_;
+  return return_buffers_[return_index_];
 }
 
 template <typename T>
@@ -391,7 +401,8 @@ Subscriber<std::vector<T>>::waitFor(uint64_t timeout_usec)
     ring_buffer         = std::make_unique<RingBuffer>(shared_memory->getPtr());
     size_t element_size = ring_buffer->getElementSize();
     vector_size         = element_size / sizeof(T);
-    return_buffer_.resize(vector_size);
+    return_buffers_[0].resize(vector_size);
+      return_buffers_[1].resize(vector_size);
     ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
   }
   // 既に接続済みだが ring_buffer が未初期化の場合に対応
@@ -402,7 +413,8 @@ Subscriber<std::vector<T>>::waitFor(uint64_t timeout_usec)
       ring_buffer         = std::make_unique<RingBuffer>(shared_memory->getPtr());
       size_t element_size = ring_buffer->getElementSize();
       vector_size         = element_size / sizeof(T);
-      return_buffer_.resize(vector_size);
+      return_buffers_[0].resize(vector_size);
+      return_buffers_[1].resize(vector_size);
       ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
     }
     catch (const std::bad_alloc &e)
