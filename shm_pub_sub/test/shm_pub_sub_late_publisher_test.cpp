@@ -39,6 +39,7 @@ extern "C" {
 
 #include "shm_base.hpp"
 #include "shm_pub_sub.hpp"
+#include "shm_pub_sub_vector.hpp"
 
 using namespace irlab::shm;
 
@@ -143,7 +144,7 @@ protected:
 
   const std::vector<std::string> topics_ = {
     "late_pub_same_process", "late_pub_other_process", "late_pub_subscriber_view", "late_pub_init_flag",
-    "late_pub_observation",
+    "late_pub_observation",   "late_pub_vector",       "late_pub_concurrent",
   };
 };
 
@@ -320,6 +321,118 @@ TEST_F(SHMLatePublisherTest, LatePublisherMustNotClearInitializedFlag) {
 
   EXPECT_EQ(saw_not_initialized.load(), 0u)
       << "後発 Publisher の生成中に initialization_flag が NOT_INITIALIZED に落ちた";
+}
+
+// -----------------------------------------------------------------------------
+// 仕様: vector 特殊化でも後発 Publisher が既存の値を消してはならない。
+//
+// 現行実装: Publisher<std::vector<T>> のコンストラクタは vector_size = 0 で
+//           リングバッファを構築するため、既存の共有メモリの element_size を
+//           0 に書き換えてしまい、スカラ版と同じくタイムスタンプが全消しされる。
+//           コンストラクタで既存の要素サイズを引き継げば接続のみで済む。
+// -----------------------------------------------------------------------------
+TEST_F(SHMLatePublisherTest, LateVectorPublisherMustNotWipeTimestamps) {
+  const std::string      topic      = "late_pub_vector";
+  const int              buffer_num = 3;
+  const std::vector<int> value      = { 7, 8, 9, 10 };
+
+  Publisher<std::vector<int>> pub_first(topic, buffer_num);
+  pub_first.publish(value);
+
+  Subscriber<std::vector<int>> sub(topic);
+  bool                         ok = false;
+  ASSERT_EQ(sub.subscribe(&ok), value);
+  ASSERT_TRUE(ok) << "前提: 後発 Publisher 生成前は読めているはず";
+
+  Publisher<std::vector<int>> pub_late(topic, buffer_num);
+
+  bool ok_after = false;
+  auto after    = sub.subscribe(&ok_after);
+  EXPECT_TRUE(ok_after) << "後発 vector Publisher の生成で既存の値が読めなくなった";
+  if (ok_after) {
+    EXPECT_EQ(after, value);
+  }
+
+  // 後発 Publisher 生成後に作られた Subscriber からも読めること
+  Subscriber<std::vector<int>> fresh_sub(topic);
+  bool                         ok_fresh = false;
+  auto                         fresh    = fresh_sub.subscribe(&ok_fresh);
+  EXPECT_TRUE(ok_fresh) << "後発 vector Publisher の後に作った Subscriber が読めない";
+  if (ok_fresh) {
+    EXPECT_EQ(fresh, value);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// 仕様: publish が続いている最中に Publisher が次々と生成されても、購読側から
+//       トピックが消えてはならない。
+//
+// subscribe() の失敗には「データ無し」と「競合によるリトライ上限超過」の 2 種類が
+// あり、後者は競合カウンタで数えられる。ここで検出したいのは前者（＝トピックが
+// 消えた）だけなので、総失敗数から競合失敗数を引いた値を 0 と比較する。
+// これなら負荷の高いマシンで競合が起きても偽陽性にならない。
+//
+// 現行実装: 後発 Publisher がタイムスタンプを消すたびにデータ無しになるため、
+//           失敗が大量に出て FAIL する（実測で subscribe の約半数が失敗）。
+// -----------------------------------------------------------------------------
+TEST_F(SHMLatePublisherTest, ConcurrentPublisherStartupMustNotHideTopic) {
+  const std::string topic      = "late_pub_concurrent";
+  const int         buffer_num = 3;
+
+  Publisher<Msg>  pub_first(topic, buffer_num);
+  Subscriber<Msg> sub(topic);
+
+  pub_first.publish(makeMsg(1));
+  bool ok = false;
+  sub.subscribe(&ok);
+  ASSERT_TRUE(ok) << "前提: 計測開始前に一度は読めているはず";
+  sub.resetContentionCounts();
+
+  std::atomic<bool>     stop{ false };
+  std::atomic<uint64_t> published{ 0 };
+  std::atomic<uint64_t> read_ok{ 0 };
+  std::atomic<uint64_t> read_fail{ 0 };
+
+  std::thread writer([&] {
+    uint32_t seq = 2;
+    while (!stop.load(std::memory_order_relaxed)) {
+      try {
+        pub_first.publish(makeMsg(seq++));
+        published.fetch_add(1, std::memory_order_relaxed);
+      } catch (const std::runtime_error&) {
+        // 全バッファが使用中: 本テストの対象外
+      }
+    }
+  });
+
+  std::thread reader([&] {
+    while (!stop.load(std::memory_order_relaxed)) {
+      bool success = false;
+      sub.subscribe(&success);
+      (success ? read_ok : read_fail).fetch_add(1, std::memory_order_relaxed);
+    }
+  });
+
+  constexpr int kLatePublisherCount = 300;
+  for (int i = 0; i < kLatePublisherCount; ++i) {
+    Publisher<Msg> pub_late(topic, buffer_num);
+    std::this_thread::sleep_for(std::chrono::microseconds(200));
+  }
+
+  stop.store(true, std::memory_order_relaxed);
+  writer.join();
+  reader.join();
+
+  const uint64_t contention_failures = sub.getContentionFailureCount();
+  const uint64_t total_failures      = read_fail.load();
+  const uint64_t no_data_failures    = total_failures >= contention_failures ? total_failures - contention_failures : 0;
+
+  std::cout << "  published=" << published.load() << " subscribe ok=" << read_ok.load()
+            << " fail=" << total_failures << " (うち競合 " << contention_failures << " / データ無し "
+            << no_data_failures << ")" << std::endl;
+
+  EXPECT_EQ(no_data_failures, 0u)
+      << "publish が続いているのに、後発 Publisher の生成でトピックが消えた回数";
 }
 
 // -----------------------------------------------------------------------------
