@@ -196,4 +196,15 @@ if(BUILD_TESTS)
         ${GTEST_LDFLAGS}
       )
     gtest_add_tests(TARGET shm_pub_sub_late_publisher_test)
+
+    # レイアウト変更・共有メモリ作り直しの回帰テスト
+    add_executable(shm_pub_sub_layout_test
+        test/shm_pub_sub_layout_test.cpp
+      )
+    target_link_libraries(shm_pub_sub_layout_test
+        PRIVATE
+        shm_pub_sub
+        ${GTEST_LDFLAGS}
+      )
+    gtest_add_tests(TARGET shm_pub_sub_layout_test)
 endif()

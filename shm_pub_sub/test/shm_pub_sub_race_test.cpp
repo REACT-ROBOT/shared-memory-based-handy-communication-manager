@@ -110,6 +110,7 @@ protected:
     irlab::shm::disconnectMemory("race_slot_reclaim");
     irlab::shm::disconnectMemory("race_contention_fast");
     irlab::shm::disconnectMemory("race_contention_sane");
+    irlab::shm::disconnectMemory("race_failed_read_clobber");
   }
 };
 
@@ -337,4 +338,81 @@ TEST_F(SHMPubSubRaceTest, ContentionCountersDetectWriterOutpacingReader) {
         << "正常なレートで競合が多発している";
     EXPECT_EQ(sub.getContentionFailureCount(), 0u);
   }
+}
+
+// -----------------------------------------------------------------------------
+// バグ5: subscribe() の失敗が直前の値を破壊する
+//
+// subscribe() は選択したバッファを return_buffer_ に直接コピーしてから
+// タイムスタンプを再確認する。上書きを検出してリトライする際、コピー済みの
+// 内容はそのまま残るため、最終的に失敗した場合 return_buffer_ には
+// 「新旧が混ざった値」や「途中まで書き換わった値」が残る。
+//
+// 返り値は const T& なので、呼び出し側から見ると is_success を確認した前回の
+// 値が、次の失敗した呼び出しによって黙って書き換えられることになる。
+// 失敗時はスクラッチ領域へコピーし、一貫性を確認できたときだけ
+// return_buffer_ と入れ替えるべき。
+//
+// 現行実装では失敗時に値が壊れるため FAIL する（テストファースト）。
+// -----------------------------------------------------------------------------
+TEST_F(SHMPubSubRaceTest, FailedSubscribeMustNotCorruptPreviousValue) {
+  const std::string topic = "race_failed_read_clobber";
+
+  // バッファ1面 = writer が常に唯一のバッファを奪うので確実に失敗を作れる
+  irlab::shm::Publisher<BigMsg> pub(topic, 1);
+  BigMsg initial;
+  initial.fill(1);
+  pub.publish(initial);
+
+  irlab::shm::Subscriber<BigMsg> sub(topic);
+
+  std::atomic<bool> stop(false);
+  std::thread pub_thread([&]() {
+    BigMsg msg;
+    for (uint32_t seq = 2; !stop.load(std::memory_order_relaxed); ++seq) {
+      msg.fill(seq);
+      pub.publish(msg);
+    }
+  });
+
+  uint64_t successes            = 0;
+  uint64_t failures             = 0;
+  uint64_t clobbered            = 0;  // 失敗時に直前の成功値と違っていた回数
+  uint64_t torn_after_failure   = 0;  // 失敗時に内部矛盾した値が残っていた回数
+  uint32_t last_good            = 0;
+  bool     have_good            = false;
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (std::chrono::steady_clock::now() < deadline) {
+    bool success = false;
+    const BigMsg& m = sub.subscribe(&success);
+    if (success) {
+      ++successes;
+      last_good = m.words[0];
+      have_good = true;
+      continue;
+    }
+    ++failures;
+    if (!have_good) {
+      continue;
+    }
+    if (m.firstInconsistentWord() >= 0) {
+      ++torn_after_failure;
+    }
+    if (m.words[0] != last_good) {
+      ++clobbered;
+    }
+  }
+
+  stop.store(true);
+  pub_thread.join();
+
+  std::cout << "  success=" << successes << " failure=" << failures
+            << " (失敗時に前回値が壊れた " << clobbered
+            << " / うち内部矛盾 " << torn_after_failure << ")" << std::endl;
+
+  ASSERT_GT(failures, 0u) << "前提: 失敗を発生させられていない。テストの負荷設定を見直すこと";
+
+  EXPECT_EQ(torn_after_failure, 0u) << "失敗した subscribe() が torn な値を返り値に残した";
+  EXPECT_EQ(clobbered, 0u) << "失敗した subscribe() が直前の成功値を書き換えた";
 }

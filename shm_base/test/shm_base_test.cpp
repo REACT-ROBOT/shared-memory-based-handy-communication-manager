@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 #include <thread>
+#include <fstream>
+#include <cstdio>
 #include <chrono>
 #include <vector>
 #include <atomic>
@@ -26,6 +28,7 @@ protected:
         disconnectMemory("test_shm_memory2");
         disconnectMemory("test_large_memory");
         disconnectMemory("test_readonly_memory");
+        disconnectMemory("test_partial_unmap");
     }
     
     std::string test_name;
@@ -208,6 +211,75 @@ TEST_F(SharedMemoryPosixTest, ErrorHandling) {
     if (connect_result) {
         disconnectMemory("test_invalid");
     }
+}
+
+// -----------------------------------------------------------------------------
+// connect(size) は要求サイズより大きい既存の共有メモリに接続したとき、
+// マッピング全体を記録しなければならない。
+//
+// connect() は mmap を stat.st_size（＝ファイル全長）で行う一方、shm_size には
+// 引数の要求サイズを記録する。要求サイズが既存ファイルより小さいと
+// shm_size < マッピング長 となり、disconnect() の munmap(shm_ptr, shm_size) が
+// マッピングの末尾を解放し損ねる。connect/disconnect を繰り返すと
+// アドレス空間が単調に増加する。
+//
+// この経路は実際に踏まれる: Publisher<std::vector<T>> のコンストラクタは
+// vector_size = 0 で connect するため、既に大きなベクタが publish されている
+// 共有メモリに接続するたびに漏れる。バッファ数や型サイズの異なる Publisher が
+// 同じトピックに接続した場合も同様。
+//
+// 現行実装ではリークするため FAIL する（テストファースト）。
+// -----------------------------------------------------------------------------
+namespace {
+long readVmSizeKb() {
+    std::ifstream status("/proc/self/status");
+    std::string line;
+    while (std::getline(status, line)) {
+        if (line.rfind("VmSize:", 0) == 0) {
+            long value_kb = 0;
+            if (std::sscanf(line.c_str(), "VmSize: %ld", &value_kb) == 1) {
+                return value_kb;
+            }
+        }
+    }
+    return -1;
+}
+}  // namespace
+
+TEST_F(SharedMemoryPosixTest, ConnectSmallerThanExistingMustNotLeakMapping) {
+    const std::string name = "test_partial_unmap";
+    const size_t large_size = 4 * 1024 * 1024;  // 4MB
+    const size_t small_size = 4096;
+
+    // 大きな共有メモリを作っておく
+    {
+        SharedMemoryPosix creator("/" + name, O_RDWR | O_CREAT, DEFAULT_PERM);
+        ASSERT_TRUE(creator.connect(large_size));
+        creator.disconnect();
+    }
+
+    const long baseline_kb = readVmSizeKb();
+    ASSERT_GT(baseline_kb, 0) << "VmSize を読めない環境ではこのテストは成立しない";
+
+    constexpr int kIterations = 50;
+    for (int i = 0; i < kIterations; ++i) {
+        SharedMemoryPosix shm("/" + name, O_RDWR, DEFAULT_PERM);
+        ASSERT_TRUE(shm.connect(small_size));
+        EXPECT_EQ(shm.disconnect(), 0);
+    }
+
+    const long growth_kb = readVmSizeKb() - baseline_kb;
+    const long leak_per_iteration_kb = static_cast<long>((large_size - small_size) / 1024);
+
+    std::cout << "  VmSize 増加: " << growth_kb << " KB ("
+              << kIterations << " 回の connect/disconnect、"
+              << "解放し損ねる量は 1 回あたり " << leak_per_iteration_kb << " KB)" << std::endl;
+
+    // 1 回分の漏れも許容しない。多少の malloc 変動は許すため 1 回分未満を閾値にする。
+    EXPECT_LT(growth_kb, leak_per_iteration_kb)
+        << "connect(size) が要求サイズしか munmap せず、マッピングが解放されずに残っている";
+
+    disconnectMemory(name);
 }
 
 // RingBuffer size calculation tests
