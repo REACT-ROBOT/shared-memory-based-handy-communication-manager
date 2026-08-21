@@ -150,6 +150,7 @@ protected:
         irlab::shm::disconnectMemory("test_reconnection_service");
         irlab::shm::disconnectMemory("test_large_data_service");
         irlab::shm::disconnectMemory("test_performance_service");
+        irlab::shm::disconnectMemory("test_lost_wakeup_service");
 
         // Additional cleanup - wait a bit to ensure cleanup is complete
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -656,6 +657,83 @@ TEST_F(SHMServiceTest, LargeDataTest)
     {
         server_thread.join();
     }
+}
+
+// -----------------------------------------------------------------------------
+// リクエスト通知の取りこぼし回帰テスト
+//
+// ServiceClient::call() はリクエストのタイムスタンプ更新と
+// pthread_cond_broadcast() を request_mutex を保持せずに行っていた。
+// ServiceServer::loop() は request_mutex を保持して述語を評価してから
+// pthread_cond_wait() に入るため、その隙間にクライアントが割り込むと
+// broadcast が捨てられ、サーバは次のリクエストが来るまで眠り続ける。
+// 要求と応答が 1 対 1 で交互に進むこのテストでは次のリクエストが発行されないので、
+// クライアント側がタイムアウトするまで復帰しない。
+//
+// PerformanceTest はこの取りこぼしを 5 秒のデフォルトタイムアウトで踏むため
+// 散発的に FAIL していた。ここでは短いタイムアウトで多数回まわして
+// 決定的に検出する（実測で 20000 回あたり 3〜7 件発生）。
+//
+// 現行実装では FAIL する（テストファースト）。
+// -----------------------------------------------------------------------------
+TEST_F(SHMServiceTest, RequestNotificationMustNotBeLost)
+{
+    std::atomic<bool> server_ready(false);
+    std::atomic<bool> test_done(false);
+
+    std::thread server_thread([&]()
+                              {
+        try {
+            irlab::shm::ServiceServer<int, int> server("/test_lost_wakeup_service", addOneService);
+            server_ready.store(true);
+            while (!test_done.load()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Server thread exception: " << e.what() << std::endl;
+        } });
+
+    while (!server_ready.load())
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    irlab::shm::ServiceClient<int, int> client("/test_lost_wakeup_service");
+
+    // 取りこぼしが起きても待ち時間が伸びすぎないよう、短いタイムアウトを使う
+    constexpr unsigned long kTimeoutUsec = 200000;  // 200ms
+    constexpr int           kNumRequests = 20000;
+
+    int timeouts = 0;
+    int wrong_responses = 0;
+    const auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < kNumRequests; i++)
+    {
+        int response = -1;
+        if (!client.call(i, &response, kTimeoutUsec))
+        {
+            ++timeouts;
+            continue;
+        }
+        if (response != i + 1)
+        {
+            ++wrong_responses;
+        }
+    }
+    const auto elapsed_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+
+    test_done.store(true);
+    if (server_thread.joinable())
+    {
+        server_thread.join();
+    }
+
+    std::cout << "  " << kNumRequests << " requests in " << elapsed_ms << " ms, timeout=" << timeouts
+              << " wrong=" << wrong_responses << std::endl;
+
+    EXPECT_EQ(timeouts, 0) << "リクエスト通知が取りこぼされ、サーバが眠ったままになった";
+    EXPECT_EQ(wrong_responses, 0) << "応答が対応するリクエストと一致しない";
 }
 
 // Performance test
