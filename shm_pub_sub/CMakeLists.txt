@@ -185,4 +185,15 @@ if(BUILD_TESTS)
         ${GTEST_LDFLAGS}
       )
     gtest_add_tests(TARGET shm_pub_sub_timestamp_test)
+
+    # 後発 Publisher による共有メモリ再初期化の回帰テスト
+    add_executable(shm_pub_sub_late_publisher_test
+        test/shm_pub_sub_late_publisher_test.cpp
+      )
+    target_link_libraries(shm_pub_sub_late_publisher_test
+        PRIVATE
+        shm_pub_sub
+        ${GTEST_LDFLAGS}
+      )
+    gtest_add_tests(TARGET shm_pub_sub_late_publisher_test)
 endif()
