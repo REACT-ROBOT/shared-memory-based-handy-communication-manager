@@ -31,7 +31,7 @@ endif()
 
 ##libshm_pub_sub.a
 
-add_library(shm_base SHARED src/shared_memory.cpp src/ring_buffer.cpp)
+add_library(shm_base SHARED src/shared_memory.cpp src/ring_buffer.cpp src/shm_topic.cpp)
 
 # Explicitly set C++17 for this target
 target_compile_features(shm_base PUBLIC cxx_std_17)

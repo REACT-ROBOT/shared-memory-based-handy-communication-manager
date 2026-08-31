@@ -77,13 +77,13 @@ public:
   void publish(const T &data);
 
 private:
-  void connectAndPrepare();
-
-  std::string                   shm_name;
-  int                           shm_buf_num;
-  PERM                          shm_perm;
-  std::unique_ptr<SharedMemory> shared_memory;
-  std::unique_ptr<RingBuffer>   ring_buffer;
+  std::string               shm_name;
+  int                       shm_buf_num;
+  PERM                      shm_perm;
+  //! 共有メモリの世代管理は ShmTopic が引き受ける。
+  //! connect / disconnect / RingBuffer の作り直しをここに書かないこと
+  //! （4 箇所に複製されて食い違う原因になっていた）。
+  std::unique_ptr<ShmTopic> topic;
 
   size_t data_size;
 };
@@ -131,11 +131,10 @@ public:
   }
 
 private:
-  std::string                   shm_name;
-  std::unique_ptr<SharedMemory> shared_memory;
-  std::unique_ptr<RingBuffer>   ring_buffer;
-  int                           current_reading_buffer;
-  uint64_t                      data_expiry_time_us;
+  std::string               shm_name;
+  std::unique_ptr<ShmTopic> topic;
+  int                       current_reading_buffer;
+  uint64_t                  data_expiry_time_us;
   // 返り値はダブルバッファで持つ。読み出しは常に「今返していない方」へ行い、
   // 一貫性を確認できたときだけ有効な側を入れ替える。こうしないと、失敗した
   // subscribe() が直前に返した値を上書きしてしまう（const T& を返すため、
@@ -169,8 +168,7 @@ Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm)
   : shm_name(name)
   , shm_buf_num(buffer_num)
   , shm_perm(perm)
-  , shared_memory(nullptr)
-  , ring_buffer(nullptr)
+  , topic(nullptr)
   , data_size(sizeof(T))
 {
   // Enhanced type checking for shared memory compatibility
@@ -210,48 +208,15 @@ Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm)
 
   try
   {
-    shared_memory = std::make_unique<SharedMemoryPosix>(shm_name, O_RDWR | O_CREAT, shm_perm);
-    connectAndPrepare();
+    topic = std::make_unique<ShmTopic>(shm_name, shm_perm, true);
+    if (!topic->ensureCapacity(sizeof(T), shm_buf_num, alignof(T)))
+    {
+      throw std::runtime_error(topic->lastError());
+    }
   }
   catch (const std::runtime_error &e)
   {
     throw std::runtime_error("shm::Publisher: " + std::string(e.what()));
-  }
-}
-
-//! @brief \~japanese-en 共有メモリへ接続し、リングバッファを用意する
-//! @return  \~japanese-en なし
-//! @details \~japanese-en コンストラクタと、レイアウト変更を検知した publish() から呼ばれる．
-template <typename T>
-void
-Publisher<T>::connectAndPrepare()
-{
-  shared_memory->connect(RingBuffer::getSize(sizeof(T), shm_buf_num, alignof(T)));
-
-  if (shared_memory->isDisconnected())
-  {
-    throw std::runtime_error("shm::Publisher: Cannot get memory!");
-  }
-
-  ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr(), sizeof(T), shm_buf_num, alignof(T));
-
-  // Enhanced initialization synchronization for ARM processors
-  // Wait for pthread structures to be properly initialized
-  uint64_t       start_time = getCurrentTimeUSec();
-  const uint64_t timeout    = 1000;  // 1 second timeout
-
-  while (getCurrentTimeUSec() - start_time < timeout)
-  {
-    if (RingBuffer::checkInitialized(shared_memory->getPtr()))
-    {
-      break;
-    }
-    std::this_thread::sleep_for(std::chrono::microseconds(100));
-  }
-
-  if (!RingBuffer::checkInitialized(shared_memory->getPtr()))
-  {
-    throw std::runtime_error("shm::Publisher: RingBuffer initialization timeout");
   }
 }
 
@@ -268,18 +233,16 @@ template <typename T>
 void
 Publisher<T>::publish(const T &data)
 {
-  // 別のプロセスが異なるレイアウトで初期化し直していないか確認する。
-  // バッファ数は共有メモリ上の値 (*buf_num) を見て走査する一方、書き込み位置は
-  // 自分が構築時に計算したオフセットを使うため、食い違ったまま書くと
-  // 確保していない位置——場合によってはマッピングの外——へ書き込むことになる。
-  // バッファ数が増えていればファイルも ftruncate で伸びているので、
-  // リングバッファだけでなく共有メモリごと張り直す。
-  if (shared_memory->isDisconnected() || ring_buffer == nullptr || ring_buffer->isLayoutChanged())
+  // 世代の追随はここに集約されている。以前は「レイアウト変更を検知したら
+  // 自分で disconnect して作り直す」処理を publish の冒頭に書いていたが、
+  // 検知と実データアクセスの間に必ず窓が空いた（R01-F01 の TOCTOU）。
+  // 形式 v3 では稼働中のセグメントを作り直さず、新しい世代を別セグメントとして
+  // 作るので、古い世代を掴んだままでも範囲外アクセスにはならない。
+  if (!topic->ensureCapacity(sizeof(T), shm_buf_num, alignof(T)))
   {
-    ring_buffer.reset();
-    shared_memory->disconnect();
-    connectAndPrepare();
+    throw std::runtime_error("shm::Publisher: " + topic->lastError());
   }
+  RingBuffer *ring_buffer = topic->ring();
 
   // 確保できないままの書き込みは、他の writer が書き込み途中のバッファを
   // 破壊し購読可能にしてしまうため許されない。確保成功を必須とする。
@@ -297,7 +260,9 @@ Publisher<T>::publish(const T &data)
   }
   if (!allocated)
   {
-    throw std::runtime_error("shm::Publisher: Could not allocate a buffer (all buffers are in use)!");
+    throw std::runtime_error(
+        "shm::Publisher: Could not allocate a buffer (all buffers are in use). "
+        "buffer_num must be greater than the number of concurrent publishers on this topic.");
   }
 
   // 書き込みは memcpy に統一する。
@@ -307,7 +272,7 @@ Publisher<T>::publish(const T &data)
   // trivially copyable な型に対しては memcpy が正しい操作で、アライメント要求も
   // 無い。結果として ARM/x86 の分岐そのものが不要になる（R01-F07-a）。
   unsigned char *data_ptr      = ring_buffer->getDataList();
-  size_t         buffer_offset = static_cast<size_t>(oldest_buffer) * sizeof(T);
+  size_t         buffer_offset = static_cast<size_t>(oldest_buffer) * ring_buffer->getElementSize();
   std::memcpy(data_ptr + buffer_offset, &data, sizeof(T));
 
   // 発行番号の採番とスロットの解放。番号はここで採るので、
@@ -328,8 +293,7 @@ Publisher<T>::publish(const T &data)
 template <typename T>
 Subscriber<T>::Subscriber(std::string name)
   : shm_name(name)
-  , shared_memory(nullptr)
-  , ring_buffer(nullptr)
+  , topic(nullptr)
   , current_reading_buffer(0)
   , data_expiry_time_us(2000000)
   , return_buffers_{}
@@ -363,7 +327,7 @@ Subscriber<T>::Subscriber(std::string name)
 
   try
   {
-    shared_memory = std::make_unique<SharedMemoryPosix>(shm_name, O_RDWR, static_cast<PERM>(0));
+    topic = std::make_unique<ShmTopic>(shm_name, static_cast<PERM>(0), false);
   }
   catch (const std::runtime_error &e)
   {
@@ -386,94 +350,19 @@ template <typename T>
 const T &
 Subscriber<T>::subscribe(bool *is_success)
 {
-  // 別のプロセスが異なるレイアウトで初期化し直していないか確認する。
-  // バッファ数が増えていると共有メモリのファイル自体が ftruncate で伸びており、
-  // 古いマッピングのままでは新しいデータ位置がマッピングの外に出る。
-  // リングバッファだけでなく共有メモリごと張り直す必要がある。
-  if (!shared_memory->isDisconnected() && ring_buffer != nullptr && ring_buffer->isLayoutChanged())
+  // 現在有効な世代へ追随する。世代が進んでいれば新しいセグメントへ張り直す。
+  // 古い世代を掴んだままでもマッピングは有効なので、範囲外アクセスにはならない。
+  if (!topic->follow())
   {
-    ring_buffer.reset();
-    shared_memory->disconnect();
+    *is_success = false;
+    return return_buffers_[return_index_];
   }
+  RingBuffer *ring_buffer = topic->ring();
+  ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
 
-  if (shared_memory->isDisconnected())
-  {
-    if (ring_buffer != nullptr)
-    {
-      ring_buffer.reset();
-    }
-    shared_memory->connect();
-    if (shared_memory->isDisconnected())
-    {
-      *is_success = false;
-      return return_buffers_[return_index_];
-    }
-    try
-    {
-      if (shared_memory->getPtr() == nullptr)
-      {
-        *is_success = false;
-        return return_buffers_[return_index_];
-      }
-      // Wait for initialization to complete
-      if (!RingBuffer::waitForInitialization(shared_memory->getPtr(), 500000))
-      {  // 500ms timeout (increased)
-        *is_success = false;
-        return return_buffers_[return_index_];
-      }
-      // 切り詰められた／別形式の共有メモリに接続するとマッピング外を指す
-      // ポインタが作られるため、必ず検証つきの接続を通す（R01-F06）
-      ring_buffer = attachRingBuffer(*shared_memory);
-      if (ring_buffer == nullptr)
-      {
-        // マッピングが古い（他プロセスがレイアウトを広げた）可能性があるため、
-        // 共有メモリごと切断して次回に張り直させる。ここで居座ると
-        // ring_buffer == nullptr のまま isLayoutChanged() の経路に入れない。
-        shared_memory->disconnect();
-        *is_success = false;
-        return return_buffers_[return_index_];
-      }
-    }
-    catch (const std::bad_alloc &e)
-    {
-      *is_success = false;
-      return return_buffers_[return_index_];
-    }
-    ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
-  }
-  // 既に接続済みだが ring_buffer が未初期化の場合に対応
-  else if (ring_buffer == nullptr)
-  {
-    // 初期化途中のレイアウトを読むと誤ったオフセットを掴むため完了を待つ
-    if (!RingBuffer::waitForInitialization(shared_memory->getPtr(), 500000))
-    {
-      *is_success = false;
-      return return_buffers_[return_index_];
-    }
-    try
-    {
-      ring_buffer = attachRingBuffer(*shared_memory);
-      if (ring_buffer == nullptr)
-      {
-        // マッピングが古い（他プロセスがレイアウトを広げた）可能性があるため、
-        // 共有メモリごと切断して次回に張り直させる。ここで居座ると
-        // ring_buffer == nullptr のまま isLayoutChanged() の経路に入れない。
-        shared_memory->disconnect();
-        *is_success = false;
-        return return_buffers_[return_index_];
-      }
-      ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
-    }
-    catch (const std::bad_alloc &e)
-    {
-      *is_success = false;
-      return return_buffers_[return_index_];
-    }
-  }
-
-  // seqlock 方式の読み出し: バッファ選択 → コピー → タイムスタンプ再確認。
+  // seqlock 方式の読み出し: バッファ選択 → コピー → 発行番号の再確認。
   // コピー中に publisher がリングを一周して同じバッファを再確保・上書きすると
-  // タイムスタンプが変化するため、変化を検出したら選択からやり直す。
+  // 発行番号が変化するため、変化を検出したら選択からやり直す。
   // これを行わないと新旧データの混ざった値 (torn read) を返すことがある。
   constexpr int MAX_READ_RETRY = 5;
   bool          no_data        = false;
@@ -486,7 +375,7 @@ Subscriber<T>::subscribe(bool *is_success)
       break;
     }
 
-    // 整合性の検証には時刻ではなく発行番号を使う。発行番号は単一の atomic から
+  // 整合性の検証には時刻ではなく発行番号を使う。発行番号は単一の atomic から
     // fetch_add で採番され再利用されないので、同一 microsecond の publish で
     // 前後の値が一致してしまう ABA が原理的に起きない（R01-F05）。
     uint64_t sequence_before = ring_buffer->getSequence(newest_buffer);
@@ -498,7 +387,7 @@ Subscriber<T>::subscribe(bool *is_success)
     }
 
     unsigned char *data_ptr      = ring_buffer->getDataList();
-    size_t         buffer_offset = static_cast<size_t>(newest_buffer) * sizeof(T);
+    size_t         buffer_offset = static_cast<size_t>(newest_buffer) * ring_buffer->getElementSize();
 
     // 今返していない側へ読み込む。失敗しても直前に返した値は壊れない。
     T &scratch = return_buffers_[1 - return_index_];
@@ -533,70 +422,12 @@ template <typename T>
 bool
 Subscriber<T>::waitFor(uint64_t timeout_usec)
 {
-  // 別のプロセスが異なるレイアウトで初期化し直していないか確認する。
-  // バッファ数が増えていると共有メモリのファイル自体が ftruncate で伸びており、
-  // 古いマッピングのままでは新しいデータ位置がマッピングの外に出る。
-  // リングバッファだけでなく共有メモリごと張り直す必要がある。
-  if (!shared_memory->isDisconnected() && ring_buffer != nullptr && ring_buffer->isLayoutChanged())
+  if (!topic->follow())
   {
-    ring_buffer.reset();
-    shared_memory->disconnect();
+    return false;
   }
-
-  if (shared_memory->isDisconnected())
-  {
-    if (ring_buffer != nullptr)
-    {
-      ring_buffer.reset();
-    }
-    shared_memory->connect();
-    if (shared_memory->isDisconnected())
-    {
-      return false;
-    }
-
-    // Wait for initialization to complete
-    if (!RingBuffer::waitForInitialization(shared_memory->getPtr(), 500000))
-    {  // 500ms timeout (increased)
-      return false;
-    }
-
-    ring_buffer = attachRingBuffer(*shared_memory);
-    if (ring_buffer == nullptr)
-    {
-      // 理由は subscribe() 側の同じ箇所のコメントを参照
-      shared_memory->disconnect();
-      return false;
-    }
-    ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
-  }
-  // 既に接続済みだが ring_buffer が未初期化の場合に対応
-  else if (ring_buffer == nullptr)
-  {
-    // 初期化途中のレイアウトを読むと誤ったオフセットを掴むため完了を待つ
-    if (!RingBuffer::waitForInitialization(shared_memory->getPtr(), 500000))
-    {
-      return false;
-    }
-    try
-    {
-      ring_buffer = attachRingBuffer(*shared_memory);
-      if (ring_buffer == nullptr)
-      {
-        // マッピングが古い（他プロセスがレイアウトを広げた）可能性があるため、
-        // 共有メモリごと切断して次回に張り直させる。ここで居座ると
-        // ring_buffer == nullptr のまま isLayoutChanged() の経路に入れない。
-        shared_memory->disconnect();
-        return false;
-      }
-      ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
-    }
-    catch (const std::bad_alloc &e)
-    {
-      return false;
-    }
-  }
-
+  RingBuffer *ring_buffer = topic->ring();
+  ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
   return ring_buffer->waitFor(timeout_usec);
 }
 
@@ -605,9 +436,9 @@ void
 Subscriber<T>::setDataExpiryTime_us(uint64_t time_us)
 {
   data_expiry_time_us = time_us;
-  if (ring_buffer != nullptr)
+  if (topic->ring() != nullptr)
   {
-    ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
+    topic->ring()->setDataExpiryTime_us(data_expiry_time_us);
   }
 }
 
@@ -615,26 +446,8 @@ template <typename T>
 bool
 Subscriber<T>::existsPublisherMemory()
 {
-  // safety check
-  if (shared_memory == nullptr)
-  {
-    return false;
-  }
-
-  // 既に接続済みで初期化済みなら true
-  if (!shared_memory->isDisconnected())
-  {
-    unsigned char *ptr = shared_memory->getPtr();
-    if (ptr != nullptr && RingBuffer::checkInitialized(ptr))
-    {
-      return true;
-    }
-  }
-
-  // 未接続の場合：OS レベルで共有メモリの存在確認のみ
-  // connect() は呼ばず、exists() で存在と初期化を確認
-  // ファイルが存在して未初期化なら、タイムアウト付きで初期化待ち
-  return shared_memory->isExists(500000);  // 500ms timeout
+  // 共有メモリが存在し、有効な世代が公開されているかを確認する
+  return topic != nullptr && topic->follow();
 }
 
 }  // namespace shm

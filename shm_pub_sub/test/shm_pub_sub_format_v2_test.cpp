@@ -79,7 +79,8 @@ TEST_F(SHMFormatV2Test, HeaderIsSelfDescribing)
   EXPECT_EQ(h->buf_num, 4u);
   EXPECT_EQ(h->element_capacity, sizeof(Payload));
   EXPECT_EQ(h->payload_alignment, alignof(Payload));
-  EXPECT_GT(h->generation.load(), 0u);
+  EXPECT_GT(h->generation, 0u);
+  EXPECT_GE(h->latest_generation.load(), 1u);
   EXPECT_LE(h->total_size, shm.getSize());
 }
 

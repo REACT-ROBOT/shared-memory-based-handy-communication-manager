@@ -19,7 +19,7 @@ general_usage()
   std::cout << progname << " is a command-line tool to operate shared memory that shm used" << std::endl << std::endl;
   std::cout << "Commands:" << std::endl;
   std::cout << "\t" << progname << " list\tlist up shared memory" << std::endl;
-  std::cout << "\t" << progname << " remove\tremove shared memory" << std::endl;
+  std::cout << "\t" << progname << " remove\tremove shared memory (all layout generations)" << std::endl;
 }
 
 void
@@ -113,7 +113,9 @@ main(int argc, char *argv[])
     }
     try
     {
-      irlab::shm::disconnectMemory(argv[2]);
+      // 形式 v3 ではレイアウト世代ごとに /shm_<topic>#<N> が増えるため、
+      // トピック名だけを消しても古い世代が残る。世代ごと片付ける。
+      irlab::shm::disconnectTopic(argv[2]);
     }
     catch (const std::exception &e)
     {

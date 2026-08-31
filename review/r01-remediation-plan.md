@@ -503,6 +503,67 @@ SIGKILL する形に書き換えた。
 既存の `/dev/shm/shm_*` を消す必要がある。参照側3パッケージの
 `SHM_REQUIRED_VERSION` も 3.0.0 に更新した。
 
+### 完了: P3（世代別セグメント）
+
+| 項目 | 内容 |
+|---|---|
+| F01 | **稼働中セグメントの破壊的な再レイアウトを廃止**。レイアウトを変えるときは既存セグメントに一切触れず、新しい世代を別セグメントとして作り、完全に初期化してから「現在有効な世代」を CAS で進める |
+| §3.1 | 要素サイズを固定値ではなく**容量**として扱う。スロットは実長 `payload_size` を持ち、容量は 25% の余裕を付けて**増やすだけ**。LiDAR の点数や画像サイズが揺れても世代が回らない |
+| §3.2 | `O_CREAT \| O_EXCL` で作成者を1者に絞る。負けた側は勝者に合流し、それでも足りなければ次の世代へ挑戦（試行回数に上限） |
+| §5 | Publisher / Subscriber から connect / disconnect / RingBuffer の作り直しを**全て排除**し、`ShmTopic` に集約した |
+
+**セグメント名**
+
+```
+/shm_<topic>        世代 1。データ本体であると同時にディレクトリを兼ねる。
+                    ヘッダの latest_generation がトピック全体の正本。
+/shm_<topic>#<N>    世代 N (N >= 2)
+```
+
+世代 1 をディレクトリと兼用するのは、余分なマッピングを増やさないためと、
+レイアウト変更が起きないトピック（スカラ型はこれに当たる）で従来と全く同じ
+構成のままにするため。実際、スカラ型では世代 2 以降が作られないことを
+テストで確認している。
+
+**要求の食い違いは「増やすだけ」で収束させる**
+
+容量・スロット数・アライメントのいずれも、一致ではなく**包含**で判定する。
+一致を求めると、`buf_num` の違う Publisher が同じトピックに繋いだときに
+互いに相手のレイアウトを作り直し合って世代が往復し、収束しない
+（実際に P3 の実装中にこれで無限ループになった）。スロットが多い分には
+誰も困らない（履歴が長くなるだけで、「buf_num は同時 Publisher 数より
+大きいこと」という制約にも有利）ので、必ず最大値へ収束させる。
+
+**後片付け**
+
+`disconnectMemory()` は世代 1 しか消さないため、全世代を消す
+`disconnectTopic()` を追加した。`shm_tool remove` もこちらを使う。
+
+**追加した回帰テスト（6本）**
+
+| テスト | 検証内容 |
+|---|---|
+| `ScalarTopicNeverCreatesASecondGeneration` | 固定長トピックでは世代が増えない |
+| **`GrowingVectorCreatesANewGenerationWithoutTouchingTheOldOne`** | レイアウト変更時、既存セグメントのヘッダが `latest_generation` 以外 1 バイトも書き換わらない（F01 の核心） |
+| `CapacityOnlyGrowsAndShrinkingDoesNotChurnGenerations` | 長さが揺れても世代が回らない。返るのは容量ではなく実際の長さ |
+| `StaleParticipantsFollowTheNewGenerationSafely` | 取り残された Publisher が落ちず、現世代へ追随して正しく書ける |
+| `PublishersWithDifferentRequirementsConverge` | 要求が食い違う Publisher が有限回で収束する |
+| `DisconnectTopicRemovesEveryGeneration` | 全世代のセグメントが消える |
+
+**P3 の実装中に見つけた自分のバグ**
+
+1. `openRoot()` が要求レイアウトで root セグメントを**その場で再初期化**していた。
+   P3 で無くしたはずの破壊的再レイアウトそのもの。既に有効な世代 1 があれば
+   決して初期化し直さないよう修正。
+2. `allocateBuffer()` が `capture_monotonic_us` をクリアしていたため、読み手が
+   「発行番号を読む → capture を読む」の間に割り込まれると 0 を読んで
+   期限切れと誤判定し、publish が続いているのに「データ無し」を返していた。
+   ASan ビルドで 15 回中 4 回再現。`commitBuffer()` が必ず全フィールドを
+   書き直すのでクリアは不要と判断して削除し、併せて選択後に発行番号を
+   再確認する経路を追加。修正後 40 回連続で再現せず。
+
+**検証**: Release / ASan / TSan / UBSan の全構成を 2 回ずつ、**80/80 PASS**。
+
 ## 6. 実施順序
 
 形式変更を1回に束ねることを最優先にする。F07-b だけは独立トラックで並走させる。

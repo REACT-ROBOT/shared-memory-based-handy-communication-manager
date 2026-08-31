@@ -211,6 +211,8 @@ const PERM DEFAULT_PERM = static_cast<PERM>(PERM_USER_READ | PERM_USER_WRITE | P
 // ****************************************************************************
 
 int      disconnectMemory(std::string name);
+//! @brief トピックの共有メモリを世代ごと破棄する（形式 v3 の世代セグメントを含む）
+int      disconnectTopic(const std::string &name);
 uint64_t getCurrentTimeUSec();
 void     validateShmName(const std::string &name, const char *context);
 
@@ -311,10 +313,14 @@ struct ShmHeader
   uint64_t              slot_offset;        //!< SlotRecord[] の先頭
   uint64_t              slot_size;          //!< sizeof(SlotRecord)。ABI 差の検出
   uint64_t              data_offset;        //!< ペイロード先頭
-  std::atomic<uint64_t> generation;         //!< レイアウト世代（P3）
+  uint64_t              generation;         //!< このセグメント自身の世代（不変）
   std::atomic<uint64_t> sequence;           //!< 発行順の正本。単調増加
   uint64_t              boot_id_hash;       //!< 再起動をまたいだ残骸の検出
-  uint64_t              reserved[4];
+  //! トピック全体で現在有効な世代。**世代 1 のセグメントのものだけが正本**で、
+  //! 世代を進める側が CAS で更新する。参加者はこれを見て現世代へ追随する。
+  //! 世代 1 のセグメントは「データ本体」と「ディレクトリ」を兼ねる。
+  std::atomic<uint64_t> latest_generation;
+  uint64_t              reserved[3];
 };
 
 //! @brief スロット1つ分のメタデータ
@@ -389,12 +395,19 @@ public:
   uint64_t getPayloadSize(int buffer_num) const;
   uint64_t getCaptureRealtime_us(int buffer_num) const;
   uint64_t getGeneration() const;
+  //! @brief トピック全体で現在有効な世代（世代 1 のセグメントのものが正本）
+  uint64_t getLatestGeneration() const;
+  void     setLatestGeneration(uint64_t generation);
+  //! @brief 現在有効な世代を CAS で進める。成功したら真
+  bool     tryAdvanceLatestGeneration(uint64_t expected, uint64_t desired);
   //! @deprecated getTimestamp_us(int) が「無効」を表す値を返したかの判定。
   //!             v2 では sequence が 0 のスロットに対してこの値が返る。
   static bool    isBeingWritten(uint64_t timestamp);
   int            getNewestBufferNum();
   int            getOldestBufferNum();
   size_t         getElementSize() const;
+  size_t         getBufferNum() const;
+  size_t         getPayloadAlignment() const;
   unsigned char *getDataList();
   bool           isUpdated() const;
   void           setDataExpiryTime_us(uint64_t time_us);
@@ -484,6 +497,89 @@ private:
  * @return std::unique_ptr<RingBuffer> 失敗時は nullptr
  */
 std::unique_ptr<RingBuffer> attachRingBuffer(SharedMemory &memory, std::string *reason = nullptr);
+
+// ****************************************************************************
+//! @class ShmTopic
+//! @brief \~japanese-en 1つのトピックを表し、レイアウト世代の切り替えを引き受けるクラス
+//! @details
+//! 稼働中のセグメントを ftruncate して作り直すと、「レイアウト変更の確認」と
+//! 「実際のデータアクセス」の間に必ず窓が空く。確認を増やしても窓は消えない。
+//! 窓を消すには **一度公開したセグメントのレイアウトを二度と変えない** しかない。
+//!
+//! そこで、レイアウトを変えたくなったら既存セグメントには一切触れず、
+//! 新しい世代のセグメントを別名で作って初期化し、最後に「現在有効な世代」を
+//! CAS で進める。古い世代を掴んだままのプロセスは、有効なマッピングの中に
+//! 読み書きし続けるだけで範囲外アクセスにはならず、次の呼び出しで世代の変化に
+//! 気付いて張り直す。最悪でも「一時的に stale」で済み、「破損」にはならない。
+//!
+//! セグメントの名前:
+//! \code
+//!   /shm_<topic>        世代 1。データ本体であると同時にディレクトリを兼ねる。
+//!                       ヘッダの latest_generation がトピック全体の正本。
+//!   /shm_<topic>#<N>    世代 N (N >= 2)。
+//! \endcode
+//!
+//! 世代 1 をディレクトリと兼用するのは、余分なマッピングを増やさないためと、
+//! レイアウト変更が起きないトピック（スカラ型はこれに当たる）で
+//! 従来と全く同じ構成のままにするため。
+// ****************************************************************************
+class ShmTopic
+{
+public:
+  //! 世代の取り違えが無限に続かないための上限
+  static constexpr int MAX_GENERATION_ATTEMPTS = 8;
+
+  ShmTopic(std::string name, PERM perm, bool create);
+  ~ShmTopic();
+
+  ShmTopic(const ShmTopic &)            = delete;
+  ShmTopic &operator=(const ShmTopic &) = delete;
+
+  /*!
+   * \~japanese-en 要求する容量を満たす世代へ接続する（Publisher 用）．
+   *               現世代が足りていればそのまま使い、足りなければ新しい世代を作る．
+   * @param [in] required_capacity  1スロットに必要なバイト数
+   * @param [in] buf_num            スロット数
+   * @param [in] payload_alignment  ペイロードに要求する境界
+   * @return bool 使える状態になったら真
+   */
+  bool ensureCapacity(size_t required_capacity, int buf_num, size_t payload_alignment);
+
+  /*!
+   * \~japanese-en 現在有効な世代へ追随する（Subscriber 用）．新しい世代は作らない．
+   * @return bool 接続できたら真
+   */
+  bool follow();
+
+  //! @brief 現世代のリングバッファ。未接続なら nullptr
+  RingBuffer *ring() const { return ring_.get(); }
+  //! @brief 現在接続している世代
+  uint64_t generation() const { return current_generation_; }
+  //! @brief 直近の失敗理由
+  const std::string &lastError() const { return last_error_; }
+  //! @brief 全世代のセグメントを削除する
+  static int  removeAllGenerations(const std::string &name);
+  //! @brief 世代 N のセグメント名を返す
+  static std::string generationName(const std::string &name, uint64_t generation);
+
+private:
+  bool openRoot(bool create, size_t initial_capacity, int buf_num, size_t payload_alignment);
+  bool attachGeneration(uint64_t generation);
+  bool createNextGeneration(uint64_t from_generation, size_t capacity, int buf_num, size_t payload_alignment);
+  //! 世代の作り直しを繰り返さないよう、容量は増やすだけにし余裕を持たせる
+  static size_t growCapacity(size_t current, size_t required, size_t alignment);
+
+  std::string                        name_;
+  PERM                               perm_;
+  std::unique_ptr<SharedMemoryPosix> root_;  //!< /shm_<topic>（世代 1 兼ディレクトリ）
+  //! root_ に対する RingBuffer。latest_generation を読むためだけに使う。
+  //! publish/subscribe のたびに構築すると毎回ヒープ確保が走るのでキャッシュする。
+  std::unique_ptr<RingBuffer>        root_ring_;
+  std::unique_ptr<SharedMemoryPosix> data_;  //!< 現世代（世代 1 のときは nullptr）
+  std::unique_ptr<RingBuffer>        ring_;
+  uint64_t                           current_generation_;
+  std::string                        last_error_;
+};
 
 }  // namespace shm
 

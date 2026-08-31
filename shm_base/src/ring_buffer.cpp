@@ -401,7 +401,7 @@ RingBuffer::RingBuffer(unsigned char *first_ptr, size_t size, int buffer_num, si
     expected_element_size      = header->element_capacity;
     expected_buf_num           = header->buf_num;
     expected_payload_alignment = header->payload_alignment;
-    expected_generation        = header->generation.load(std::memory_order_acquire);
+    expected_generation        = header->generation;
     bindPointers();
   }
 }
@@ -462,7 +462,7 @@ RingBuffer::initializeOrAttach(size_t element_size_arg, int buffer_num, size_t p
     expected_element_size      = element_size_arg;
     expected_buf_num           = static_cast<size_t>(buffer_num);
     expected_payload_alignment = payload_alignment;
-    expected_generation        = header->generation.load(std::memory_order_acquire);
+    expected_generation        = header->generation;
     bindPointers();
     return;
   }
@@ -488,7 +488,7 @@ RingBuffer::initializeOrAttach(size_t element_size_arg, int buffer_num, size_t p
         expected_element_size      = element_size_arg;
         expected_buf_num           = static_cast<size_t>(buffer_num);
         expected_payload_alignment = payload_alignment;
-        expected_generation        = header->generation.load(std::memory_order_acquire);
+        expected_generation        = header->generation;
         bindPointers();
         return;
       }
@@ -531,7 +531,7 @@ RingBuffer::initializeContents(size_t element_size_arg, int buffer_num, size_t p
 
   // 世代は作り直しのたびに進める。旧レイアウトのオフセットを持ったままの
   // インスタンスは isLayoutChanged() でこれに気付いて張り直す。
-  const uint64_t next_generation = header->generation.load(std::memory_order_acquire) + 1;
+  const uint64_t next_generation = header->generation + 1;
 
   header->magic             = SHM_MAGIC;
   header->abi_major         = ABI_MAJOR;
@@ -545,7 +545,7 @@ RingBuffer::initializeContents(size_t element_size_arg, int buffer_num, size_t p
   header->slot_size         = sizeof(SlotRecord);
   header->data_offset       = data_offset;
   header->boot_id_hash      = getBootIdHash();
-  header->generation.store(next_generation, std::memory_order_relaxed);
+  header->generation = next_generation;
   header->sequence.store(0, std::memory_order_relaxed);
   std::memset(header->reserved, 0, sizeof(header->reserved));
 
@@ -595,6 +595,18 @@ RingBuffer::getElementSize() const
   return header->element_capacity;
 }
 
+size_t
+RingBuffer::getBufferNum() const
+{
+  return header->buf_num;
+}
+
+size_t
+RingBuffer::getPayloadAlignment() const
+{
+  return header->payload_alignment;
+}
+
 unsigned char *
 RingBuffer::getDataList()
 {
@@ -604,7 +616,26 @@ RingBuffer::getDataList()
 uint64_t
 RingBuffer::getGeneration() const
 {
-  return header->generation.load(std::memory_order_acquire);
+  return header->generation;
+}
+
+uint64_t
+RingBuffer::getLatestGeneration() const
+{
+  return header->latest_generation.load(std::memory_order_acquire);
+}
+
+void
+RingBuffer::setLatestGeneration(uint64_t generation)
+{
+  header->latest_generation.store(generation, std::memory_order_release);
+}
+
+bool
+RingBuffer::tryAdvanceLatestGeneration(uint64_t expected, uint64_t desired)
+{
+  return header->latest_generation.compare_exchange_strong(expected, desired, std::memory_order_acq_rel,
+                                                           std::memory_order_acquire);
 }
 
 //! @brief 直近で選んだスロットの capture 時刻[usec]
@@ -697,8 +728,28 @@ RingBuffer::getNewestBufferNum()
     return -1;
   }
 
-  const uint64_t capture = slot(newest)->capture_monotonic_us;
-  timestamp_us.store(capture, std::memory_order_relaxed);
+  // 発行番号を読んでからメタデータを読むまでの間に、writer が同じスロットを
+  // 再確保して書き換えることがある。読んだ値がその世代のものだったかを
+  // 発行番号の再読みで確認する（seqlock と同じ考え方）。
+  if (slot(newest)->sequence.load(std::memory_order_acquire) != newest_seq)
+  {
+    // 選んだスロットが書き換わった。次の呼び出しで読み直せばよい。
+    // ここで -1 を返すと「データ無し」になってしまうので、
+    // 他に有効なスロットがあればそれを使う。
+    for (size_t i = 0; i < expected_buf_num; i++)
+    {
+      const uint64_t seq = slot(static_cast<int>(i))->sequence.load(std::memory_order_acquire);
+      if (seq > 0 && seq != newest_seq)
+      {
+        newest     = static_cast<int>(i);
+        newest_seq = seq;
+        break;
+      }
+    }
+  }
+
+  const uint64_t stable_capture = slot(newest)->capture_monotonic_us;
+  timestamp_us.store(stable_capture, std::memory_order_relaxed);
   // 「ここまで読んだ」を記録する。v1 では timestamp_us の更新がこの役目を
   // 兼ねており、getNewestBufferNum() の後は isUpdated() が偽になっていた。
   // 外部の特殊化もその挙動に依存しているため、意味を保つ。
@@ -711,7 +762,7 @@ RingBuffer::getNewestBufferNum()
   }
 
   const uint64_t current_time_us = getCurrentTimeUSec();
-  if (current_time_us - capture < expiry_us)
+  if (current_time_us - stable_capture < expiry_us)
   {
     return newest;
   }
@@ -779,11 +830,12 @@ RingBuffer::allocateBuffer(int buffer_num)
 
   // 書き込み中は「有効なデータが無い」状態にしておく。
   // 途中で死んでも 0 のままなので、読み手には最初から見えない。
-  // capture 時刻も無効化する。残しておくと commitBuffer() が前回の時刻を
-  // そのまま使い回し、最新スロットの時刻が過去へ戻ることがある。
-  s->capture_monotonic_us = 0;
-  s->capture_realtime_us  = 0;
-  s->payload_size         = 0;
+  //
+  // NOTE: ここで capture 時刻や payload_size をクリアしてはならない。
+  //       読み手は「発行番号を読む → メタデータを読む」の順で進むので、
+  //       その間にクリアされると capture=0 を読んで期限切れと誤判定する
+  //       （publish が続いているのに「データ無し」になる）。
+  //       commitBuffer() が必ず全フィールドを書き直すため、クリアは不要。
   s->sequence.store(0, std::memory_order_release);
   setSlotOwned(buffer_num, true);
   std::atomic_thread_fence(std::memory_order_seq_cst);
@@ -933,7 +985,7 @@ RingBuffer::isLayoutChanged() const
   {
     return true;
   }
-  if (header->generation.load(std::memory_order_acquire) != expected_generation)
+  if (header->generation != expected_generation)
   {
     return true;
   }
