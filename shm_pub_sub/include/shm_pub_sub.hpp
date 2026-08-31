@@ -112,6 +112,73 @@ public:
   Subscriber(Subscriber &&other) noexcept = default;
 
   const T &subscribe(bool *state);
+
+  /*!
+   * \~japanese-en 最新のデータを読み、そのサンプルの素性も受け取る．
+   * \~japanese-en 別トピックと時刻を合わせるときは、ここで得た
+   *               `SampleInfo::capture_monotonic_us` を基準時刻に使う．
+   */
+  const T &subscribe(bool *state, SampleInfo *info);
+
+  /*!
+   * \~japanese-en 別トピックのサンプルに時刻を合わせて読む．
+   *
+   *               主用途はセンサ間の時刻合わせである。たとえば自己位置推定で
+   *               「いま更新されたオドメトリと同じ時刻のスキャンが欲しい」場合:
+   * \code
+   *   SampleInfo odom_info;
+   *   bool ok = false;
+   *   const Odometry& odom = odom_sub.subscribe(&ok, &odom_info);
+   *
+   *   SampleInfo   scan_info;
+   *   SearchStatus st;
+   *   // 20 ms 以上ずれていたら使わない
+   *   const Scan& scan = scan_sub.subscribeAlignedTo(odom_info, &st, &scan_info, 20000);
+   *   if (st == SearchStatus::Success) { ... }
+   * \endcode
+   *
+   * @param [in]  reference    合わせる相手のサンプル（時刻だけを使う）
+   * @param [out] status       結果の状態
+   * @param [out] info         取得したサンプルの素性（不要なら nullptr）
+   * @param [in]  max_skew_us  許容する時刻のずれ[usec]。0 なら無制限。
+   *                           これを超えていたら、相手より古ければ TooOld、
+   *                           新しければ TooNew を返す（融合してはいけない値を
+   *                           黙って返さないため）
+   * @return const T& 取得したデータ。status が Success 以外のときの内容は不定
+   */
+  const T &subscribeAlignedTo(const SampleInfo &reference, SearchStatus *status, SampleInfo *info = nullptr,
+                              uint64_t max_skew_us = 0);
+
+  /*!
+   * \~japanese-en 指定した時刻のデータを読む（タイムマシン）．
+   *
+   *               引けるのは「リングに残っている範囲」だけである。
+   *               既定のバッファ数は 3 面なので、履歴として使うなら
+   *               Publisher の buffer_num を用途に応じて増やすこと。
+   *               保持範囲は getRetentionWindow() で確認できる。
+   *
+   *               `status` は次を区別する。
+   *                 - Success    … 取得できた
+   *                 - Empty      … 有効なサンプルが1件も無い
+   *                 - TooOld     … 目標時刻が保持範囲より古い（上書き済み）
+   *                 - TooNew     … 目標時刻が保持範囲より新しい（未 publish）
+   *                 - Contended  … publisher が上書きし続けて一貫した
+   *                                 スナップショットを取れなかった。**再試行の価値がある**
+   *                 - NotConnected … トピックに接続できていない
+   *
+   * @param [in]  query  検索条件（時刻・時計・選択方針）
+   * @param [out] status 結果の状態（不要なら nullptr）
+   * @param [out] info   取得したサンプルの素性（不要なら nullptr）
+   * @return const T& 取得したデータ。status が Success 以外のときの内容は不定
+   * @note 期限（setDataExpiryTime_us）はこの経路には適用しない。
+   *       期限は「最新値が十分新しいか」の判定であって、過去を引く検索の
+   *       対象を狭めるものではないため。
+   */
+  const T &subscribeAt(const TimeQuery &query, SearchStatus *status, SampleInfo *info = nullptr);
+
+  //! @brief 現在保持している範囲（引ける時刻の範囲）
+  RetentionWindow getRetentionWindow();
+
   bool     waitFor(uint64_t timeout_usec);
   void     setDataExpiryTime_us(uint64_t time_us);
   // 共有メモリが存在し、初期化済みかを確認。未接続なら接続を試み、初期化を待つ。ring_bufferは作らない。
@@ -416,6 +483,148 @@ Subscriber<T>::subscribe(bool *is_success)
   }
   *is_success = false;
   return return_buffers_[return_index_];
+}
+
+//! @brief 最新のデータを読み、素性も受け取る
+template <typename T>
+const T &
+Subscriber<T>::subscribe(bool *state, SampleInfo *info)
+{
+  const T &value = subscribe(state);
+  if (info != nullptr)
+  {
+    *info = SampleInfo{};
+    if (*state && topic->ring() != nullptr)
+    {
+      *info = topic->ring()->getSampleInfo(current_reading_buffer);
+    }
+  }
+  return value;
+}
+
+//! @brief 別トピックのサンプルに時刻を合わせて読む
+//! @details 宣言側のコメントを参照．
+template <typename T>
+const T &
+Subscriber<T>::subscribeAlignedTo(const SampleInfo &reference, SearchStatus *status, SampleInfo *info,
+                                  uint64_t max_skew_us)
+{
+  SampleInfo   found{};
+  SearchStatus local_status = SearchStatus::Empty;
+  const T     &value =
+      subscribeAt(TimeQuery{ reference.capture_monotonic_us, SearchPolicy::Nearest }, &local_status, &found);
+
+  if (local_status == SearchStatus::Success && max_skew_us != 0)
+  {
+    const uint64_t target = reference.capture_monotonic_us;
+    const uint64_t t      = found.capture_monotonic_us;
+    const uint64_t skew   = (t > target) ? (t - target) : (target - t);
+    if (skew > max_skew_us)
+    {
+      // 融合してはいけないほどずれた値を、黙って成功として返さない。
+      local_status = (t < target) ? SearchStatus::TooOld : SearchStatus::TooNew;
+    }
+  }
+
+  if (status != nullptr)
+  {
+    *status = local_status;
+  }
+  if (info != nullptr)
+  {
+    *info = (local_status == SearchStatus::Success) ? found : SampleInfo{};
+  }
+  return value;
+}
+
+//! @brief 指定した時刻のデータを読む
+//! @details 宣言側のコメントを参照．
+//!          スロットの選択とコピーの間に publisher が上書きすることがあるため、
+//!          発行番号による整合性検証を通し、失敗したら検索からやり直す。
+//!          リングの内容が変わっている以上、同じスロットを読み直しても
+//!          意味が無いため。
+template <typename T>
+const T &
+Subscriber<T>::subscribeAt(const TimeQuery &query, SearchStatus *status, SampleInfo *info)
+{
+  auto set_status = [status](SearchStatus value) {
+    if (status != nullptr)
+    {
+      *status = value;
+    }
+  };
+
+  if (!topic->follow())
+  {
+    set_status(SearchStatus::NotConnected);
+    return return_buffers_[return_index_];
+  }
+  RingBuffer *ring_buffer = topic->ring();
+
+  constexpr int MAX_READ_RETRY = 5;
+  SearchStatus  search_status  = SearchStatus::Empty;
+  for (int attempt = 0; attempt < MAX_READ_RETRY; ++attempt)
+  {
+    const int found = ring_buffer->findBufferNum(query, &search_status);
+    if (found < 0)
+    {
+      if (search_status == SearchStatus::Contended)
+      {
+        // 全スロットがたまたま書き込み中だっただけ。少し待てば読める。
+        ++contention_retry_count_;
+        continue;
+      }
+      set_status(search_status);
+      return return_buffers_[return_index_];
+    }
+
+    const uint64_t sequence_before = ring_buffer->getSequence(found);
+    if (sequence_before == 0)
+    {
+      ++contention_retry_count_;
+      continue;
+    }
+
+    unsigned char *data_ptr      = ring_buffer->getDataList();
+    size_t         buffer_offset = static_cast<size_t>(found) * ring_buffer->getElementSize();
+
+    // 今返していない側へ読み込む。失敗しても直前に返した値は壊れない。
+    T &scratch = return_buffers_[1 - return_index_];
+    std::memcpy(&scratch, data_ptr + buffer_offset, sizeof(T));
+
+    std::atomic_thread_fence(std::memory_order_acquire);
+
+    if (ring_buffer->getSequence(found) == sequence_before)
+    {
+      if (info != nullptr)
+      {
+        *info = ring_buffer->getSampleInfo(found);
+      }
+      current_reading_buffer = found;
+      return_index_          = 1 - return_index_;
+      set_status(SearchStatus::Success);
+      return return_buffers_[return_index_];
+    }
+    // コピー中に上書きされた → 検索からやり直す
+    ++contention_retry_count_;
+  }
+
+  // 一貫したスナップショットを取れなかった。データが無いのとは違うので、
+  // 呼び出し側が再試行を判断できるよう Contended を返す。
+  ++contention_failure_count_;
+  set_status(SearchStatus::Contended);
+  return return_buffers_[return_index_];
+}
+
+template <typename T>
+RetentionWindow
+Subscriber<T>::getRetentionWindow()
+{
+  if (!topic->follow())
+  {
+    return RetentionWindow{};
+  }
+  return topic->ring()->getRetentionWindow();
 }
 
 template <typename T>

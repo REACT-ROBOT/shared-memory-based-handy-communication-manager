@@ -564,6 +564,79 @@ SIGKILL する形に書き換えた。
 
 **検証**: Release / ASan / TSan / UBSan の全構成を 2 回ずつ、**80/80 PASS**。
 
+### 完了: P4（タイムマシン）
+
+レビューが「実装前に決めること」として挙げた項目を、そのまま型と回帰テストにした。
+
+| 決めたこと | 結論 |
+|---|---|
+| 検索に使う時計 | **CLOCK_MONOTONIC_RAW のみ**。壁時計（CLOCK_REALTIME）は NTP 同期で前後に飛び、サンプルの順序が入れ替わったり同じ時刻が二度現れたりして安定しない。壁時計は**記録として保持する**（ログの突き合わせ・表示用）が検索には使わない |
+| 順序と時刻の分離 | 順序は `sequence`（形式 v2 で導入済み）、検索は `capture_monotonic_us`。等値のタイブレークは常に発行番号で一意に決まる |
+| 検索の意味 | `Nearest`（既定）／`AtOrBefore`／`AtOrAfter` を明示的に提供 |
+| 同距離のタイブレーク | **新しい方**（発行番号が大きい方）で固定 |
+| 範囲外の戻り値 | 保持範囲より古い→`TooOld`、新しい→`TooNew`。1件も無い→`Empty`。`Nearest` は1件でもあれば必ず見つかる |
+| 読み出し競合時 | **`Contended`** を返し、`Empty`/`TooOld`/`TooNew` と区別する。呼び出し側が再試行を判断できるようにするため。ライブラリ内部でも既定 5 回まで再試行する |
+| 保持範囲 | `getRetentionWindow()` で公開。「任意の時刻を引ける」わけではなく、リングに残っている分だけであることを API で明示 |
+
+**主用途に合わせた API**
+
+自己位置推定での「いま更新されたオドメトリと同じ時刻のスキャンが欲しい」を
+直接表せるようにした。
+
+```cpp
+SampleInfo odom_info;
+bool ok = false;
+const Odometry& odom = odom_sub.subscribe(&ok, &odom_info);
+
+SampleInfo   scan_info;
+SearchStatus st;
+// 20 ms 以上ずれていたら使わない
+const Scan& scan = scan_sub.subscribeAlignedTo(odom_info, &st, &scan_info, 20000);
+if (st == SearchStatus::Success) { /* 融合してよい */ }
+```
+
+`max_skew_us` を超えたずれは `TooOld` / `TooNew` として弾く。融合してはいけない
+ほど離れた値を黙って成功として返すと、自己位置推定が静かにずれるため。
+
+**レイアウト世代をまたいでも履歴を切らさない**
+
+世代を切り替えると新しいセグメントは空なので、そのままでは
+「ベクタ長が変わった瞬間に履歴が全部消える」。最新値だけを見る使い方なら
+数ミリ秒の空白で済むが、時刻指定で過去を引く使い方では成立しない。
+そこで **新世代を公開する前に、旧世代の有効なサンプルを発行番号順に引き継ぐ**
+ようにした（`ShmTopic::migrateHistory()` / `RingBuffer::adoptSample()`）。
+発行番号と capture 時刻はそのまま維持する。番号を採り直すと
+「発行番号は再利用しない」前提が崩れ、seqlock の検証と順序付けが壊れるため。
+
+**保持期間についての注意**
+
+引けるのはリングに残っている分だけである。既定のバッファ数は 3 面なので、
+履歴として使うなら Publisher の `buffer_num` を用途に応じて増やすこと。
+`getRetentionWindow()` で実際の保持範囲を確認できる。
+
+**追加した回帰テスト（11本）**
+
+`RetentionWindowReportsWhatIsActuallyHeld` /
+`AtOrBeforeReturnsTheSampleValidAtThatTime` /
+`OutOfRangeTargetsAreReportedDistinctly` /
+`EmptyTopicIsReportedAsEmptyNotAsNotFound` /
+`NearestBreaksTiesTowardTheNewerSample` /
+`ContentionIsDistinguishedFromMissingData` /
+`VectorTopicReturnsThePastLengthNotTheCapacity` /
+`RealtimeIsRecordedButNotUsedForSearching` /
+**`AlignsAScanToTheOdometryUpdateTime`** /
+**`RejectsAlignmentThatIsTooFarApart`** /
+**`HistorySurvivesALayoutGenerationChange`**
+
+**実装中に見つけた分類の誤り**: 面数の少ないリング（2 面など）を writer が
+全速で回していると、読み手から見て全スロットが一瞬「書き込み中」になり得る。
+これを `Empty` と報告していたため、「データが無い」と「今は読めないだけ」を
+取り違えていた。ヘッダの発行番号カウンタが 0 かどうかで両者を判別し、
+後者は `Contended` として再試行するようにした（TSan で 12 回中 3 回再現 →
+修正後 20 回連続で再現せず）。
+
+**検証**: Release / ASan / TSan / UBSan の全構成を 3 回ずつ、**91/91 PASS**。
+
 ## 6. 実施順序
 
 形式変更を1回に束ねることを最優先にする。F07-b だけは独立トラックで並走させる。

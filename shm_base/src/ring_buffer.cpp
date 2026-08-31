@@ -693,6 +693,178 @@ RingBuffer::getCaptureRealtime_us(int buffer_num) const
   return slot(buffer_num)->capture_realtime_us;
 }
 
+//! @brief スロットの素性をまとめて取得する
+//! @details 発行番号を先に読み、メタデータを読んでから発行番号を読み直す。
+//!          途中で書き換わっていたら sequence を 0 にして「無効」と伝える。
+SampleInfo
+RingBuffer::getSampleInfo(int buffer_num) const
+{
+  SampleInfo info;
+  if (buffer_num < 0 || static_cast<size_t>(buffer_num) >= expected_buf_num)
+  {
+    return info;
+  }
+  const SlotRecord *s = slot(buffer_num);
+
+  const uint64_t before = s->sequence.load(std::memory_order_acquire);
+  if (before == 0)
+  {
+    return info;
+  }
+  info.capture_monotonic_us = s->capture_monotonic_us;
+  info.capture_realtime_us  = s->capture_realtime_us;
+  info.payload_size         = s->payload_size;
+  std::atomic_thread_fence(std::memory_order_acquire);
+  if (s->sequence.load(std::memory_order_acquire) != before)
+  {
+    return SampleInfo{};  // 読んでいる間に書き換わった
+  }
+  info.sequence = before;
+  return info;
+}
+
+//! @brief 現在保持している範囲
+//! @details 「任意の時刻を引ける」わけではない。リングに残っている分しか
+//!          引けないことを呼び出し側が把握できるようにする。
+RetentionWindow
+RingBuffer::getRetentionWindow() const
+{
+  RetentionWindow window;
+  for (size_t i = 0; i < expected_buf_num; i++)
+  {
+    const SampleInfo info = getSampleInfo(static_cast<int>(i));
+    if (info.sequence == 0)
+    {
+      continue;
+    }
+    if (window.count == 0)
+    {
+      window.oldest_sequence     = info.sequence;
+      window.newest_sequence     = info.sequence;
+      window.oldest_monotonic_us = info.capture_monotonic_us;
+      window.newest_monotonic_us = info.capture_monotonic_us;
+      window.oldest_realtime_us  = info.capture_realtime_us;
+      window.newest_realtime_us  = info.capture_realtime_us;
+    }
+    else
+    {
+      if (info.sequence < window.oldest_sequence)
+      {
+        window.oldest_sequence = info.sequence;
+      }
+      if (info.sequence > window.newest_sequence)
+      {
+        window.newest_sequence = info.sequence;
+      }
+      window.oldest_monotonic_us = std::min(window.oldest_monotonic_us, info.capture_monotonic_us);
+      window.newest_monotonic_us = std::max(window.newest_monotonic_us, info.capture_monotonic_us);
+      window.oldest_realtime_us  = std::min(window.oldest_realtime_us, info.capture_realtime_us);
+      window.newest_realtime_us  = std::max(window.newest_realtime_us, info.capture_realtime_us);
+    }
+    ++window.count;
+  }
+  return window;
+}
+
+//! @brief 指定した時刻に対応するスロットを探す
+//! @details 選択規則はヘッダの SearchPolicy のコメントに明記したとおり。
+//!          等距離のタイブレークは「新しい方（発行番号が大きい方）」で固定する。
+//!          発行番号は一意なので、この規則で結果は常に一意に決まる。
+int
+RingBuffer::findBufferNum(const TimeQuery &query, SearchStatus *status) const
+{
+  auto set_status = [status](SearchStatus value) {
+    if (status != nullptr)
+    {
+      *status = value;
+    }
+  };
+
+  int      best      = -1;
+  uint64_t best_time = 0;
+  uint64_t best_seq  = 0;
+  size_t   valid     = 0;
+
+  for (size_t i = 0; i < expected_buf_num; i++)
+  {
+    const SampleInfo info = getSampleInfo(static_cast<int>(i));
+    if (info.sequence == 0)
+    {
+      continue;
+    }
+    ++valid;
+
+    // 検索は monotonic のみ。壁時計は NTP で飛ぶため基準にしない。
+    const uint64_t t = info.capture_monotonic_us;
+
+    bool candidate = false;
+    switch (query.policy)
+    {
+      case SearchPolicy::AtOrBefore:
+        if (t > query.time_us)
+        {
+          continue;
+        }
+        // より新しい（目標に近い）ものを選ぶ
+        candidate = (best < 0) || (t > best_time) || (t == best_time && info.sequence > best_seq);
+        break;
+
+      case SearchPolicy::AtOrAfter:
+        if (t < query.time_us)
+        {
+          continue;
+        }
+        // より古い（目標に近い）ものを選ぶ
+        candidate = (best < 0) || (t < best_time) || (t == best_time && info.sequence < best_seq);
+        break;
+
+      case SearchPolicy::Nearest:
+      {
+        const uint64_t d      = (t > query.time_us) ? (t - query.time_us) : (query.time_us - t);
+        const uint64_t best_d = (best_time > query.time_us) ? (best_time - query.time_us)
+                                                            : (query.time_us - best_time);
+        // 等距離なら新しい方
+        candidate = (best < 0) || (d < best_d) || (d == best_d && info.sequence > best_seq);
+        break;
+      }
+    }
+
+    if (candidate)
+    {
+      best      = static_cast<int>(i);
+      best_time = t;
+      best_seq  = info.sequence;
+    }
+  }
+
+  if (valid == 0)
+  {
+    // 有効なスロットが1つも見えなかった。理由は2つあり、区別しないと
+    // 呼び出し側が「データが無い」と「今は読めないだけ」を取り違える。
+    //   - 一度も publish されていない            → Empty
+    //   - 全スロットがたまたま書き込み中だった   → Contended（再試行の価値あり）
+    // 面数が少ない（2 面など）リングを writer が全速で回していると後者は現実に起きる。
+    if (header->sequence.load(std::memory_order_acquire) == 0)
+    {
+      set_status(SearchStatus::Empty);
+    }
+    else
+    {
+      set_status(SearchStatus::Contended);
+    }
+    return -1;
+  }
+  if (best < 0)
+  {
+    // 有効なサンプルはあるが、方針に合うものが無かった
+    set_status(query.policy == SearchPolicy::AtOrBefore ? SearchStatus::TooOld : SearchStatus::TooNew);
+    return -1;
+  }
+
+  set_status(SearchStatus::Success);
+  return best;
+}
+
 bool
 RingBuffer::isBeingWritten(uint64_t timestamp)
 {
@@ -870,6 +1042,60 @@ RingBuffer::commitBuffer(int buffer_num, size_t payload_size, uint64_t capture_m
     setSlotOwned(buffer_num, false);
     pthread_mutex_unlock(&s->owner);
   }
+}
+
+//! @brief 別のリングから取り出したサンプルを素性ごと取り込む
+//! @details 世代を切り替えるときに履歴を引き継ぐために使う。
+//!          発行番号を維持するのが要点で、これを新しく採番し直すと
+//!          「発行番号は再利用しない」という前提が崩れ、seqlock の検証や
+//!          タイムマシンの順序付けが壊れる。
+bool
+RingBuffer::adoptSample(const SampleInfo &info, const void *payload, size_t bytes)
+{
+  if (info.sequence == 0 || bytes > header->element_capacity)
+  {
+    return false;
+  }
+
+  int target = -1;
+  for (size_t i = 0; i < expected_buf_num; ++i)
+  {
+    if (slot(static_cast<int>(i))->sequence.load(std::memory_order_acquire) != 0)
+    {
+      continue;
+    }
+    if (allocateBuffer(static_cast<int>(i)))
+    {
+      target = static_cast<int>(i);
+      break;
+    }
+  }
+  if (target < 0)
+  {
+    return false;
+  }
+
+  SlotRecord *s = slot(target);
+  if (bytes > 0 && payload != nullptr)
+  {
+    std::memcpy(data_list + static_cast<size_t>(target) * header->element_capacity, payload, bytes);
+  }
+  s->payload_size         = bytes;
+  s->capture_monotonic_us = info.capture_monotonic_us;
+  s->capture_realtime_us  = info.capture_realtime_us;
+
+  // 以後の publish が引き継いだ番号を再利用しないよう、カウンタを進める
+  uint64_t current = header->sequence.load(std::memory_order_acquire);
+  while (current < info.sequence &&
+         !header->sequence.compare_exchange_weak(current, info.sequence, std::memory_order_acq_rel,
+                                                 std::memory_order_acquire))
+  {
+  }
+
+  s->sequence.store(info.sequence, std::memory_order_release);
+  setSlotOwned(target, false);
+  pthread_mutex_unlock(&s->owner);
+  return true;
 }
 
 void

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <vector>
 #include <dirent.h>
 #include <thread>
 
@@ -315,6 +316,13 @@ ShmTopic::createNextGeneration(uint64_t from_generation, size_t capacity, int bu
     // 作ったセグメント自身の世代番号を next に合わせる。
     // （RingBuffer は自分の generation を 1 から数えるため）
     initializer.setLatestGeneration(next);
+
+    // 旧世代の履歴を引き継ぐ。
+    // 引き継がないと、レイアウトが変わった瞬間に過去のデータが全部消える。
+    // 「最新値が読めればよい」使い方なら数ミリ秒の空白で済むが、
+    // 時刻を指定して過去を引く使い方では履歴が飛ぶのは受け入れられない。
+    // まだ公開していないセグメントなので、ここで書いても他プロセスには見えない。
+    migrateHistory(initializer);
   }
   catch (const std::exception &e)
   {
@@ -335,6 +343,72 @@ ShmTopic::createNextGeneration(uint64_t from_generation, size_t capacity, int bu
 
   probe.disconnect();
   return attachGeneration(next);
+}
+
+//! @brief 旧世代の有効なサンプルを新世代へ引き継ぐ
+//! @details 発行番号の小さい順に取り込むことで、リング上の新旧関係を保つ。
+//!          読み出しは seqlock で検証し、コピー中に上書きされたサンプルは
+//!          「もう履歴に残っていない」ものとして黙って飛ばす。
+void
+ShmTopic::migrateHistory(RingBuffer &destination)
+{
+  if (ring_ == nullptr)
+  {
+    return;
+  }
+
+  // 発行番号の小さい順に並べる
+  std::vector<SampleInfo> samples;
+  const size_t            slots = ring_->getBufferNum();
+  samples.reserve(slots);
+  for (size_t i = 0; i < slots; ++i)
+  {
+    const SampleInfo info = ring_->getSampleInfo(static_cast<int>(i));
+    if (info.sequence != 0)
+    {
+      samples.push_back(info);
+    }
+  }
+  std::sort(samples.begin(), samples.end(),
+            [](const SampleInfo &a, const SampleInfo &b) { return a.sequence < b.sequence; });
+
+  std::vector<unsigned char> scratch;
+  const size_t               source_capacity = ring_->getElementSize();
+  for (const SampleInfo &info : samples)
+  {
+    // 元のスロットを探し直す（並べ替えでスロット番号を失っているため）
+    int source_slot = -1;
+    for (size_t i = 0; i < slots; ++i)
+    {
+      if (ring_->getSequence(static_cast<int>(i)) == info.sequence)
+      {
+        source_slot = static_cast<int>(i);
+        break;
+      }
+    }
+    if (source_slot < 0)
+    {
+      continue;  // 既に上書きされた
+    }
+
+    const size_t bytes = static_cast<size_t>(info.payload_size);
+    if (bytes > source_capacity)
+    {
+      continue;
+    }
+    scratch.resize(bytes);
+    if (bytes > 0)
+    {
+      std::memcpy(scratch.data(), ring_->getDataList() + static_cast<size_t>(source_slot) * source_capacity, bytes);
+    }
+    std::atomic_thread_fence(std::memory_order_acquire);
+    if (ring_->getSequence(source_slot) != info.sequence)
+    {
+      continue;  // コピー中に上書きされた
+    }
+
+    destination.adoptSample(info, scratch.data(), bytes);
+  }
 }
 
 bool

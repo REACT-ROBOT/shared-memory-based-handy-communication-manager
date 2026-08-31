@@ -276,6 +276,101 @@ protected:
 };
 
 // ****************************************************************************
+// 過去のデータを時刻で引くための型（タイムマシン機能）
+//
+// レビュー R01 は「実装前に検索の意味を決めること」を求めていた。ここで
+// 決めた内容をそのまま型にしてある。曖昧なまま API を足すと、後から
+// 共有メモリ形式を変えることになるため。
+// ****************************************************************************
+
+/*!
+ * \~japanese-en 目標時刻に対してどのサンプルを選ぶか．
+ *
+ * \~japanese-en 検索に使う時刻は **CLOCK_MONOTONIC_RAW のみ** である．
+ *               壁時計（CLOCK_REALTIME）は NTP 同期で前後に飛ぶため、
+ *               それを検索の基準にすると「時刻が巻き戻ってサンプルの順序が
+ *               入れ替わる」「同じ時刻が二度現れる」といった事態が起き、
+ *               安定して引けない。壁時計の値は記録として保持するが
+ *               （ログの突き合わせや人間向けの表示に使う）、検索には使わない。
+ */
+enum class SearchPolicy
+{
+  //! 目標時刻に最も近いもの。等距離なら新しい方（発行番号が大きい方）。
+  //! 有効なサンプルが1つでもあれば必ず見つかる。
+  //! センサ間の時刻合わせ（オドメトリの更新時刻に一番近いスキャンを取る等）は
+  //! これを使う。**既定値**。
+  Nearest,
+  //! 目標時刻以前で最も新しいもの。「その時刻に有効だった値」を得たいとき。
+  //! 未来のデータを絶対に使いたくない再生用途向け。
+  //! 該当が無い（保持している全てが目標より新しい）場合は TooOld。
+  AtOrBefore,
+  //! 目標時刻以降で最も古いもの。該当が無い場合は TooNew。
+  AtOrAfter,
+};
+
+/*!
+ * \~japanese-en 検索結果の状態．
+ */
+enum class SearchStatus
+{
+  Success,
+  //! トピックに接続できていない
+  NotConnected,
+  //! 有効なサンプルが1件も無い
+  Empty,
+  //! 目標時刻が、保持している範囲より古い（既に上書きされた）
+  TooOld,
+  //! 目標時刻が、保持している範囲より新しい（まだ publish されていない）
+  TooNew,
+  //! 読み出し中に publisher が同じスロットを上書きし続け、
+  //! 一貫したスナップショットを取れなかった。**再試行する価値がある**。
+  //! データが無いこと（Empty / TooOld / TooNew）とは区別すること。
+  Contended,
+};
+
+/*!
+ * \~japanese-en 取得したサンプルの素性．
+ */
+struct SampleInfo
+{
+  uint64_t sequence             = 0;  //!< 発行番号（トピック内で一意・単調増加）
+  //! CLOCK_MONOTONIC_RAW。**検索に使うのはこちらだけ**。
+  uint64_t capture_monotonic_us = 0;
+  //! CLOCK_REALTIME。記録用（ログの突き合わせや表示）。
+  //! NTP で飛ぶため検索の基準には使わない。
+  uint64_t capture_realtime_us  = 0;
+  uint64_t payload_size         = 0;
+};
+
+/*!
+ * \~japanese-en 現在保持している範囲．
+ * \~japanese-en 「任意の時刻を引ける」わけではなく、リングに残っている分しか
+ *               引けない。呼び出し側が保持期間を把握できるように公開する。
+ */
+struct RetentionWindow
+{
+  size_t   count                = 0;  //!< 有効なサンプル数（0 なら空）
+  uint64_t oldest_sequence      = 0;
+  uint64_t newest_sequence      = 0;
+  //! 検索に使う時刻（CLOCK_MONOTONIC_RAW）の範囲
+  uint64_t oldest_monotonic_us  = 0;
+  uint64_t newest_monotonic_us  = 0;
+  //! 記録用の壁時計。範囲の表示に使う（検索には使わない）
+  uint64_t oldest_realtime_us   = 0;
+  uint64_t newest_realtime_us   = 0;
+};
+
+/*!
+ * \~japanese-en 時刻検索の指定．
+ * \~japanese-en 時刻は CLOCK_MONOTONIC_RAW（getCurrentTimeUSec() と同じ時計）．
+ */
+struct TimeQuery
+{
+  uint64_t     time_us = 0;
+  SearchPolicy policy  = SearchPolicy::Nearest;
+};
+
+// ****************************************************************************
 // 共有メモリ形式 v2
 //
 // v1 には自己記述的な情報が一切無く、共有メモリ上の element_size / buf_num を
@@ -394,6 +489,20 @@ public:
   uint64_t getSequence(int buffer_num) const;
   uint64_t getPayloadSize(int buffer_num) const;
   uint64_t getCaptureRealtime_us(int buffer_num) const;
+  //! @brief スロットの素性をまとめて取得する
+  SampleInfo getSampleInfo(int buffer_num) const;
+  //! @brief 現在保持している範囲
+  RetentionWindow getRetentionWindow() const;
+  /*!
+   * \~japanese-en 指定した時刻に対応するスロットを探す．
+   * @param [in]  query  検索条件
+   * @param [out] status 見つからなかった理由（不要なら nullptr）
+   * @return int スロット番号。見つからなければ -1
+   * @note 期限（setDataExpiryTime_us）はここでは適用しない。
+   *       期限は「最新値が十分新しいか」の判定であって、
+   *       過去を引く検索の対象を狭めるものではないため。
+   */
+  int findBufferNum(const TimeQuery &query, SearchStatus *status = nullptr) const;
   uint64_t getGeneration() const;
   //! @brief トピック全体で現在有効な世代（世代 1 のセグメントのものが正本）
   uint64_t getLatestGeneration() const;
@@ -427,6 +536,15 @@ public:
   void commitBuffer(int buffer_num, size_t payload_size, uint64_t capture_monotonic_us = 0);
   //! @brief 書かずにスロットを手放す
   void releaseBuffer(int buffer_num);
+  /*!
+   * \~japanese-en 別のリングバッファから取り出したサンプルを、素性を保ったまま取り込む．
+   *               レイアウト世代を切り替えるときに履歴を引き継ぐために使う．
+   *               発行番号・capture 時刻をそのまま維持し、ヘッダの発行番号カウンタを
+   *               取り込んだ値以上へ進める（以後の publish が過去の番号を再利用しないため）．
+   * @return bool 空きスロットが無ければ偽
+   */
+  bool adoptSample(const SampleInfo &info, const void *payload, size_t bytes);
+
   //! @deprecated commitBuffer() を使うこと。
   //!             互換のため残している。input_time_us は capture 時刻として記録する。
   void setTimestamp_us(uint64_t input_time_us, int buffer_num);
@@ -566,6 +684,8 @@ private:
   bool openRoot(bool create, size_t initial_capacity, int buf_num, size_t payload_alignment);
   bool attachGeneration(uint64_t generation);
   bool createNextGeneration(uint64_t from_generation, size_t capacity, int buf_num, size_t payload_alignment);
+  //! 旧世代の有効なサンプルを新世代へ引き継ぐ（履歴を切らさないため）
+  void migrateHistory(RingBuffer &destination);
   //! 世代の作り直しを繰り返さないよう、容量は増やすだけにし余裕を持たせる
   static size_t growCapacity(size_t current, size_t required, size_t alignment);
 

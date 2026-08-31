@@ -74,6 +74,17 @@ public:
   ~Subscriber() = default;
 
   const std::vector<T> &subscribe(bool *is_success);
+  //! @brief 最新のデータを読み、素性も受け取る（詳細は Subscriber<T> 本体のコメントを参照）
+  const std::vector<T> &subscribe(bool *is_success, SampleInfo *info);
+  //! @brief 別トピックのサンプルに時刻を合わせて読む（詳細は Subscriber<T> 本体のコメントを参照）
+  const std::vector<T> &subscribeAlignedTo(const SampleInfo &reference, SearchStatus *status,
+                                           SampleInfo *info = nullptr, uint64_t max_skew_us = 0);
+
+  //! @brief 指定した時刻のデータを読む（詳細は Subscriber<T> 本体のコメントを参照）
+  const std::vector<T> &subscribeAt(const TimeQuery &query, SearchStatus *status, SampleInfo *info = nullptr);
+  //! @brief 現在保持している範囲（引ける時刻の範囲）
+  RetentionWindow getRetentionWindow();
+
   bool                  waitFor(uint64_t timeout_usec);
   void                  setDataExpiryTime_us(uint64_t time_us);
 
@@ -318,6 +329,142 @@ Subscriber<std::vector<T>>::subscribe(bool *is_success)
   }
   *is_success = false;
   return return_buffers_[return_index_];
+}
+
+template <typename T>
+const std::vector<T> &
+Subscriber<std::vector<T>>::subscribe(bool *is_success, SampleInfo *info)
+{
+  const std::vector<T> &value = subscribe(is_success);
+  if (info != nullptr)
+  {
+    *info = SampleInfo{};
+    if (*is_success && topic->ring() != nullptr)
+    {
+      *info = topic->ring()->getSampleInfo(current_reading_buffer);
+    }
+  }
+  return value;
+}
+
+template <typename T>
+const std::vector<T> &
+Subscriber<std::vector<T>>::subscribeAlignedTo(const SampleInfo &reference, SearchStatus *status, SampleInfo *info,
+                                               uint64_t max_skew_us)
+{
+  SampleInfo   found{};
+  SearchStatus local_status = SearchStatus::Empty;
+  const std::vector<T> &value =
+      subscribeAt(TimeQuery{ reference.capture_monotonic_us, SearchPolicy::Nearest }, &local_status, &found);
+
+  if (local_status == SearchStatus::Success && max_skew_us != 0)
+  {
+    const uint64_t target = reference.capture_monotonic_us;
+    const uint64_t t      = found.capture_monotonic_us;
+    const uint64_t skew   = (t > target) ? (t - target) : (target - t);
+    if (skew > max_skew_us)
+    {
+      local_status = (t < target) ? SearchStatus::TooOld : SearchStatus::TooNew;
+    }
+  }
+
+  if (status != nullptr)
+  {
+    *status = local_status;
+  }
+  if (info != nullptr)
+  {
+    *info = (local_status == SearchStatus::Success) ? found : SampleInfo{};
+  }
+  return value;
+}
+
+template <typename T>
+const std::vector<T> &
+Subscriber<std::vector<T>>::subscribeAt(const TimeQuery &query, SearchStatus *status, SampleInfo *info)
+{
+  auto set_status = [status](SearchStatus value) {
+    if (status != nullptr)
+    {
+      *status = value;
+    }
+  };
+
+  if (!topic->follow())
+  {
+    set_status(SearchStatus::NotConnected);
+    return return_buffers_[return_index_];
+  }
+  RingBuffer *ring_buffer = topic->ring();
+
+  constexpr int MAX_READ_RETRY = 5;
+  SearchStatus  search_status  = SearchStatus::Empty;
+  for (int attempt = 0; attempt < MAX_READ_RETRY; ++attempt)
+  {
+    const int found = ring_buffer->findBufferNum(query, &search_status);
+    if (found < 0)
+    {
+      if (search_status == SearchStatus::Contended)
+      {
+        // 全スロットがたまたま書き込み中だっただけ。少し待てば読める。
+        ++contention_retry_count_;
+        continue;
+      }
+      set_status(search_status);
+      return return_buffers_[return_index_];
+    }
+
+    const uint64_t sequence_before = ring_buffer->getSequence(found);
+    if (sequence_before == 0)
+    {
+      ++contention_retry_count_;
+      continue;
+    }
+
+    // 要素数は容量ではなくスロットの payload_size から求める
+    const size_t payload_bytes = static_cast<size_t>(ring_buffer->getPayloadSize(found));
+    vector_size                = payload_bytes / sizeof(T);
+
+    unsigned char *data_ptr      = ring_buffer->getDataList();
+    size_t         buffer_offset = static_cast<size_t>(found) * ring_buffer->getElementSize();
+
+    std::vector<T> &scratch = return_buffers_[1 - return_index_];
+    scratch.resize(vector_size);
+    if (vector_size > 0)
+    {
+      std::memcpy(scratch.data(), data_ptr + buffer_offset, sizeof(T) * vector_size);
+    }
+
+    std::atomic_thread_fence(std::memory_order_acquire);
+
+    if (ring_buffer->getSequence(found) == sequence_before)
+    {
+      if (info != nullptr)
+      {
+        *info = ring_buffer->getSampleInfo(found);
+      }
+      current_reading_buffer = found;
+      return_index_          = 1 - return_index_;
+      set_status(SearchStatus::Success);
+      return return_buffers_[return_index_];
+    }
+    ++contention_retry_count_;
+  }
+
+  ++contention_failure_count_;
+  set_status(SearchStatus::Contended);
+  return return_buffers_[return_index_];
+}
+
+template <typename T>
+RetentionWindow
+Subscriber<std::vector<T>>::getRetentionWindow()
+{
+  if (!topic->follow())
+  {
+    return RetentionWindow{};
+  }
+  return topic->ring()->getRetentionWindow();
 }
 
 template <typename T>
