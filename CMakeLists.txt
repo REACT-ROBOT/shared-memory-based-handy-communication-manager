@@ -152,9 +152,16 @@ endif()
 option(SHM_STRICT_TYPE_CHECK
        "Require trivially-copyable payload types at compile time (R01-F07-b)" OFF)
 if(SHM_STRICT_TYPE_CHECK)
-    add_compile_definitions(SHM_STRICT_TYPE_CHECK)
     message(STATUS "Strict payload type checking is ON (trivially-copyable required)")
 endif()
+# NOTE: ここで add_compile_definitions() を使ってはならない。
+#       ディレクトリスコープなので、このサブツリー（shm_base / shm_pub_sub / tools）
+#       にしか効かず、上位のワークスペースに並ぶ兄弟パッケージ
+#       （lidar_2D_data、point_cloud_2D_data、react_cv、navigators など）には
+#       伝播しない。洗い出したいのはまさにそれらが publish している型なので、
+#       それでは検査した意味がなくなる。
+#       定義は shm_base / shm_pub_sub ターゲットの PUBLIC に付け、
+#       リンクした側へ伝播させる（各サブディレクトリの CMakeLists.txt 参照）。
 
 # ハングしたテストを PASS でも無言でもなく FAIL にするための上限[秒]。
 # ctest の呼び出し方（--timeout の有無）に依存させないため、テストごとの

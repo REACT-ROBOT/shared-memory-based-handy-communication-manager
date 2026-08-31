@@ -52,6 +52,13 @@ set_target_properties(shm_pub_sub PROPERTIES
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF
 )
+# 型検査は「共有メモリに何を置くか」の制約なので、リンクした側にも効かせる。
+# PUBLIC にすることで、このライブラリを使う全パッケージのコンパイルに伝播する。
+# （ディレクトリスコープの add_compile_definitions では兄弟パッケージに届かない）
+if(SHM_STRICT_TYPE_CHECK)
+    target_compile_definitions(shm_pub_sub PUBLIC SHM_STRICT_TYPE_CHECK)
+endif()
+
 set_target_properties(shm_pub_sub PROPERTIES
 	PUBLIC_HEADER "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/shm_pub_sub.hpp>"
 )
