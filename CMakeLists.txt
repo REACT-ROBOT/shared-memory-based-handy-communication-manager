@@ -125,6 +125,30 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--disable-new-dtags")
 endif()
 
+# ----------------------------------------------------------------------------
+# 型制約の厳格化（R01-F07-b / 独立トラック）
+#
+# 共有メモリはバイト列でしかないため、置ける型は「memcpy で複製しても
+# 意味が壊れない型」= trivially copyable でなければならない。
+# 現状この検査は ARM でのみ実行時に行っており、x86 では
+# standard-layout しか見ていないため、コピーコンストラクタや
+# デストラクタを持つ型が素通りして値が黙って化ける。
+#
+# ただし既存利用者の型を壊す可能性があるため、既定は OFF のままにする。
+# 使い方:
+#   1. 全パッケージを -DSHM_STRICT_TYPE_CHECK=ON でビルドし、
+#      コンパイルエラーになる型を洗い出す（実行不要・網羅的）
+#   2. 該当型を修正する
+#   3. Raspberry Pi 4 実機で挙動が変わらないことを確認する
+#   4. 既定を ON に切り替える
+# ----------------------------------------------------------------------------
+option(SHM_STRICT_TYPE_CHECK
+       "Require trivially-copyable payload types at compile time (R01-F07-b)" OFF)
+if(SHM_STRICT_TYPE_CHECK)
+    add_compile_definitions(SHM_STRICT_TYPE_CHECK)
+    message(STATUS "Strict payload type checking is ON (trivially-copyable required)")
+endif()
+
 # ハングしたテストを PASS でも無言でもなく FAIL にするための上限[秒]。
 # ctest の呼び出し方（--timeout の有無）に依存させないため、テストごとの
 # プロパティとして設定する。

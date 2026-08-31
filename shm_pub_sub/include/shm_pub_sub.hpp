@@ -43,6 +43,42 @@ namespace irlab
 namespace shm
 {
 
+// ----------------------------------------------------------------------------
+// 共有メモリに置ける型の制約（R01-F07-b）
+//
+// SHM_STRICT_TYPE_CHECK が定義されているとコンパイル時に検査する。
+// 既定では定義されないので、従来どおり実行時の検査だけが働く。
+//
+// std::is_trivially_copyable<T>
+//   「バイト列を memcpy するだけで正しく複製できる」という性質。
+//   共有メモリは生のバイト列なので、これを満たさない型を置くと
+//   コピーコンストラクタや代入演算子が本来やる処理が丸ごと飛ばされる。
+//   これを壊すのは次の4つだけで、自前の「既定」コンストラクタは壊さない:
+//     - 自前のコピー／ムーブコンストラクタ
+//     - 自前のコピー／ムーブ代入演算子
+//     - 自前のデストラクタ
+//     - virtual 関数／virtual 基底
+//   std::string や std::vector をメンバに持つ型は内部にポインタを抱えるため
+//   当然これに該当する（そのポインタは他プロセスでは無意味なアドレスになる）。
+//
+// std::is_standard_layout<T>
+//   メンバの「配置」が C と同じで予測可能という別の性質。
+//   プロセス間で同じオフセットを前提にするために必要だが、
+//   コピーの正しさは何も保証しない。両方が要る。
+// ----------------------------------------------------------------------------
+#ifdef SHM_STRICT_TYPE_CHECK
+#define SHM_ASSERT_SHAREABLE(T, who)                                                                                  \
+  static_assert(std::is_standard_layout<T>::value,                                                                     \
+                who " : payload type must have standard layout to live in shared memory");                             \
+  static_assert(std::is_trivially_copyable<T>::value,                                                                  \
+                who " : payload type must be trivially copyable to live in shared memory. "                            \
+                    "A user-provided copy/move constructor, copy/move assignment, destructor, "                        \
+                    "or a virtual function breaks this. Members such as std::string / std::vector "                    \
+                    "hold pointers that are meaningless in another process.")
+#else
+#define SHM_ASSERT_SHAREABLE(T, who)
+#endif
+
 // ****************************************************************************
 //! @class Publisher
 //! @brief   \~english     Class representing a publisher that outputs topics to shared memory
@@ -63,6 +99,8 @@ namespace shm
 template <typename T>
 class Publisher
 {
+  SHM_ASSERT_SHAREABLE(T, "shm::Publisher");
+
 public:
   Publisher(std::string name = "", int buffer_num = 3, PERM perm = DEFAULT_PERM);
   ~Publisher() = default;
@@ -100,6 +138,8 @@ private:
 template <typename T>
 class Subscriber
 {
+  SHM_ASSERT_SHAREABLE(T, "shm::Subscriber");
+
 public:
   Subscriber(std::string name = "");
   ~Subscriber() = default;

@@ -101,12 +101,17 @@ TEST(SHMPubSubTest, BasicTest)
 
 TEST(SHMPubSubTest, ConstructorErrorTest)
 {
+  // SHM_STRICT_TYPE_CHECK=ON では BadClass はコンパイル時に弾かれるため、
+  // 実行時に例外を確認するこのケースはそもそも実体化できない（R01-F07-b）。
+  // 厳格モードでは「コンパイルが通らないこと」自体が検査になっている。
+#ifndef SHM_STRICT_TYPE_CHECK
   {
     EXPECT_THROW(
       irlab::shm::Publisher<BadClass> pub("test"),
       std::runtime_error
     );
   }
+#endif
   {
     EXPECT_THROW(
       irlab::shm::Publisher<ClassTest> pub(""),
@@ -114,12 +119,14 @@ TEST(SHMPubSubTest, ConstructorErrorTest)
     );
   }
 
+#ifndef SHM_STRICT_TYPE_CHECK
   {
     EXPECT_THROW(
       irlab::shm::Subscriber<BadClass> sub("test"),
       std::runtime_error
     );
   }
+#endif
   {
     EXPECT_THROW(
       irlab::shm::Subscriber<ClassTest> sub(""),
