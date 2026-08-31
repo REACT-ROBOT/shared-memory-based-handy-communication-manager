@@ -5,9 +5,16 @@ project(shm_base CXX)
 set(package_version 20100204)
 option(DEBUG "switch on debug option" OFF)
 option(BUILD_TESTS "Build test programs" OFF)
-#for check memory leak
-if (DEBUG)
-set(DEBUG_OPTION "-fsanitize=address -fno-omit-frame-pointer")
+# サニタイザの選択は最上位の CMakeLists.txt が行う（-DSANITIZER=...）。
+# add_subdirectory で取り込まれている場合は DEBUG_OPTION が既に設定されて
+# いるので上書きしない。単体でビルドされた場合のみ、従来どおり DEBUG=ON を
+# AddressSanitizer として解釈する。
+if (DEBUG AND NOT DEFINED DEBUG_OPTION)
+    set(DEBUG_OPTION "-fsanitize=address -fno-omit-frame-pointer -g")
+endif()
+if (DEFINED DEBUG_OPTION AND NOT DEBUG_OPTION STREQUAL "")
+    set(CMAKE_EXE_LINKER_FLAGS    "${CMAKE_EXE_LINKER_FLAGS} ${DEBUG_OPTION}")
+    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} ${DEBUG_OPTION}")
 endif()
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DBOOST_NO_AUTO_PTR -fPIC ${DEBUG_OPTION}")
 set(CMAKE_CXX_STANDARD 17)
@@ -16,6 +23,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(PkgConfig)
 if(BUILD_TESTS)
+    if(NOT DEFINED SHM_TEST_TIMEOUT)
+        set(SHM_TEST_TIMEOUT 60)
+    endif()
     pkg_search_module(GTEST REQUIRED gtest_main)
 endif()
 
@@ -75,7 +85,9 @@ if(BUILD_TESTS)
       # Google Testをリンクする
       ${GTEST_LDFLAGS}
     )
-  gtest_add_tests(TARGET shm_base_test)
+  gtest_add_tests(TARGET shm_base_test TEST_LIST shm_base_test_cases)
+  # ハングを FAIL にする（ctest の --timeout に依存させない）
+  set_tests_properties(${shm_base_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT})
 endif()
 
 FIND_PACKAGE(Doxygen)

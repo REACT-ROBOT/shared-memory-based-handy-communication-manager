@@ -7,6 +7,87 @@ on:
     branches: [ main, develop ]
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # サニタイザ (R01-F10)
+  #
+  # 従来は AddressSanitizer だけだった。ASan は範囲外アクセスには有効だが、
+  # データ競合も未定義動作も検出しない。実際、TSan の導入で
+  #   - SharedMemoryPosix::connect() の std::regex がロケールを競合して触る
+  #   - RingBuffer::timestamp_us への非同期書き込み
+  # という2件の実在するデータ競合が見つかっている。
+  #
+  # NOTE: TSan は ASLR のエントロピーが大きい環境で
+  #       "FATAL: ThreadSanitizer: unexpected memory mapping" となり起動しない。
+  #       ローカルでは `setarch $(uname -m) -R ctest ...` で回避すること。
+  # ---------------------------------------------------------------------------
+  sanitizers:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [thread, undefined]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo rm -f /etc/apt/sources.list.d/google-chrome.list || true
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake libgtest-dev pkg-config \
+          libboost-python-dev python3-dev
+
+    - name: Configure
+      run: |
+        cmake -S . -B build_${{ matrix.sanitizer }} \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DBUILD_TESTS=ON \
+          -DSANITIZER=${{ matrix.sanitizer }}
+
+    - name: Build
+      run: cmake --build build_${{ matrix.sanitizer }} -j$(nproc)
+
+    - name: Run tests
+      env:
+        TSAN_OPTIONS: halt_on_error=1
+        UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+      run: |
+        # ASLR を無効化して TSan の起動失敗を避ける
+        setarch "$(uname -m)" -R ctest --test-dir build_${{ matrix.sanitizer }} --output-on-failure
+
+  # ---------------------------------------------------------------------------
+  # ARM64 (R01-F10)
+  #
+  # 本ライブラリの主要ターゲットは Raspberry Pi 4 だが、アライメント関連の
+  # 不具合は x86 では動いてしまうため CI で検出できていなかった
+  # （実際 getSize() の非8バイト倍数バグは Pi4 実機でしか出なかった）。
+  # QEMU エミュレーションで aarch64 のテストを回す。
+  # ---------------------------------------------------------------------------
+  arm64:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+      with:
+        platforms: arm64
+
+    - name: Build and test on aarch64
+      run: |
+        docker run --rm --platform linux/arm64 \
+          -v "$PWD":/src -w /src arm64v8/ubuntu:22.04 \
+          bash -c '
+            set -e
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update
+            apt-get install -y build-essential cmake libgtest-dev pkg-config \
+              libboost-python-dev python3-dev
+            cmake -S . -B build_arm64 -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON
+            cmake --build build_arm64 -j$(nproc)
+            ctest --test-dir build_arm64 --output-on-failure
+          '
+
   test:
     runs-on: ubuntu-latest
     strategy:

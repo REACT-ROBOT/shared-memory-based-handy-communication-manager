@@ -233,16 +233,11 @@ Publisher<std::vector<T>>::publish(const std::vector<T> &data)
   unsigned char *data_ptr      = ring_buffer->getDataList();
   size_t         buffer_offset = oldest_buffer * vector_size * sizeof(T);
 
-  if constexpr (is_arm_platform())
+  // 空の vector では data() が nullptr を返す。長さ 0 でも memcpy に
+  // ヌルポインタを渡すのは未定義動作なので、明示的に飛ばす（UBSan が検出）。
+  if (vector_size > 0)
   {
-    // ARM: Always use memcpy for vector data safety
     std::memcpy(data_ptr + buffer_offset, data.data(), sizeof(T) * vector_size);
-  }
-  else
-  {
-    // x86/x64: Direct pointer access is safe
-    T *first_ptr = reinterpret_cast<T *>(data_ptr + buffer_offset);
-    std::memcpy(first_ptr, data.data(), sizeof(T) * vector_size);
   }
 
   uint64_t current_time_us = getCurrentTimeUSec();
@@ -412,7 +407,11 @@ Subscriber<std::vector<T>>::subscribe(bool *is_success)
     // 今返していない側へ読み込む。失敗しても直前に返した値は壊れない。
     std::vector<T> &scratch = return_buffers_[1 - return_index_];
 
-    std::memcpy(scratch.data(), data_ptr + buffer_offset, sizeof(T) * vector_size);
+    // 空の vector では data() が nullptr。長さ 0 の memcpy でもヌルは未定義動作
+    if (vector_size > 0)
+    {
+      std::memcpy(scratch.data(), data_ptr + buffer_offset, sizeof(T) * vector_size);
+    }
 
     // コピーの読み込みが完了してからタイムスタンプを再読みする（load-load 順序の固定）
     std::atomic_thread_fence(std::memory_order_acquire);

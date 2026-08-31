@@ -6,6 +6,30 @@ namespace irlab
 namespace shm
 {
 
+//! @brief 共有メモリ名を /dev/shm 上の名前へ変換する
+//! @param [in] name 共有メモリ名（先頭の '/' は取り除かれている前提）
+//! @return std::string shm_open に渡す名前
+//! @details 以前は regex_replace と std::regex("/") で置換していたが、
+//!          これには2つの問題があった。
+//!          1. connect() / isExists() / disconnectMemory() が呼ばれるたびに
+//!             正規表現をコンパイルしていた（購読の再接続経路は頻繁に通る）。
+//!          2. libstdc++ の regex はコンパイル時にロケール（ctype）の
+//!             遅延初期化キャッシュを同期なしで触るため、複数スレッドから
+//!             同時に connect() するとデータ競合になる。
+//!             ThreadSanitizer で実際に検出された（R01-F10）。
+//!          やりたいのは '/' を '_' に置換するだけなので、正規表現を使わない。
+static std::string
+toShmPath(const std::string &name)
+{
+  std::string path = "/shm_";
+  path.reserve(path.size() + name.size());
+  for (char c : name)
+  {
+    path.push_back(c == '/' ? '_' : c);
+  }
+  return path;
+}
+
 //! @brief 共有メモリ名として使える文字列かを検証する
 //! @param [in] name    検証する名前
 //! @param [in] context エラーメッセージに載せる呼び出し元
@@ -59,7 +83,7 @@ disconnectMemory(std::string name)
   {
     name = name.erase(0, 1);
   }
-  std::string str_buf = "/shm_" + regex_replace(name, std::regex("/"), "_");
+  const std::string str_buf = toShmPath(name);
   return shm_unlink(str_buf.c_str());
 }
 
@@ -112,7 +136,7 @@ SharedMemoryPosix::~SharedMemoryPosix()
 bool
 SharedMemoryPosix::connect(size_t size)
 {
-  std::string str_buf = "/shm_" + regex_replace(shm_name, std::regex("/"), "_");
+  const std::string str_buf = toShmPath(shm_name);
 
   shm_fd = shm_open(str_buf.c_str(), shm_oflag, static_cast<mode_t>(shm_perm));
   if (shm_fd < 0)
@@ -249,7 +273,7 @@ SharedMemoryPosix::isDisconnected() const
 bool
 SharedMemoryPosix::isExists(uint64_t timeout_usec) const
 {
-  std::string str_buf = "/shm_" + regex_replace(shm_name, std::regex("/"), "_");
+  const std::string str_buf = toShmPath(shm_name);
 
   // Try to open the shared memory (read-only, no create)
   int fd = shm_open(str_buf.c_str(), O_RDONLY, 0);

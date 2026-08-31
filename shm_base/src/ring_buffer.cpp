@@ -456,7 +456,7 @@ RingBuffer::getDataList()
 uint64_t
 RingBuffer::getTimestamp_us() const
 {
-  return timestamp_us;
+  return timestamp_us.load(std::memory_order_relaxed);
 }
 
 //! @brief 指定バッファのタイムスタンプ取得
@@ -519,17 +519,18 @@ RingBuffer::getNewestBufferNum()
     return -1;
   }
 
-  timestamp_us = timestamp_buf;
+  timestamp_us.store(timestamp_buf, std::memory_order_relaxed);
 
   // If data_expiry_time_us is 0, disable expiry check
-  if (data_expiry_time_us <= 0)
+  const uint64_t expiry_us = data_expiry_time_us.load(std::memory_order_relaxed);
+  if (expiry_us == 0)
   {
     return newest_buffer;
   }
 
   uint64_t current_time_us = getCurrentTimeUSec();
 
-  if (current_time_us - timestamp_us < data_expiry_time_us)
+  if (current_time_us - timestamp_buf < expiry_us)
   {
     return newest_buffer;
   }
@@ -571,7 +572,7 @@ RingBuffer::getOldestBufferNum()
 
   if (found)
   {
-    timestamp_us = oldest_value;
+    timestamp_us.store(oldest_value, std::memory_order_relaxed);
   }
   return oldest_buffer;
 }
@@ -660,7 +661,7 @@ RingBuffer::isUpdated() const
   {
     uint64_t ts = timestamp_list[i].load();
     // Skip buffers being written and invalid timestamps (0)
-    if (!isBeingWritten(ts) && ts > 0 && timestamp_us < ts)
+    if (!isBeingWritten(ts) && ts > 0 && timestamp_us.load(std::memory_order_relaxed) < ts)
     {
       return true;
     }
@@ -671,7 +672,7 @@ RingBuffer::isUpdated() const
 void
 RingBuffer::setDataExpiryTime_us(uint64_t time_us)
 {
-  data_expiry_time_us = time_us;
+  data_expiry_time_us.store(time_us, std::memory_order_relaxed);
 }
 
 void

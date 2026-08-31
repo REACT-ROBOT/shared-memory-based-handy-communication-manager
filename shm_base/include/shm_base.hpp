@@ -360,8 +360,14 @@ private:
   std::atomic<uint64_t> *timestamp_list;
   unsigned char         *data_list;
 
-  uint64_t timestamp_us;
-  uint64_t data_expiry_time_us;
+  // このインスタンスが最後に選んだバッファのタイムスタンプ。共有メモリ上では
+  // なくプロセス側の状態なので、レイアウトには影響しない。
+  // 1つの Publisher / Subscriber を複数スレッドから使うと、
+  // getNewestBufferNum() / getOldestBufferNum() の書き込みと
+  // getTimestamp_us() / isUpdated() の読み出しが競合する。
+  // ThreadSanitizer で実際に検出されたため atomic 化した（R01-F10）。
+  std::atomic<uint64_t> timestamp_us;
+  std::atomic<uint64_t> data_expiry_time_us;
 
   // データ位置の計算に使ったレイアウト。共有メモリ上の値がこれと食い違ったら、
   // 別のプロセスが異なるレイアウトで初期化し直したということなので、

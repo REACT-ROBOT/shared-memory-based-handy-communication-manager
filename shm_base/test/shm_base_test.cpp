@@ -684,32 +684,66 @@ protected:
 
     // broadcast がタイムアウト内に完了するかチェック
     // returns: true=完了, false=ブロック
+    //
+    // 以前はスレッドで broadcast し、ブロックしたら detach していた。
+    // detach したスレッドは共有メモリ上の condvar を掴んだまま生き続けるため、
+    // その後の TearDown による munmap / shm_unlink と競合し、
+    // 「テストは緑だが後続テストが不定に壊れる」状態になり得た（R01-F10）。
+    //
+    // 子プロセスで broadcast させれば、ブロックしても SIGKILL で確実に始末でき、
+    // 親のマッピングやフィクスチャと競合しない。
     bool tryBroadcast(CondVarTestData* data, int timeout_ms) {
-        std::atomic<bool> completed(false);
-        std::thread t([&]() {
-            pthread_cond_broadcast(&data->cond);
-            completed.store(true);
-        });
+        (void)data;  // 子プロセスは自前で共有メモリに接続する
 
+        pid_t pid = fork();
+        if (pid == 0) {
+            // 子: 親と同じ共有メモリに繋いで broadcast する
+            SharedMemoryPosix child_shm(SHM_NAME, O_RDWR, DEFAULT_PERM);
+            if (!child_shm.connect()) {
+                _exit(2);
+            }
+            auto* child_data = reinterpret_cast<CondVarTestData*>(child_shm.getPtr());
+            pthread_cond_broadcast(&child_data->cond);
+            _exit(0);
+        }
+        if (pid < 0) {
+            ADD_FAILURE() << "fork() に失敗した";
+            return false;
+        }
+
+        // タイムアウトまでポーリングし、終わらなければ確実に殺す
         auto deadline = std::chrono::steady_clock::now() +
                         std::chrono::milliseconds(timeout_ms);
-        while (!completed.load() && std::chrono::steady_clock::now() < deadline) {
+        int status = 0;
+        while (std::chrono::steady_clock::now() < deadline) {
+            pid_t r = waitpid(pid, &status, WNOHANG);
+            if (r == pid) {
+                return true;   // broadcast は完了した
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
 
-        if (completed.load()) {
-            t.join();
-            return true;
-        }
-        t.detach();
-        return false;
+        kill(pid, SIGKILL);
+        waitpid(pid, &status, 0);
+        return false;  // ブロックした（＝ condvar の内部状態が壊れている）
     }
 
     // ROBUST mutex を回復する
+    //
+    // NOTE: 以前は pthread_mutex_lock の戻り値を見ずに必ず unlock していた。
+    //       lock が EOWNERDEAD 以外で失敗した場合（ENOTRECOVERABLE など）は
+    //       ロックを保持していないため、「保持していない mutex の unlock」に
+    //       なる。ThreadSanitizer が検出した（R01-F10）。
     void recoverMutex(CondVarTestData* data) {
         int ret = pthread_mutex_lock(&data->mutex);
         if (ret == EOWNERDEAD) {
+            // 前の所有者が死んだ。一貫性を宣言すればロックは保持している。
             pthread_mutex_consistent(&data->mutex);
+            ret = 0;
+        }
+        if (ret != 0) {
+            // 回復不能（ENOTRECOVERABLE 等）。ロックしていないので unlock しない。
+            return;
         }
         pthread_mutex_unlock(&data->mutex);
     }
