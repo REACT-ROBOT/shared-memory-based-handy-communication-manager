@@ -238,6 +238,19 @@ if(BUILD_TESTS)
   # ハングを FAIL にする（ctest の --timeout に依存させない）
   set_tests_properties(${shm_pub_sub_validation_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT})
 
+    # 共有メモリ形式 v2 の回帰テスト (R01-F04 / F05 / F06 / F07-a / 複数 Publisher)
+    add_executable(shm_pub_sub_format_v2_test
+        test/shm_pub_sub_format_v2_test.cpp
+      )
+    target_link_libraries(shm_pub_sub_format_v2_test
+        PRIVATE
+        shm_pub_sub
+        ${GTEST_LDFLAGS}
+      )
+    gtest_add_tests(TARGET shm_pub_sub_format_v2_test TEST_LIST shm_pub_sub_format_v2_test_cases)
+  # ハングを FAIL にする（ctest の --timeout に依存させない）
+  set_tests_properties(${shm_pub_sub_format_v2_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT})
+
     # レイアウト変更・共有メモリ作り直しの回帰テスト
     add_executable(shm_pub_sub_layout_test
         test/shm_pub_sub_layout_test.cpp

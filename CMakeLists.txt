@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(shm VERSION 2.0.0 LANGUAGES CXX)
+project(shm VERSION 3.0.0 LANGUAGES CXX)
 
 # ----------------------------------------------------------------------------
 # バージョン
@@ -32,6 +32,13 @@ project(shm VERSION 2.0.0 LANGUAGES CXX)
 #        Critical/High 所見を抱えたままだったため、修正ではなく撤去を選んだ。
 #        再導入する場合は R01 の指摘を解消した設計で作り直すこと。
 #        提供するのは shm_base / shm_pub_sub / shm_tool のみ。
+# 3.0.0: 共有メモリ形式を v2 に変更（レビュー R01 の F04/F05/F06/F07-a）。
+#        自己記述的なヘッダ（magic / ABI 版 / 総サイズ / payload_alignment /
+#        generation / sequence）とスロット単位の robust mutex を導入した。
+#        **共有メモリのレイアウトが変わるため、同じトピックに接続する全プロセスを
+#        再ビルドして同時に入れ替えること。入れ替え前に `shm_tool remove` で
+#        既存の /dev/shm/shm_* を消すこと。**
+#        新しいコードが v1 の領域を読んだ場合は magic 不一致として明確に失敗する。
 # ----------------------------------------------------------------------------
 set(SHM_VERSION "${PROJECT_VERSION}" CACHE INTERNAL
     "Version of shared-memory-based-handy-communication-manager in this build tree")

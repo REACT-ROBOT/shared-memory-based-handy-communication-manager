@@ -274,128 +274,200 @@ protected:
 };
 
 // ****************************************************************************
+// 共有メモリ形式 v2
+//
+// v1 には自己記述的な情報が一切無く、共有メモリ上の element_size / buf_num を
+// 無検証で信じてポインタを組み立てていた。壊れた領域・切り詰められた領域・
+// 別形式の領域を読むと範囲外ポインタが生まれ、実際に SIGSEGV していた。
+// また「発行順」の正本が microsecond 時刻そのものだったため、同一時刻の
+// publish で最新値を誤選択したり、seqlock の検証が ABA で素通りしたりした。
+//
+// v2 では固定長ヘッダとスロットレコードを置き、次を持たせる。
+//   - magic / ABI 版 / ヘッダ長 / 総サイズ  … 別形式・別版・破損の検出
+//   - payload_alignment                     … alignas(16) 以上の型の正しい配置
+//   - generation                            … レイアウト世代（P3 で使う）
+//   - sequence                              … 発行順の正本。時刻と分離する
+//   - スロット単位の robust mutex           … 所有権。owner death をカーネルが検出
+//
+// 「書き込み中」を時刻で判定して 1 秒で奪う仕組みは廃止した。停止していただけの
+// 生きた writer からスロットを奪うと、再開した旧 writer が新 writer の payload を
+// 上書きし、壊れた値が有効データとして公開され得たため（R01-F04）。
+// ****************************************************************************
+
+//! @brief 共有メモリ先頭に置く固定長ヘッダ（128 バイト）
+//! @details element_capacity / buf_num に依存しない固定長。
+//!          レイアウトを読む前にこのヘッダだけで妥当性を判定できる。
+struct ShmHeader
+{
+  uint32_t              magic;              //!< SHM_MAGIC。別形式・旧版の検出
+  std::atomic<uint32_t> state;              //!< NOT_INITIALIZED / INITIALIZING / INITIALIZED
+  uint16_t              abi_major;          //!< 非互換変更で増える
+  uint16_t              abi_minor;          //!< 後方互換な追加で増える
+  uint32_t              header_size;        //!< sizeof(ShmHeader)。前方互換用
+  uint64_t              total_size;         //!< レイアウト全体のバイト数
+  uint64_t              element_capacity;   //!< スロット1つ分の確保量
+  uint64_t              buf_num;            //!< スロット数
+  uint64_t              payload_alignment;  //!< ペイロードの境界
+  uint64_t              slot_offset;        //!< SlotRecord[] の先頭
+  uint64_t              slot_size;          //!< sizeof(SlotRecord)。ABI 差の検出
+  uint64_t              data_offset;        //!< ペイロード先頭
+  std::atomic<uint64_t> generation;         //!< レイアウト世代（P3）
+  std::atomic<uint64_t> sequence;           //!< 発行順の正本。単調増加
+  uint64_t              boot_id_hash;       //!< 再起動をまたいだ残骸の検出
+  uint64_t              reserved[4];
+};
+
+//! @brief スロット1つ分のメタデータ
+//! @details 1スロット = 1キャッシュラインに載せ、Publisher 同士の false sharing を避ける。
+struct alignas(64) SlotRecord
+{
+  //! 発行番号。0 は「有効なデータが無い」を意味する。
+  //! 書き込み開始時に 0 へ落とし、完了時に header.sequence から採番した値を
+  //! release store する。途中で writer が死んでも 0 のままなので読み手には見えない。
+  std::atomic<uint64_t> sequence;
+  uint64_t              payload_size;           //!< 実際に書かれた長さ
+  uint64_t              capture_monotonic_us;   //!< CLOCK_MONOTONIC_RAW。期限判定用
+  uint64_t              capture_realtime_us;    //!< CLOCK_REALTIME。日時指定の検索用
+  //! スロットの所有権。PTHREAD_PROCESS_SHARED かつ PTHREAD_MUTEX_ROBUST。
+  //! trylock が EBUSY なら「生きている writer が使用中」なので絶対に奪わない。
+  //! EOWNERDEAD（カーネルが所有者の死を確定）のときだけ回収する。
+  pthread_mutex_t       owner;
+};
+
+// ****************************************************************************
 //! @class RingBuffer
 //! @brief \~english     Class that is described ring-buffer used for shared memory
 //!        \~japanese-en 共有メモリで使用するリングバッファを記述したクラス
-//! @details
 // ****************************************************************************
 class RingBuffer
 {
 public:
+  //! 'SHM2'。v1 の先頭 4 バイトは初期化フラグ (0/1/2) なので、
+  //! 新しいコードが v1 の領域を読んでも必ず不一致になる。
+  static constexpr uint32_t SHM_MAGIC = 0x324D4853;
+  static constexpr uint16_t ABI_MAJOR = 2;
+  static constexpr uint16_t ABI_MINOR = 0;
+
   // ------------------------------------------------------------------------
-  // 入力の上限
-  //
-  // 共有メモリ上のヘッダは今のところ magic も版も持たないため、破損した領域や
-  // 別形式の領域を読むと任意の値が element_size / buf_num として出てくる。
-  // 「現実的にあり得ない値」をここで弾き、範囲外ポインタの生成を防ぐ。
-  // （恒久対策は形式 v2 の自己記述ヘッダ。R01-F06 参照）
+  // 入力の上限。現実的にあり得ない値を弾き、範囲外ポインタの生成を防ぐ。
   // ------------------------------------------------------------------------
-  static constexpr size_t MAX_BUFFER_NUM  = 1024;
+  static constexpr size_t MAX_BUFFER_NUM   = 1024;
   static constexpr size_t MAX_ELEMENT_SIZE = 1ULL << 30;  // 1 GiB
   static constexpr size_t MAX_TOTAL_SIZE   = 1ULL << 32;  // 4 GiB
+  //! 既定のペイロード境界。1 = 制約なし（バイト列として扱う）。
+  //! 型が分かっている呼び出し側は alignof(T) を渡すこと。
+  //! ペイロード領域の先頭は常に max(payload_alignment, 64) に載るので、
+  //! element_size が payload_alignment の倍数である限り全スロットが整列する。
+  static constexpr size_t DEFAULT_PAYLOAD_ALIGNMENT = 1;
+  //! ページ境界を超えるアライメント要求は共有メモリでは満たせない
+  static constexpr size_t MAX_PAYLOAD_ALIGNMENT = 4096;
 
-  static size_t getSize(size_t element_size, int buffer_num);
+  static size_t getSize(size_t element_size, int buffer_num,
+                        size_t payload_alignment = DEFAULT_PAYLOAD_ALIGNMENT);
   static bool   checkInitialized(unsigned char *first_ptr);
   static bool   waitForInitialization(unsigned char *first_ptr, uint64_t timeout_usec);
 
   /*!
-   * \~japanese-en 既存の共有メモリへ接続する前に、そのレイアウトが実際の
-   *               マッピング長に収まっているかを検証する．
-   *
-   *               RingBuffer は共有メモリ上の element_size / buf_num を信じて
-   *               ポインタを組み立てるが、マッピング長を知らないため
-   *               「切り詰められた／壊れた共有メモリ」に接続すると
-   *               マッピング外を指すポインタを作ってしまう（SIGSEGV）。
-   *               接続側は必ずこの関数を先に通すこと．
-   *
+   * \~japanese-en 既存の共有メモリへ接続する前に、ヘッダとレイアウトが
+   *               実マッピング長に収まっているかを検証する．
    * @param [in]  first_ptr    共有メモリ先頭
    * @param [in]  mapping_size 実際に mmap した長さ（SharedMemory::getSize()）
    * @param [out] reason       失敗理由（不要なら nullptr）
    * @return bool 接続してよければ真
    */
   static bool validateLayout(const unsigned char *first_ptr, size_t mapping_size, std::string *reason = nullptr);
-  static size_t calculateAlignedLayout(size_t element_size, int buffer_num, size_t &mutex_offset, size_t &cond_offset,
-                                       size_t &element_size_offset, size_t &buf_num_offset, size_t &timestamp_offset,
-                                       size_t &data_offset);
 
-  RingBuffer(unsigned char *first_ptr, size_t size = 0, int buffer_num = 0);
+  RingBuffer(unsigned char *first_ptr, size_t size = 0, int buffer_num = 0,
+             size_t payload_alignment = DEFAULT_PAYLOAD_ALIGNMENT);
   ~RingBuffer();
 
-  uint64_t       getTimestamp_us() const;
-  uint64_t       getTimestamp_us(int buffer_num) const;
+  // --- 読み出し ---
+  uint64_t getTimestamp_us() const;
+  uint64_t getTimestamp_us(int buffer_num) const;
+  //! 発行番号。0 は無効。順序判定はこちらを使うこと（時刻は重複し得る）
+  uint64_t getSequence(int buffer_num) const;
+  uint64_t getPayloadSize(int buffer_num) const;
+  uint64_t getCaptureRealtime_us(int buffer_num) const;
+  uint64_t getGeneration() const;
+  //! @deprecated getTimestamp_us(int) が「無効」を表す値を返したかの判定。
+  //!             v2 では sequence が 0 のスロットに対してこの値が返る。
   static bool    isBeingWritten(uint64_t timestamp);
-  void           setTimestamp_us(uint64_t input_time_us, int buffer_num);
   int            getNewestBufferNum();
   int            getOldestBufferNum();
-  bool           allocateBuffer(int buffer_num);
   size_t         getElementSize() const;
   unsigned char *getDataList();
-  void           signal();
-  bool           waitFor(uint64_t timeout_usec);
   bool           isUpdated() const;
   void           setDataExpiryTime_us(uint64_t time_us);
-  void           markAsInitialized();
+  bool           waitFor(uint64_t timeout_usec);
+  void           signal();
   bool           isLayoutChanged() const;
+  void           markAsInitialized();
+  //! @brief 読み終えた発行番号を記録する（isUpdated() / waitFor() の基準）
+  void           markAsRead(uint64_t sequence);
+
+  // --- 書き込み ---
+  //! @brief スロットを確保する（robust mutex を取得し、内容を無効化する）
+  //! @return bool 確保できたら真。他の生きた writer が使用中なら偽
+  bool allocateBuffer(int buffer_num);
+  //! @brief 書き込みを確定する（発行番号を採番し、スロットを手放す）
+  //! @param [in] capture_monotonic_us 0 なら現在時刻を打つ
+  void commitBuffer(int buffer_num, size_t payload_size, uint64_t capture_monotonic_us = 0);
+  //! @brief 書かずにスロットを手放す
+  void releaseBuffer(int buffer_num);
+  //! @deprecated commitBuffer() を使うこと。
+  //!             互換のため残している。input_time_us は capture 時刻として記録する。
+  void setTimestamp_us(uint64_t input_time_us, int buffer_num);
 
 private:
-  void initializeExclusiveAccess();
-  void initializeOrAttach(size_t element_size, int buffer_num);
-  bool hasCompatibleLayout(size_t element_size, int buffer_num) const;
-  void initializeContents(size_t element_size, int buffer_num);
+  void        initializeExclusiveAccess();
+  void        initializeOrAttach(size_t element_size, int buffer_num, size_t payload_alignment);
+  bool        hasCompatibleLayout(size_t element_size, int buffer_num, size_t payload_alignment) const;
+  void        initializeContents(size_t element_size, int buffer_num, size_t payload_alignment);
+  void        bindPointers();
+  SlotRecord *slot(int i) const;
+  bool        ownsSlot(int i) const;
+  void        setSlotOwned(int i, bool owned);
 
   unsigned char *memory_ptr;
+  ShmHeader     *header;
 
-  std::atomic<uint32_t> *initialization_flag;
-  std::atomic<uint32_t> *pthread_init_flag;
-  // NOTE: mutex / condition / pthread_init_flag は現在どこからもロック・待機
-  //       されていない（signal() をポーリングに置き換えた時点で役目を終えた）。
-  //       レイアウト上の位置を占めるだけなので、共有メモリ形式を変更する
-  //       タイミング（形式 v2）でスロット単位の robust mutex に置き換えて削除する。
-  //       ここで消すとレイアウトが変わり新旧バイナリが混在できなくなるため、
-  //       形式変更まではあえて残す。
-  pthread_mutex_t       *mutex;
-  pthread_cond_t        *condition;
-  size_t                *element_size;
-  size_t                *buf_num;
-  std::atomic<uint64_t> *timestamp_list;
-  unsigned char         *data_list;
+  //! このインスタンスが robust mutex を保持しているスロット。
+  //! allocateBuffer() を通さずに commitBuffer() / setTimestamp_us() を呼ぶ
+  //! 使い方（テストや、確保せずに時刻だけ書き換える経路）があるため、
+  //! 保持していない mutex を unlock しないようにここで追跡する。
+  std::unique_ptr<std::atomic<bool>[]> owned_slots;
+  unsigned char *slot_base;
+  unsigned char *data_list;
 
-  // このインスタンスが最後に選んだバッファのタイムスタンプ。共有メモリ上では
-  // なくプロセス側の状態なので、レイアウトには影響しない。
-  // 1つの Publisher / Subscriber を複数スレッドから使うと、
-  // getNewestBufferNum() / getOldestBufferNum() の書き込みと
-  // getTimestamp_us() / isUpdated() の読み出しが競合する。
-  // ThreadSanitizer で実際に検出されたため atomic 化した（R01-F10）。
+  // このインスタンスが最後に選んだスロットの情報。共有メモリ上ではなく
+  // プロセス側の状態なので、レイアウトには影響しない。
+  // 1つの Publisher / Subscriber を複数スレッドから使うと読み書きが競合するため
+  // atomic にしている（ThreadSanitizer で検出済み）。
   std::atomic<uint64_t> timestamp_us;
+  std::atomic<uint64_t> last_sequence;
   std::atomic<uint64_t> data_expiry_time_us;
 
   // データ位置の計算に使ったレイアウト。共有メモリ上の値がこれと食い違ったら、
   // 別のプロセスが異なるレイアウトで初期化し直したということなので、
   // このインスタンスが持つオフセットは使えない（isLayoutChanged() 参照）。
-  size_t expected_element_size;
-  size_t expected_buf_num;
+  size_t   expected_element_size;
+  size_t   expected_buf_num;
+  size_t   expected_payload_alignment;
+  uint64_t expected_generation;
 
-  static constexpr uint32_t INITIALIZED             = 1;
-  static constexpr uint32_t NOT_INITIALIZED         = 0;
+  static constexpr uint32_t INITIALIZED     = 1;
+  static constexpr uint32_t NOT_INITIALIZED = 0;
   // 初期化を実行中であることを示す中間状態。NOT_INITIALIZED からの CAS で
   // 一つの writer だけがこの状態に遷移でき、他は初期化の完了を待つ。
-  // checkInitialized() は INITIALIZED との一致で判定するため、この状態は
-  // 購読側からは「未初期化」として扱われる（＝初期化途中を読まない）。
-  static constexpr uint32_t INITIALIZING           = 2;
+  static constexpr uint32_t INITIALIZING = 2;
   // 他プロセスによる初期化の完了を待つ上限。待ちきれなかった場合は
   // 初期化中に落ちたプロセスの残骸とみなして自分で初期化し直す。
-  static constexpr uint64_t INIT_WAIT_TIMEOUT_US   = 500000;  // 500ms
-  static constexpr uint32_t PTHREAD_INITIALIZED     = 1;
-  static constexpr uint32_t PTHREAD_NOT_INITIALIZED = 0;
+  static constexpr uint64_t INIT_WAIT_TIMEOUT_US = 500000;  // 500ms
 
-  // 「書き込み途中」マーカー: 最上位ビットを立て、下位に確保時刻[usec]を
-  // 埋め込む（時刻は起動からの経過なので最上位ビットが立つことはない）。
-  // 保持していた writer がクラッシュした場合、マーカーが STALE_WRITE_TIMEOUT_US
-  // より古くなった時点で他の writer が奪って再利用する。
-  // 旧形式のマーカー (UINT64_MAX) も最上位ビットが立っているため
-  // 「確保時刻不明 = 十分古い」として回収対象になる。
-  static constexpr uint64_t WRITING_FLAG           = 1ULL << 63;
-  static constexpr uint64_t STALE_WRITE_TIMEOUT_US = 1000000;  // 1s
+  // getTimestamp_us(int) が「有効なデータが無い」ことを表すために返す値。
+  // v1 の「書き込み途中」マーカーと同じビットなので、isBeingWritten() を
+  // 使っている既存コードがそのまま動く。
+  static constexpr uint64_t WRITING_FLAG = 1ULL << 63;
 };
 
 /*!

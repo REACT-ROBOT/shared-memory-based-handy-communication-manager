@@ -432,6 +432,77 @@ disconnectMemory("") → throw: shared memory name must not be empty
 `-DSHM_STRICT_TYPE_CHECK=ON` を付けてビルドし、違反型を洗い出す。
 静的調査では違反は見つかっていないので、大きな修正は発生しない見込み。
 
+### 完了: P2（共有メモリ形式 v2）
+
+| 項目 | 内容 |
+|---|---|
+| F04 | 時刻ベースのスロット奪取を**全廃**。所有権をスロット単位の robust mutex で表し、`EBUSY`（生きている writer）では絶対に奪わず、`EOWNERDEAD`（カーネルが所有者の死を確定）でのみ回収する |
+| F05 | ヘッダの単一 atomic から `fetch_add` で採番する **`sequence` を発行順の正本**にした。番号は**コミット直前**に採るので「番号が小さい＝先にコミットされた」が常に成立する。整合性検証も時刻から発行番号に変更し、ABA が原理的に起きなくなった |
+| F05 | 時刻を順序から分離し、`capture_monotonic_us`（期限判定）と `capture_realtime_us`（日時指定の検索用）を両方持たせた |
+| F06 | magic / ABI 版 / header_size / slot_size / total_size / boot_id を持たせ、attach 時に全オフセットを実マッピング長に対して検証する。ヘッダが自分自身と矛盾している場合も弾く |
+| F07-a | `payload_alignment` をヘッダに持たせ、ペイロード先頭を `max(alignof(T), 64)` に載せる。書き込み・読み出しを **memcpy に統一**し、未構築領域への代入（UB）と ARM/x86 の分岐を削除した |
+| §3A | 複数 Publisher を正式サポート。回帰テストで全順序・torn read ゼロ・スロット枯渇時の明示的失敗を検証 |
+| §5 | 一度もロックされていなかった `pthread_mutex_t` / `pthread_cond_t` / `pthread_init_flag` をレイアウトから削除（スロット単位 robust mutex で置換） |
+
+**新しいレイアウト**
+
+```
+ShmHeader (128 バイト固定)
+  magic / state / abi_major / abi_minor / header_size / total_size
+  element_capacity / buf_num / payload_alignment
+  slot_offset / slot_size / data_offset
+  generation / sequence / boot_id_hash / reserved[4]
+
+SlotRecord[buf_num]（1スロット = 1キャッシュライン。false sharing 回避）
+  sequence (0 = 無効) / payload_size
+  capture_monotonic_us / capture_realtime_us
+  owner: pthread_mutex_t (PROCESS_SHARED | ROBUST)
+
+Payload  data_offset は max(payload_alignment, 64) 境界
+         ストライドは element_capacity（切り上げない）
+```
+
+ストライドを切り上げないのは、既存の呼び出し側が `i * getElementSize()` で
+オフセットを出しているため。代わりに「capacity は payload_alignment の倍数」を
+生成時に要求し、`data_offset` を境界に載せることで全スロットの整列を保証する。
+
+**API の互換性**: 外部の3特殊化（`cv::Mat` / `Lidar2dScanData` /
+`PointCloud2DScanData`）が使う API はすべて維持した。
+`getOldestBufferNum()` → `allocateBuffer()` → 書き込み → `setTimestamp_us()`
+という手順もそのまま動く（`setTimestamp_us()` は `commitBuffer()` の別名として残した）。
+新しく `getSequence()` / `getPayloadSize()` / `getCaptureRealtime_us()` /
+`commitBuffer()` / `releaseBuffer()` / `getGeneration()` を追加した。
+整合性検証は発行番号で行うべきなので、3特殊化は `getSequence()` への移行を推奨する。
+
+**追加した回帰テスト（9本）**
+
+| テスト | 検証内容 |
+|---|---|
+| `HeaderIsSelfDescribing` | ヘッダの各フィールドが正しく書かれている |
+| `ForeignMagicIsRejected` | v1 の領域・ABI 不一致・自己矛盾したヘッダを弾く |
+| `SequenceIsUniqueAndMonotonicWithinOneMicrosecond` | 同一 µs の連続 publish でも最後の値が最新として返る |
+| `SequenceNeverRepeatsAcrossSlots` | 発行番号が重複しない |
+| `OverAlignedPayloadIsPlacedOnItsBoundary` | `alignas(32)` の型が全スロットで境界に載る |
+| **`StoppedWriterSlotIsNotStolen`** | SIGSTOP で 1.5 秒止めた**生きた** writer からスロットを奪わない（F04 の核心） |
+| `KilledWriterSlotIsReclaimed` | SIGKILL された writer のスロットは回収され、中身は無効になる |
+| `MultiplePublishersProduceAConsistentTotalOrder` | 3 Publisher 同時発行で torn read ゼロ |
+| `ExhaustedSlotsFailLoudlyInsteadOfCorrupting` | 全スロット占有時は沈黙せず例外 |
+
+既存の `CrashedWriterSlotsMustBeReclaimed` は「タイムスタンプに UINT64_MAX を
+書けばマーカーを偽装できる」という v1 前提だったため、実際に fork した子を
+SIGKILL する形に書き換えた。
+
+**P2 の実装中に TSan が見つけた自分の設計不備**: `setTimestamp_us()` が
+`allocateBuffer()` を経ずに呼ばれると、保持していない mutex を unlock していた。
+インスタンスごとにスロットの所有権を追跡し、保持している場合だけ unlock するよう修正。
+
+**検証**: Release / ASan / TSan / UBSan の全構成で **74/74 PASS**。
+
+**バージョン**: 3.0.0。共有メモリのレイアウトが変わるため、同じトピックに
+接続する全プロセスを再ビルドして同時に入れ替え、入れ替え前に `shm_tool remove` で
+既存の `/dev/shm/shm_*` を消す必要がある。参照側3パッケージの
+`SHM_REQUIRED_VERSION` も 3.0.0 に更新した。
+
 ## 6. 実施順序
 
 形式変更を1回に束ねることを最優先にする。F07-b だけは独立トラックで並走させる。

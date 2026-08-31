@@ -287,7 +287,11 @@ TEST_F(RingBufferTest, SizeCalculation) {
     // Test size calculation for different configurations
     EXPECT_GT(RingBuffer::getSize(sizeof(int), 1), sizeof(int));
     EXPECT_GT(RingBuffer::getSize(sizeof(int), 3), RingBuffer::getSize(sizeof(int), 1));
-    EXPECT_GT(RingBuffer::getSize(sizeof(double), 3), RingBuffer::getSize(sizeof(int), 3));
+    // 形式 v2 ではペイロード先頭をキャッシュライン境界に載せるため、要素サイズが
+    // 小さいうちは切り上げに吸収されて総サイズが変わらない。
+    // 差が丸めを超える大きさで比較する。
+    EXPECT_GT(RingBuffer::getSize(1024, 3), RingBuffer::getSize(sizeof(int), 3));
+    EXPECT_GE(RingBuffer::getSize(sizeof(double), 3), RingBuffer::getSize(sizeof(int), 3));
     
     // element_size == 0 は正当な入力（空の vector を publish したトピック）
     EXPECT_GT(RingBuffer::getSize(0, 1), 0);

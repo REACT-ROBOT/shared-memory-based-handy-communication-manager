@@ -142,7 +142,7 @@ Publisher<std::vector<T>>::Publisher(std::string name, int buffer_num, PERM perm
   }
 
   shared_memory = std::make_unique<SharedMemoryPosix>(shm_name, O_RDWR | O_CREAT, shm_perm);
-  shared_memory->connect(RingBuffer::getSize(sizeof(T) * vector_size, shm_buf_num));
+  shared_memory->connect(RingBuffer::getSize(sizeof(T) * vector_size, shm_buf_num, alignof(T)));
   if (shared_memory->isDisconnected())
   {
     throw std::runtime_error("shm::Publisher: Cannot get memory!");
@@ -170,7 +170,7 @@ Publisher<std::vector<T>>::Publisher(std::string name, int buffer_num, PERM perm
     }
   }
 
-  ring_buffer = std::make_unique<RingBuffer>(first_ptr, sizeof(T) * vector_size, shm_buf_num);
+  ring_buffer = std::make_unique<RingBuffer>(first_ptr, sizeof(T) * vector_size, shm_buf_num, alignof(T));
 }
 
 //! @brief トピックの書き込み
@@ -200,14 +200,14 @@ Publisher<std::vector<T>>::publish(const std::vector<T> &data)
     vector_size = data.size();
     ring_buffer.reset();
     shared_memory->disconnect();
-    shared_memory->connect(RingBuffer::getSize(sizeof(T) * vector_size, shm_buf_num));
+    shared_memory->connect(RingBuffer::getSize(sizeof(T) * vector_size, shm_buf_num, alignof(T)));
 
     if (shared_memory->isDisconnected())
     {
       throw std::runtime_error("shm::Publisher: Cannot allocate shared memory!");
     }
 
-    ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr(), sizeof(T) * vector_size, shm_buf_num);
+    ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr(), sizeof(T) * vector_size, shm_buf_num, alignof(T));
   }
 
   // 確保できないままの書き込みは、他の writer が書き込み途中のバッファを
@@ -240,8 +240,8 @@ Publisher<std::vector<T>>::publish(const std::vector<T> &data)
     std::memcpy(data_ptr + buffer_offset, data.data(), sizeof(T) * vector_size);
   }
 
-  uint64_t current_time_us = getCurrentTimeUSec();
-  ring_buffer->setTimestamp_us(current_time_us, oldest_buffer);
+  // 発行番号の採番とスロットの解放（理由はスカラ版のコメント参照）
+  ring_buffer->commitBuffer(oldest_buffer, sizeof(T) * vector_size);
 
   ring_buffer->signal();
 }
@@ -393,8 +393,9 @@ Subscriber<std::vector<T>>::subscribe(bool *is_success)
       break;
     }
 
-    uint64_t timestamp_before = ring_buffer->getTimestamp_us(newest_buffer);
-    if (RingBuffer::isBeingWritten(timestamp_before) || timestamp_before == 0)
+    // 整合性の検証は時刻ではなく発行番号で行う（理由はスカラ版のコメント参照）
+    uint64_t sequence_before = ring_buffer->getSequence(newest_buffer);
+    if (sequence_before == 0)
     {
       ++contention_retry_count_;
       continue;
@@ -413,14 +414,15 @@ Subscriber<std::vector<T>>::subscribe(bool *is_success)
       std::memcpy(scratch.data(), data_ptr + buffer_offset, sizeof(T) * vector_size);
     }
 
-    // コピーの読み込みが完了してからタイムスタンプを再読みする（load-load 順序の固定）
+    // コピーの読み込みが完了してから発行番号を再読みする（load-load 順序の固定）
     std::atomic_thread_fence(std::memory_order_acquire);
 
-    if (ring_buffer->getTimestamp_us(newest_buffer) == timestamp_before)
+    if (ring_buffer->getSequence(newest_buffer) == sequence_before)
     {
       *is_success            = true;
       current_reading_buffer = newest_buffer;
       return_index_          = 1 - return_index_;
+      ring_buffer->markAsRead(sequence_before);
       return return_buffers_[return_index_];
     }
     ++contention_retry_count_;

@@ -226,14 +226,14 @@ template <typename T>
 void
 Publisher<T>::connectAndPrepare()
 {
-  shared_memory->connect(RingBuffer::getSize(sizeof(T), shm_buf_num));
+  shared_memory->connect(RingBuffer::getSize(sizeof(T), shm_buf_num, alignof(T)));
 
   if (shared_memory->isDisconnected())
   {
     throw std::runtime_error("shm::Publisher: Cannot get memory!");
   }
 
-  ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr(), sizeof(T), shm_buf_num);
+  ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr(), sizeof(T), shm_buf_num, alignof(T));
 
   // Enhanced initialization synchronization for ARM processors
   // Wait for pthread structures to be properly initialized
@@ -300,37 +300,19 @@ Publisher<T>::publish(const T &data)
     throw std::runtime_error("shm::Publisher: Could not allocate a buffer (all buffers are in use)!");
   }
 
-  // Cross-platform aligned memory access
+  // 書き込みは memcpy に統一する。
+  // 以前は x86 で *reinterpret_cast<T*>(ptr) = data としていたが、これは
+  // T が構築されていない領域に対して代入演算子を走らせる未定義動作であり、
+  // かつコンパイラが aligned 命令を選ぶと alignas(16) 以上の型で SIGSEGV し得た。
+  // trivially copyable な型に対しては memcpy が正しい操作で、アライメント要求も
+  // 無い。結果として ARM/x86 の分岐そのものが不要になる（R01-F07-a）。
   unsigned char *data_ptr      = ring_buffer->getDataList();
-  size_t         buffer_offset = oldest_buffer * sizeof(T);
+  size_t         buffer_offset = static_cast<size_t>(oldest_buffer) * sizeof(T);
+  std::memcpy(data_ptr + buffer_offset, &data, sizeof(T));
 
-  if constexpr (is_arm_platform())
-  {
-    // ARM: Use memcpy for safer memory access
-    if (!irlab::shm::is_aligned<T>(data_ptr + buffer_offset))
-    {
-      // Use memcpy for unaligned access on ARM
-      std::memcpy(data_ptr + buffer_offset, &data, sizeof(T));
-    }
-    else
-    {
-      T *typed_ptr = irlab::shm::align_pointer<T>(data_ptr + buffer_offset);
-      *typed_ptr   = data;
-    }
-  }
-  else
-  {
-    // x86/x64: Direct cast is safe
-    T *typed_ptr = reinterpret_cast<T *>(data_ptr + buffer_offset);
-    *typed_ptr   = data;
-  }
-
-  // struct timespec t;
-  // clock_gettime(CLOCK_MONOTONIC_RAW, &t);
-  // ring_buffer->setTimestamp_us(((uint64_t) t.tv_sec * 1000000L) + ((uint64_t) t.tv_nsec / 1000L), oldest_buffer);
-
-  uint64_t current_time_us = getCurrentTimeUSec();
-  ring_buffer->setTimestamp_us(current_time_us, oldest_buffer);
+  // 発行番号の採番とスロットの解放。番号はここで採るので、
+  // 「番号が小さい＝先にコミットされた」が常に成り立つ。
+  ring_buffer->commitBuffer(oldest_buffer, sizeof(T));
 
   ring_buffer->signal();
 }
@@ -504,50 +486,33 @@ Subscriber<T>::subscribe(bool *is_success)
       break;
     }
 
-    uint64_t timestamp_before = ring_buffer->getTimestamp_us(newest_buffer);
-    if (RingBuffer::isBeingWritten(timestamp_before) || timestamp_before == 0)
+    // 整合性の検証には時刻ではなく発行番号を使う。発行番号は単一の atomic から
+    // fetch_add で採番され再利用されないので、同一 microsecond の publish で
+    // 前後の値が一致してしまう ABA が原理的に起きない（R01-F05）。
+    uint64_t sequence_before = ring_buffer->getSequence(newest_buffer);
+    if (sequence_before == 0)
     {
       // 選択直後に書き換えが始まった（または初期化された）
       ++contention_retry_count_;
       continue;
     }
 
-    // Cross-platform aligned memory access
     unsigned char *data_ptr      = ring_buffer->getDataList();
-    size_t         buffer_offset = newest_buffer * sizeof(T);
+    size_t         buffer_offset = static_cast<size_t>(newest_buffer) * sizeof(T);
 
     // 今返していない側へ読み込む。失敗しても直前に返した値は壊れない。
     T &scratch = return_buffers_[1 - return_index_];
+    std::memcpy(&scratch, data_ptr + buffer_offset, sizeof(T));
 
-    if constexpr (is_arm_platform())
-    {
-      // ARM: Use safer memory copy approach
-      if (!irlab::shm::is_aligned<T>(data_ptr + buffer_offset))
-      {
-        // Use memcpy for unaligned access on ARM
-        std::memcpy(&scratch, data_ptr + buffer_offset, sizeof(T));
-      }
-      else
-      {
-        T *typed_ptr = irlab::shm::align_pointer<T>(data_ptr + buffer_offset);
-        scratch      = *typed_ptr;
-      }
-    }
-    else
-    {
-      // x86/x64: Direct cast is safe
-      T *typed_ptr = reinterpret_cast<T *>(data_ptr + buffer_offset);
-      scratch      = *typed_ptr;
-    }
-
-    // コピーの読み込みが完了してからタイムスタンプを再読みする（load-load 順序の固定）
+    // コピーの読み込みが完了してから発行番号を再読みする（load-load 順序の固定）
     std::atomic_thread_fence(std::memory_order_acquire);
 
-    if (ring_buffer->getTimestamp_us(newest_buffer) == timestamp_before)
+    if (ring_buffer->getSequence(newest_buffer) == sequence_before)
     {
       *is_success            = true;
       current_reading_buffer = newest_buffer;
       return_index_          = 1 - return_index_;
+      ring_buffer->markAsRead(sequence_before);
       return return_buffers_[return_index_];
     }
     // コピー中に上書きされた → やり直し

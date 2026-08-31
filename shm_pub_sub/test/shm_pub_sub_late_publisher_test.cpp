@@ -57,7 +57,8 @@ struct RawRingState {
   uint32_t              init_flag = 0;
   size_t                element_size = 0;
   size_t                buf_num = 0;
-  std::vector<uint64_t> timestamps;
+  std::vector<uint64_t> timestamps;   //!< スロットの capture 時刻（無効なら 0）
+  std::vector<uint64_t> sequences;    //!< スロットの発行番号（0 = 無効）
   std::vector<Msg>      data;
 
   bool allTimestampsZero() const {
@@ -83,8 +84,8 @@ struct RawRingState {
     std::cout << "  [" << tag << "] init_flag=" << init_flag << " element_size=" << element_size
               << " buf_num=" << buf_num << std::endl;
     for (size_t i = 0; i < timestamps.size(); ++i) {
-      std::cout << "    buf[" << i << "] ts=" << timestamps[i]
-                << (RingBuffer::isBeingWritten(timestamps[i]) ? " (WRITING)" : "")
+      std::cout << "    buf[" << i << "] ts=" << timestamps[i] << " seq=" << sequences[i]
+                << (sequences[i] == 0 ? " (EMPTY/WRITING)" : "")
                 << " data.seq=" << data[i].seq << " data.payload[0]=" << data[i].payload[0] << std::endl;
     }
   }
@@ -99,18 +100,28 @@ RawRingState peekRawRing(const std::string& topic, int buffer_num) {
   }
   unsigned char* ptr = shm.getPtr();
 
-  size_t mutex_offset, cond_offset, element_size_offset, buf_num_offset, timestamp_offset, data_offset;
-  RingBuffer::calculateAlignedLayout(sizeof(Msg), buffer_num, mutex_offset, cond_offset, element_size_offset,
-                                     buf_num_offset, timestamp_offset, data_offset);
+  // 形式 v2 ではヘッダとスロットが公開の構造体なので、そのまま読める。
+  // （v1 では calculateAlignedLayout() でオフセットを再計算する必要があった）
+  (void)buffer_num;
+  const ShmHeader* header = reinterpret_cast<const ShmHeader*>(ptr);
+  if (header->magic != RingBuffer::SHM_MAGIC) {
+    shm.disconnect();
+    return state;
+  }
 
-  state.init_flag    = *reinterpret_cast<uint32_t*>(ptr);
-  state.element_size = *reinterpret_cast<size_t*>(ptr + element_size_offset);
-  state.buf_num      = *reinterpret_cast<size_t*>(ptr + buf_num_offset);
+  state.init_flag    = header->state.load(std::memory_order_acquire);
+  state.element_size = header->element_capacity;
+  state.buf_num      = header->buf_num;
 
   for (size_t i = 0; i < state.buf_num; ++i) {
-    state.timestamps.push_back(*reinterpret_cast<uint64_t*>(ptr + timestamp_offset + i * sizeof(uint64_t)));
+    const SlotRecord* slot =
+        reinterpret_cast<const SlotRecord*>(ptr + header->slot_offset + i * sizeof(SlotRecord));
+    const uint64_t seq = slot->sequence.load(std::memory_order_acquire);
+    state.sequences.push_back(seq);
+    // 無効なスロットは 0 として扱う（v1 のタイムスタンプ 0 と同じ意味）
+    state.timestamps.push_back(seq == 0 ? 0 : slot->capture_monotonic_us);
     Msg m;
-    std::memcpy(&m, ptr + data_offset + i * sizeof(Msg), sizeof(Msg));
+    std::memcpy(&m, ptr + header->data_offset + i * sizeof(Msg), sizeof(Msg));
     state.data.push_back(m);
   }
 

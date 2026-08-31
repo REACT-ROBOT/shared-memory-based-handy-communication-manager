@@ -22,6 +22,9 @@
 #include <cstring>
 #include <thread>
 #include <vector>
+#include <csignal>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "shm_base.hpp"
 #include "shm_pub_sub.hpp"
@@ -216,44 +219,80 @@ TEST_F(SHMPubSubRaceTest, PublishMustNotWriteToUnallocatedBuffer) {
 // 永久にリークし、リングが実質1面に縮小して torn read を悪化させる。
 // -----------------------------------------------------------------------------
 TEST_F(SHMPubSubRaceTest, CrashedWriterSlotsMustBeReclaimed) {
+  // 形式 v2 では「書き込み中」を時刻付きマーカーではなくスロット単位の
+  // robust mutex で表す。したがってクラッシュした writer の再現は
+  // 「確保したまま本当にプロセスを殺す」ことでしか作れない。
+  // （v1 はタイムスタンプに UINT64_MAX を書き込めばマーカーを偽装できたが、
+  //   その仕組みは「停止していただけの生きた writer からスロットを奪う」
+  //   という R01-F04 の原因そのものだったため廃止した）
   const std::string topic = "/race_slot_reclaim";
   const int buffer_num = 3;
 
-  irlab::shm::Publisher<BigMsg> pub(topic, buffer_num);
+  { irlab::shm::Publisher<BigMsg> warm(topic, buffer_num); }
 
-  irlab::shm::SharedMemoryPosix shm(topic, O_RDWR,
-                                    static_cast<irlab::shm::PERM>(0));
-  ASSERT_TRUE(shm.connect());
-  irlab::shm::RingBuffer rb(shm.getPtr());
+  // 子が確保したスロット番号を親へ伝えるための小さな共有メモリ
+  irlab::shm::SharedMemoryPosix handshake("/race_slot_reclaim_hs", O_RDWR | O_CREAT,
+                                          irlab::shm::DEFAULT_PERM);
+  ASSERT_TRUE(handshake.connect(sizeof(std::atomic<int>)));
+  auto* taken = reinterpret_cast<std::atomic<int>*>(handshake.getPtr());
+  taken->store(-1);
 
-  // バッファ 1, 2 を「クラッシュした writer が確保したまま」の状態にし、
-  // データ領域に番兵パターンを書いておく
-  unsigned char* data = rb.getDataList();
-  std::memset(data + sizeof(BigMsg) * 1, 0xEE, sizeof(BigMsg) * 2);
-  rb.setTimestamp_us(std::numeric_limits<uint64_t>::max(), 1);
-  rb.setTimestamp_us(std::numeric_limits<uint64_t>::max(), 2);
-
-  // 生きている publisher が発行を続ける（回収の猶予として約2秒間）
-  BigMsg msg;
-  for (int i = 1; i <= 100; ++i) {
-    msg.fill(static_cast<uint32_t>(i));
-    pub.publish(msg);
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  }
-
-  // リークした2面のうち少なくとも1面は再利用され、番兵パターンが
-  // 上書きされているべき
-  auto slotStillLeaked = [&](int slot) {
-    const unsigned char* p = data + sizeof(BigMsg) * slot;
-    for (size_t i = 0; i < sizeof(BigMsg); ++i) {
-      if (p[i] != 0xEE) {
-        return false;
+  pid_t pid = fork();
+  ASSERT_GE(pid, 0);
+  if (pid == 0) {
+    irlab::shm::SharedMemoryPosix child_shm(topic, O_RDWR, irlab::shm::DEFAULT_PERM);
+    child_shm.connect();
+    auto child_rb = irlab::shm::attachRingBuffer(child_shm);
+    if (child_rb == nullptr) {
+      _exit(2);
+    }
+    // 2面を確保したまま死ぬ
+    int first = child_rb->getOldestBufferNum();
+    if (!child_rb->allocateBuffer(first)) {
+      _exit(3);
+    }
+    int second = -1;
+    for (int i = 0; i < buffer_num; ++i) {
+      if (i != first && child_rb->allocateBuffer(i)) {
+        second = i;
+        break;
       }
     }
-    return true;
-  };
-  EXPECT_FALSE(slotStillLeaked(1) && slotStillLeaked(2))
-      << "クラッシュ writer が残した確保中バッファが一切回収されていない";
+    if (second < 0) {
+      _exit(4);
+    }
+    taken->store(first);
+    std::this_thread::sleep_for(std::chrono::seconds(30));
+    _exit(0);
+  }
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (taken->load() < 0 && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  ASSERT_GE(taken->load(), 0) << "子プロセスがスロットを確保できなかった";
+
+  kill(pid, SIGKILL);
+  waitpid(pid, nullptr, 0);
+
+  // 死んだ writer が握っていた 2 面は EOWNERDEAD 経由で回収され、
+  // 生きている publisher は普通に publish を続けられるはず。
+  irlab::shm::Publisher<BigMsg> pub(topic, buffer_num);
+  irlab::shm::Subscriber<BigMsg> sub(topic);
+  BigMsg msg;
+  for (int i = 1; i <= 20; ++i) {
+    msg.fill(static_cast<uint32_t>(i));
+    ASSERT_NO_THROW(pub.publish(msg))
+        << "死んだ writer のスロットが回収されず publish が詰まった (i=" << i << ")";
+    bool ok = false;
+    const BigMsg& got = sub.subscribe(&ok);
+    EXPECT_TRUE(ok) << "i=" << i;
+    if (ok) {
+      EXPECT_EQ(got.firstInconsistentWord(), -1) << "i=" << i;
+    }
+  }
+
+  handshake.disconnectAndUnlink();
 }
 
 // -----------------------------------------------------------------------------
