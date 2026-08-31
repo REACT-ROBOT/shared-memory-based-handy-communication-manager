@@ -291,12 +291,26 @@ Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm)
     {
       throw std::runtime_error("shm::Publisher: Type must be trivially copyable for ARM compatibility!");
     }
+  }
 
-    // Check alignment requirements for ARM processors
-    if (get_alignment<T>() > alignof(::max_align_t))
-    {
-      throw std::runtime_error("shm::Publisher: Type requires alignment beyond max_align_t on ARM!");
-    }
+  // ペイロードのアライメント要求が、共有メモリのレイアウトで保証できる範囲に
+  // 収まっているかを確認する。
+  //
+  // 以前はここに「ARM では alignof(T) が最大アライメントを超えたら拒否」という
+  // 判定があった。v1 ではペイロード先頭を 8 バイト境界にしか揃えられず、
+  // over-aligned な型を安全に置けなかったための措置である。
+  // 形式 v2 以降は alignof(T) をヘッダに記録し、ペイロード先頭を
+  // max(payload_alignment, 64) 境界に載せ、スロット間隔も payload_alignment の
+  // 倍数に揃えるので、alignas(16/32/64) の型を正しく扱える。
+  // 古い判定を残していると、扱えるはずの型を ARM でだけ拒否することになり、
+  // x86 と ARM で受け付ける型が食い違う（実際 Raspberry Pi 4 で alignas(32) の
+  // 型が弾かれて発覚した）。実際の上限はレイアウト側の MAX_PAYLOAD_ALIGNMENT
+  // なので、プラットフォームによらずそれで判定する。
+  if (alignof(T) > RingBuffer::MAX_PAYLOAD_ALIGNMENT)
+  {
+    throw std::runtime_error("shm::Publisher: Type requires alignment " + std::to_string(alignof(T)) +
+                             ", which exceeds the maximum the shared memory layout can guarantee (" +
+                             std::to_string(RingBuffer::MAX_PAYLOAD_ALIGNMENT) + ")");
   }
 
   if (name.empty())
@@ -419,12 +433,26 @@ Subscriber<T>::Subscriber(std::string name)
     {
       throw std::runtime_error("shm::Subscriber: Type must be trivially copyable for ARM compatibility!");
     }
+  }
 
-    // Check alignment requirements for ARM processors
-    if (get_alignment<T>() > alignof(::max_align_t))
-    {
-      throw std::runtime_error("shm::Subscriber: Type requires alignment beyond max_align_t on ARM!");
-    }
+  // ペイロードのアライメント要求が、共有メモリのレイアウトで保証できる範囲に
+  // 収まっているかを確認する。
+  //
+  // 以前はここに「ARM では alignof(T) が最大アライメントを超えたら拒否」という
+  // 判定があった。v1 ではペイロード先頭を 8 バイト境界にしか揃えられず、
+  // over-aligned な型を安全に置けなかったための措置である。
+  // 形式 v2 以降は alignof(T) をヘッダに記録し、ペイロード先頭を
+  // max(payload_alignment, 64) 境界に載せ、スロット間隔も payload_alignment の
+  // 倍数に揃えるので、alignas(16/32/64) の型を正しく扱える。
+  // 古い判定を残していると、扱えるはずの型を ARM でだけ拒否することになり、
+  // x86 と ARM で受け付ける型が食い違う（実際 Raspberry Pi 4 で alignas(32) の
+  // 型が弾かれて発覚した）。実際の上限はレイアウト側の MAX_PAYLOAD_ALIGNMENT
+  // なので、プラットフォームによらずそれで判定する。
+  if (alignof(T) > RingBuffer::MAX_PAYLOAD_ALIGNMENT)
+  {
+    throw std::runtime_error("shm::Subscriber: Type requires alignment " + std::to_string(alignof(T)) +
+                             ", which exceeds the maximum the shared memory layout can guarantee (" +
+                             std::to_string(RingBuffer::MAX_PAYLOAD_ALIGNMENT) + ")");
   }
 
   if (name.empty())

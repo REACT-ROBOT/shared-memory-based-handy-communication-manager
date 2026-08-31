@@ -136,6 +136,15 @@ Publisher<std::vector<T>>::Publisher(std::string name, int buffer_num, PERM perm
     throw std::runtime_error("shm::Publisher: Be setted not POD class in vector!");
   }
 
+  // 要素のアライメント要求がレイアウトで保証できる範囲か確認する
+  // （理由はスカラ版の同じ判定のコメントを参照）
+  if (alignof(T) > RingBuffer::MAX_PAYLOAD_ALIGNMENT)
+  {
+    throw std::runtime_error("shm::Publisher: Element type requires alignment " + std::to_string(alignof(T)) +
+                             ", which exceeds the maximum the shared memory layout can guarantee (" +
+                             std::to_string(RingBuffer::MAX_PAYLOAD_ALIGNMENT) + ")");
+  }
+
   if (name.empty())
   {
     throw std::runtime_error("shm::Publisher: Please set name!");
@@ -244,6 +253,15 @@ Subscriber<std::vector<T>>::Subscriber(std::string name)
   if (!std::is_standard_layout<T>::value)
   {
     throw std::runtime_error("shm::Subscriber: Be setted not POD class!");
+  }
+
+  // 要素のアライメント要求がレイアウトで保証できる範囲か確認する
+  // （理由はスカラ版の同じ判定のコメントを参照）
+  if (alignof(T) > RingBuffer::MAX_PAYLOAD_ALIGNMENT)
+  {
+    throw std::runtime_error("shm::Subscriber: Element type requires alignment " + std::to_string(alignof(T)) +
+                             ", which exceeds the maximum the shared memory layout can guarantee (" +
+                             std::to_string(RingBuffer::MAX_PAYLOAD_ALIGNMENT) + ")");
   }
   if (name.empty())
   {

@@ -191,6 +191,24 @@ TEST_F(SHMFormatV2Test, OverAlignedPayloadIsPlacedOnItsBoundary)
   const WidePayload      &got = sub.subscribe(&ok);
   EXPECT_TRUE(ok);
   EXPECT_DOUBLE_EQ(got.v[0], 1.5);
+
+  // over-aligned な型は x86 でも ARM でも同じように受け付けられること。
+  // v1 の名残で ARM だけ max_align_t (16) を超える型を拒否しており、
+  // Raspberry Pi 4 でこのテストが落ちて発覚した。
+  EXPECT_GT(alignof(WidePayload), alignof(::max_align_t))
+      << "前提: この型は max_align_t を超えるアライメントを要求する";
+}
+
+TEST_F(SHMFormatV2Test, AlignmentBeyondWhatTheLayoutCanGuaranteeIsRejected)
+{
+  // レイアウトが保証できる上限を超える要求は、プラットフォームによらず拒否する。
+  struct alignas(8192) TooWide
+  {
+    double v;
+  };
+  static_assert(alignof(TooWide) > RingBuffer::MAX_PAYLOAD_ALIGNMENT, "前提: 上限を超えること");
+  EXPECT_THROW(Publisher<TooWide>("v2_align", 3), std::runtime_error);
+  EXPECT_THROW(Subscriber<TooWide>("v2_align"), std::runtime_error);
 }
 
 // ---------------------------------------------------------------------------
