@@ -800,9 +800,7 @@ void diagnose_pub_sub_communication() {
 
 Pub/Sub通信をマスターしたら、以下の高度なトピックに挑戦してみましょう：
 
-1. **[🤝 Service通信](tutorials_shm_service_jp.md)** - 確実な要求応答通信
-2. **[⚡ Action通信](tutorials_shm_action_jp.md)** - 長時間非同期処理
-3. **[🐍 Python連携](tutorials_python_jp.md)** - PythonでPub/Sub通信
+1. **[🐍 Python連携](tutorials_python_jp.md)** - PythonでPub/Sub通信
 
 ---
 

@@ -111,114 +111,13 @@ g++ -std=c++17 -I../include receiver.cpp -L. -lshm_pub_sub -o receiver
 ...
 ```
 
-## 🤝 Service通信の体験
-
-次は、確実な要求応答通信を体験してみましょう：
-
-### サーバープログラム（Service版）
-
-```cpp
-#include "shm_service.hpp"
-#include <iostream>
-#include <thread>
-#include <chrono>
-
-using namespace irlab::shm;
-
-int main() {
-    // intを受け取ってintを返すServiceサーバー
-    ServiceServer<int, int> server("calc_service");
-    
-    std::cout << "計算サービスを開始..." << std::endl;
-    
-    while (true) {
-        if (server.hasRequest()) {
-            int request = server.getRequest();
-            std::cout << "要求受信: " << request << std::endl;
-            
-            // 2倍にして返す
-            int response = request * 2;
-            server.sendResponse(response);
-            std::cout << "応答送信: " << response << std::endl;
-        }
-        
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    
-    return 0;
-}
-```
-
-### クライアントプログラム（Service版）
-
-```cpp
-#include "shm_service.hpp"
-#include <iostream>
-#include <thread>
-#include <chrono>
-
-using namespace irlab::shm;
-
-int main() {
-    // intを送ってintを受け取るServiceクライアント
-    ServiceClient<int, int> client("calc_service");
-    
-    std::cout << "計算サービスにアクセス中..." << std::endl;
-    
-    for (int i = 1; i <= 5; ++i) {
-        // 要求送信
-        client.sendRequest(i);
-        std::cout << "要求送信: " << i << std::endl;
-        
-        // 応答待機（1秒タイムアウト）
-        if (client.waitForResponse(1000000)) {  // 1,000,000マイクロ秒 = 1秒
-            int result = client.getResponse();
-            std::cout << "結果受信: " << i << " x 2 = " << result << std::endl;
-        } else {
-            std::cout << "タイムアウト" << std::endl;
-        }
-        
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-    }
-    
-    return 0;
-}
-```
-
-### コンパイル・実行（Service版）
-
-```bash
-# コンパイル
-g++ -std=c++17 -I../include service_server.cpp -L. -lshm_service -o service_server
-g++ -std=c++17 -I../include service_client.cpp -L. -lshm_service -o service_client
-
-# 実行（2つのターミナルで）
-# ターミナル1: サーバーを先に起動
-./service_server
-
-# ターミナル2: クライアントを後から起動
-./service_client
-```
-
-## 🔍 違いを理解しよう
-
-| 特徴 | Pub/Sub (shm_pub_sub) | Service (shm_service) |
-|------|----------------------|----------------------|
-| **通信パターン** | 📡 一対多ブロードキャスト | 🤝 一対一要求応答 |
-| **速度** | ⚡ 超高速（~1μs） | 🚀 高速（~2-5μs） |
-| **信頼性** | 📦 ベストエフォート | 🔒 確実な送受信 |
-| **用途** | リアルタイムデータ配信 | 設定値取得・計算結果 |
-| **同期/非同期** | 非同期 | 同期（ブロッキング） |
-
 ## 🎯 次のステップ
 
 体験できましたか？次は以下を試してみましょう：
 
 1. **[📝 基本チュートリアル](tutorials_jp.md)** - より詳しい使い方を学ぶ
 2. **[📡 Pub/Sub通信](tutorials_shm_pub_sub_jp.md)** - 超高速ブロードキャストを極める
-3. **[🤝 Service通信](tutorials_shm_service_jp.md)** - 確実な要求応答をマスター
-4. **[⚡ Action通信](tutorials_shm_action_jp.md)** - 非同期処理をマスター
-5. **[🐍 Python版](tutorials_python_jp.md)** - Pythonでも使ってみる
+3. **[🐍 Python版](tutorials_python_jp.md)** - Pythonでも使ってみる
 
 ## 🐛 うまくいかない場合
 
@@ -243,7 +142,7 @@ export LD_LIBRARY_PATH=.:$LD_LIBRARY_PATH
 
 **通信できない**: 
 - 共有メモリ: 同じトピック名を使用しているか確認
-- Service: サーバーを先に起動してからクライアントを起動
+- Publisher と Subscriber で同じ型を使用しているか確認
 
 ### さらなるヘルプ
 

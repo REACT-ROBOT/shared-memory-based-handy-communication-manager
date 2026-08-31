@@ -3,12 +3,15 @@
 
 ## Overview
 
-**Shared Memory Based Communication Manager** is a comprehensive C++ library collection for achieving ultra-fast inter-process communication within the same PC. This library consists of three main components:
+**Shared Memory Based Communication Manager** is a C++ library for achieving ultra-fast inter-process communication within the same PC.
 
 ### 🧠 Shared Memory-Based Communication Libraries
 - **shm_pub_sub** - High-speed Publisher/Subscriber model communication (broadcast type)
-- **shm_service** - Reliable Server/Client model communication (request-response type)
-- **shm_action** - Advanced asynchronous processing communication (long-running task support)
+
+> **Note**: Earlier versions also shipped `shm_service` (request-response) and
+> `shm_action` (asynchronous task management). They had no users and their design
+> did not handle pthread objects in shared memory safely, so they were removed in
+> v2.0.0.
 
 ## 📚 Documentation Index
 
@@ -20,8 +23,6 @@
 ### Tutorials
 - [📝 Basic Tutorials (C++)](tutorials_en.md)
   - [🔄 How to use Pub/Sub Communication](tutorials_shm_pub_sub_en.md)
-  - [🤝 How to use Service Communication](tutorials_shm_service_en.md)
-  - [⚡ How to use Action Communication](tutorials_shm_action_en.md)
 - [🐍 Python Tutorials](tutorials_python_en.md)
   - [🔄 Python Pub/Sub Communication](tutorials_shm_pub_sub_python_en.md)
 
@@ -73,44 +74,24 @@ if (state) {
 }
 ```
 
-### 2. Simple Service Communication (Request-Response)
-```cpp
-#include "shm_service.hpp"
-using namespace irlab::shm;
-
-// Server
-ServiceServer<int, int> server("calc_service");
-if (server.hasRequest()) {
-    int request = server.getRequest();
-    int response = request * 2;  // Return double
-    server.sendResponse(response);
-}
-
-// Client
-ServiceClient<int, int> client("calc_service");
-client.sendRequest(21);
-if (client.waitForResponse(1000000)) {  // Wait 1 second
-    int result = client.getResponse();
-    std::cout << "Calculation result: " << result << std::endl;  // 42
-}
-```
-
 ## 🎨 How to Choose Communication Methods
 
 | Use Case | Recommended Library | Features | Applications |
 |----------|---------------------|----------|-------------|
 | **Real-time data distribution** | shm_pub_sub | ⚡Maximum speed<br>📡Broadcast<br>🔄Continuous data | Sensor data distribution<br>Image streaming<br>Robot control signals |
-| **Reliable data exchange** | shm_service | 🤝Request-response guarantee<br>⏰Timeout support<br>🛡️Error handling | Database operations<br>Configuration retrieval<br>Calculation results |
-| **Long-running asynchronous processing** | shm_action | ⚡Asynchronous execution<br>📊Progress monitoring<br>❌Cancel functionality | File processing<br>Machine learning training<br>Large data conversion |
+
+If you need request-response exchanges or long-running task management, build them
+in a higher layer (for example ROS 2 services and actions) or implement the protocol
+you need on top of Pub/Sub.
 
 ## 📊 Performance Comparison
 
-| Metric | shm_pub_sub | shm_service | shm_action |
-|--------|-------------|-------------|------------|
-| **Latency** | ~1μs | ~2-5μs | ~2-10μs |
-| **Throughput** | Very High | High | Medium |
-| **CPU Usage** | Minimal | Low | Medium |
-| **Memory Usage** | Minimal | Low | Medium |
+| Metric | shm_pub_sub |
+|--------|-------------|
+| **Latency** | ~1μs |
+| **Throughput** | Very High |
+| **CPU Usage** | Minimal |
+| **Memory Usage** | Minimal |
 
 ## 📞 Support
 

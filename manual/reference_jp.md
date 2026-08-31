@@ -18,7 +18,7 @@
 ### [3] ROS (Robot Operating System)
 **Open Robotics**. "ROS.org - Robot Operating System"
 - **URL**: <http://wiki.ros.org/ja/>
-- **概要**: 本ライブラリの通信パターン（Pub/Sub、Service、Action）の参考元
+- **概要**: 本ライブラリの通信パターン（Pub/Sub）の参考元
 
 ### [4] 通信性能に関する研究
 **尾崎功一**. "プロセス間通信の性能評価とロボット制御への応用"

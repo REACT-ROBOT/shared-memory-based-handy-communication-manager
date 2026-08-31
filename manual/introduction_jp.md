@@ -59,88 +59,23 @@ Publisher<int> pub("my_topic");
 pub.publish(42);  // たったこれだけ！
 ```
 
-## 🚀 3つの通信方式の特徴
+## 🚀 通信方式の特徴
 
 **使用場面**: 同一PC内でのリアルタイム通信
 
 | ライブラリ | 特徴 | 用途例 |
 |------------|------|--------|
 | **shm_pub_sub** | 📡 出版者/購読者モデル<br>⚡ マイクロ秒レベルの超低遅延 | ロボット制御、リアルタイム画像処理 |
-| **shm_service** | 🤝 要求/応答モデル<br>🔒 送受信の確実性保証 | データベース操作、ファイル処理 |
-| **shm_action** | ⚡ 非同期処理モデル<br>📊 進捗監視・キャンセル機能 | 長時間計算、ファイルダウンロード |
+
+> **注記**: v1.x には要求応答型の `shm_service` と非同期処理型の `shm_action` も
+> ありましたが、利用実績が無く設計上の安全性の問題を抱えていたため v2.0.0 で削除
+> しました。要求応答や長時間処理の管理は上位層で組み立ててください。
 
 ```cpp
 // 例: ロボットのセンサーデータ配信
 Publisher<SensorData> sensor_pub("robot_sensors");
 sensor_pub.publish(sensor_reading);  // 超高速配信
 ```
-
-## 🎯 どの通信方式を選ぶべき？
-
-### 📊 通信方式選択フローチャート
-
-```
-あなたの用途は？
-│
-├─ 最高速度が必要（マイクロ秒）
-│  └─ 📡 shm_pub_sub (Pub/Sub)
-│
-├─ 確実にデータを送受信したい
-│  └─ 🤝 shm_service (Service)
-│
-└─ 時間のかかる処理を監視したい
-   └─ ⚡ shm_action (Action)
-```
-
-### 🔍 詳細比較表
-
-| 特徴 | shm_pub_sub | shm_service | shm_action |
-|------|-------------|-------------|------------|
-| **通信範囲** | 同一PC | 同一PC | 同一PC |
-| **速度** | ⚡⚡⚡ 最速 | ⚡⚡ 高速 | ⚡⚡ 高速 |
-| **信頼性** | 📦 ベストエフォート | 🔒 確実 | 🔒 確実 |
-| **通信パターン** | 1:N (ブロードキャスト) | 1:1 (要求応答) | 1:1 (非同期) |
-| **データサイズ** | 任意 | 任意 | 任意 |
-| **設定の簡単さ** | 🟢 とても簡単 | 🟢 とても簡単 | 🟡 簡単 |
-
-## 🛠️ 開発の歴史と設計思想
-
-### 🏛️ ライブラリの系譜
-
-このライブラリは、**尾崎功一教授**が研究室でのロボット開発のために作成したC言語ライブラリを基にしています。
-
-**進化の過程**:
-```
-🕰️ 初期版 (C言語)
-   ↓ 機能追加・改良
-🔧 C++版 (オブジェクト指向化)
-```
-
-### 🎯 設計哲学
-
-**1. 🎛️ シンプルAPI**
-```cpp
-// データ送信（パブリッシュ）の例
-Publisher<int> pub("topic");
-pub.publish(42);
-```
-
-**2. 🔒 安全性**
-- 型安全なテンプレート設計
-- 自動メモリ管理
-- 例外による適切なエラーハンドリング
-
-**3. 🚀 パフォーマンス**
-- ゼロコピー設計（共有メモリ）
-- 効率的なデータ構造（リングバッファ）
-- 最小限のオーバーヘッド
-
-**4. 🔧 拡張性と互換性**
-- **ROS互換API**: ROSの概念をベースとした直感的な設計
-- **カスタムデータ型**: 任意のC++構造体をサポート
-- **Python バインディング**: C++とPythonで同一API
-- **プラットフォーム対応**: Linux、Windows（WSL）対応
-- **コンパイラ対応**: GCC、Clang、MSVC対応
 
 ## 🎓 API設計の特徴
 
@@ -150,8 +85,6 @@ pub.publish(42);
 // 共有メモリ通信
 namespace irlab::shm {
     Publisher<T>, Subscriber<T>         // Pub/Subモデル
-    ServiceClient<T>, ServiceServer<T>  // Serviceモデル  
-    ActionClient<T>, ActionServer<T>    // Actionモデル
 }
 
 // 共通のベース機能
@@ -164,13 +97,9 @@ namespace irlab::shm_base {
 
 **🔹 送信側**: データを送る側の命名パターン
 - `Publisher` (データを出版)
-- `ServiceClient` (サービスに要求)
-- `ActionClient` (アクションを依頼)
 
 **🔹 受信側**: データを受け取る側の命名パターン  
 - `Subscriber` (データを購読)
-- `ServiceServer` (サービスを提供)
-- `ActionServer` (アクションを実行)
 
 ### 自動リソース管理
 
@@ -190,7 +119,7 @@ namespace irlab::shm_base {
 - リングバッファの効率的な実装
 
 ### 2. ROS (Robot Operating System) [2]
-- Pub/Sub、Service、Actionの通信パターン
+- Pub/Subの通信パターン
 - トピックベースの名前空間管理
 
 ### 3. 現代的なC++設計
@@ -210,8 +139,6 @@ namespace irlab::shm_base {
 
 ### 🔧 特定の機能を知りたい方
 - **[🔄 Pub/Sub通信](tutorials_shm_pub_sub_jp.md)** - 高速ブロードキャスト
-- **[🤝 Service通信](tutorials_shm_service_jp.md)** - 確実な要求応答
-- **[⚡ Action通信](tutorials_shm_action_jp.md)** - 非同期処理管理
 
 ### 🐍 Python開発者の方
 - **[🐍 Python基礎](tutorials_python_jp.md)** - PythonAPIの基本

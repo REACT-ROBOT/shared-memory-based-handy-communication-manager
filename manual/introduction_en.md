@@ -59,49 +59,24 @@ Publisher<int> pub("my_topic");
 pub.publish(42);  // That's all!
 ```
 
-## 🚀 Features of Three Communication Methods
+## 🚀 Features of the Communication Method
 
 **Use Case**: Real-time communication within the same PC
 
 | Library | Features | Applications |
 |---------|----------|-------------|
 | **shm_pub_sub** | 📡 Publisher/Subscriber model<br>⚡ Microsecond-level ultra-low latency | Robot control, real-time image processing |
-| **shm_service** | 🤝 Request/Response model<br>🔒 Guaranteed send/receive reliability | Database operations, file processing |
-| **shm_action** | ⚡ Asynchronous processing model<br>📊 Progress monitoring & cancel functionality | Long computations, file downloads |
+
+> **Note**: v1.x also provided `shm_service` (request-response) and `shm_action`
+> (asynchronous processing). They had no users and carried unresolved safety issues,
+> so they were removed in v2.0.0. Build request-response and long-running task
+> management in a higher layer instead.
 
 ```cpp
 // Example: Robot sensor data distribution
 Publisher<SensorData> sensor_pub("robot_sensors");
 sensor_pub.publish(sensor_reading);  // Ultra-fast distribution
 ```
-
-## 🎯 Which Communication Method Should You Choose?
-
-### 📊 Communication Method Selection Flowchart
-
-```
-What is your use case?
-│
-├─ Need maximum speed (microseconds)
-│  └─ 📡 shm_pub_sub (Pub/Sub)
-│
-├─ Want reliable data send/receive
-│  └─ 🤝 shm_service (Service)
-│
-└─ Want to monitor time-consuming processes
-   └─ ⚡ shm_action (Action)
-```
-
-### 🔍 Detailed Comparison Table
-
-| Feature | shm_pub_sub | shm_service | shm_action |
-|---------|-------------|-------------|------------|
-| **Communication Range** | Same PC | Same PC | Same PC |
-| **Speed** | ⚡⚡⚡ Fastest | ⚡⚡ Fast | ⚡⚡ Fast |
-| **Reliability** | 📦 Best Effort | 🔒 Guaranteed | 🔒 Guaranteed |
-| **Communication Pattern** | 1:N (Broadcast) | 1:1 (Request-Response) | 1:1 (Asynchronous) |
-| **Data Size** | Any | Any | Any |
-| **Setup Simplicity** | 🟢 Very Easy | 🟢 Very Easy | 🟡 Easy |
 
 ## 🛠️ Development History and Design Philosophy
 
@@ -150,8 +125,6 @@ pub.publish(42);
 // Shared memory communication
 namespace irlab::shm {
     Publisher<T>, Subscriber<T>         // Pub/Sub model
-    ServiceClient<T>, ServiceServer<T>  // Service model  
-    ActionClient<T>, ActionServer<T>    // Action model
 }
 
 // Common base functionality
@@ -164,13 +137,9 @@ namespace irlab::shm_base {
 
 **🔹 Sender side**: Naming pattern for data senders
 - `Publisher` (publishes data)
-- `ServiceClient` (requests service)
-- `ActionClient` (delegates action)
 
 **🔹 Receiver side**: Naming pattern for data receivers  
 - `Subscriber` (subscribes to data)
-- `ServiceServer` (provides service)
-- `ActionServer` (executes action)
 
 ### Automatic Resource Management
 
@@ -190,7 +159,7 @@ namespace irlab::shm_base {
 - Efficient ring buffer implementation
 
 ### 2. ROS (Robot Operating System) [2]
-- Communication patterns of Pub/Sub, Service, Action
+- Communication pattern of Pub/Sub
 - Topic-based namespace management
 
 ### 3. Modern C++ Design
@@ -210,8 +179,6 @@ Do you understand the basic concepts? Now let's get hands-on experience!
 
 ### 🔧 For Those Who Want to Know Specific Features
 - **[🔄 Pub/Sub Communication](tutorials_shm_pub_sub_en.md)** - High-speed broadcast
-- **[🤝 Service Communication](tutorials_shm_service_en.md)** - Reliable request-response
-- **[⚡ Action Communication](tutorials_shm_action_en.md)** - Asynchronous process management
 
 ### 🐍 For Python Developers
 - **[🐍 Python Basics](tutorials_python_en.md)** - Python API fundamentals

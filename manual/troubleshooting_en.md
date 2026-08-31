@@ -90,32 +90,6 @@ if (!success) {
 std::this_thread::sleep_for(std::chrono::milliseconds(10));
 ```
 
-#### Service request/response failures
-```bash
-# Symptoms
-- waitForResponse() always returns false
-- Server never receives requests
-- Response never arrives at client
-```
-
-**🔧 Solutions:**
-```cpp
-// 1. Ensure server is running before client
-ServiceServer<int, int> server("calc");
-// Server must be initialized first
-
-// 2. Check timeout values
-if (client.waitForResponse(5000000)) {  // 5 seconds
-    // Process response
-} else {
-    std::cout << "Timeout - check server status\n";
-}
-
-// 3. Verify request/response types match
-ServiceServer<int, float> server("calc");  // int -> float
-ServiceClient<int, float> client("calc");  // Must match
-```
-
 ### 3. 🧠 Memory and Performance Issues
 
 #### Memory leaks detected

@@ -3,12 +3,14 @@
 
 ## 概要
 
-**Shared Memory Based Communication Manager**は、同一PC内のプロセス間通信を超高速で実現するための包括的なC++ライブラリ集です。このライブラリは以下の3つの主要なコンポーネントから構成されています：
+**Shared Memory Based Communication Manager**は、同一PC内のプロセス間通信を超高速で実現するためのC++ライブラリです。
 
 ### 🧠 共有メモリベース通信ライブラリ
 - **shm_pub_sub** - 高速な出版者/購読者モデル通信（ブロードキャスト型）
-- **shm_service** - 信頼性の高いサーバー/クライアントモデル通信（要求応答型）
-- **shm_action** - 高機能な非同期処理通信（長時間処理対応）
+
+> **注記**: 以前の版には要求応答型の `shm_service` と非同期処理型の `shm_action` が
+> 含まれていましたが、利用実績が無く、共有メモリ上の pthread オブジェクトを安全に
+> 扱えていない設計上の問題を抱えていたため、v2.0.0 で削除しました。
 
 ## 📚 ドキュメント目次
 
@@ -20,8 +22,6 @@
 ### チュートリアル
 - [📝 基本チュートリアル(C++)](tutorials_jp.md)
   - [🔄 Pub/Sub通信の使い方](tutorials_shm_pub_sub_jp.md)
-  - [🤝 Service通信の使い方](tutorials_shm_service_jp.md)
-  - [⚡ Action通信の使い方](tutorials_shm_action_jp.md)
 - [🐍 Pythonチュートリアル](tutorials_python_jp.md)
   - [🔄 Python Pub/Sub通信の使い方](tutorials_shm_pub_sub_python_jp.md)
 
@@ -73,44 +73,23 @@ if (state) {
 }
 ```
 
-### 2. 簡単なService通信（要求応答）
-```cpp
-#include "shm_service.hpp"
-using namespace irlab::shm;
-
-// サーバー側
-ServiceServer<int, int> server("calc_service");
-if (server.hasRequest()) {
-    int request = server.getRequest();
-    int response = request * 2;  // 2倍にして返す
-    server.sendResponse(response);
-}
-
-// クライアント側
-ServiceClient<int, int> client("calc_service");
-client.sendRequest(21);
-if (client.waitForResponse(1000000)) {  // 1秒待機
-    int result = client.getResponse();
-    std::cout << "計算結果: " << result << std::endl;  // 42
-}
-```
-
 ## 🎨 通信方式の選び方
 
 | 用途 | 推奨ライブラリ | 特徴 | 適用例 |
 |------|----------------|------|--------|
 | **リアルタイムデータ配信** | shm_pub_sub | ⚡最高速度<br>📡ブロードキャスト<br>🔄連続データ | センサーデータ配信<br>画像ストリーミング<br>ロボット制御信号 |
-| **確実なデータ交換** | shm_service | 🤝要求応答保証<br>⏰タイムアウト対応<br>🛡️エラーハンドリング | データベース操作<br>設定値取得<br>計算結果取得 |
-| **長時間非同期処理** | shm_action | ⚡非同期実行<br>📊進捗監視<br>❌キャンセル機能 | ファイル処理<br>機械学習訓練<br>大容量データ変換 |
+
+要求応答や長時間処理の管理が必要な場合は、上位層（ROS 2 のサービス/アクションなど）で
+組み立てるか、Pub/Sub の上に用途に合わせた手順を実装してください。
 
 ## 📊 性能比較
 
-| 指標 | shm_pub_sub | shm_service | shm_action |
-|------|-------------|-------------|------------|
-| **遅延** | ~1μs | ~2-5μs | ~2-10μs |
-| **スループット** | 非常に高い | 高い | 中程度 |
-| **CPU使用率** | 最小 | 低い | 中程度 |
-| **メモリ使用量** | 最小 | 少ない | 中程度 |
+| 指標 | shm_pub_sub |
+|------|-------------|
+| **遅延** | ~1μs |
+| **スループット** | 非常に高い |
+| **CPU使用率** | 最小 |
+| **メモリ使用量** | 最小 |
 
 ## 📞 サポート
 

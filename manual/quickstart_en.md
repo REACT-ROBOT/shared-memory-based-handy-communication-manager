@@ -37,8 +37,6 @@ make -j$(nproc)
 ```bash
 # Copy headers to your project
 cp -r include/shm_pub_sub.hpp /your/project/include/
-cp -r include/shm_service.hpp /your/project/include/
-cp -r include/shm_action.hpp /your/project/include/
 ```
 
 ## 🌡️ Your First Communication (3 minutes)
@@ -206,25 +204,6 @@ Congratulations! You've just experienced microsecond-level communication!
 
 ### 🔥 Try More Advanced Features
 
-**Service Communication (Request-Response):**
-```cpp
-// Quick service example
-ServiceServer<int, int> server("calculator");
-ServiceClient<int, int> client("calculator");
-
-// Server: Double the input
-if (server.hasRequest()) {
-    int input = server.getRequest();
-    server.sendResponse(input * 2);
-}
-
-// Client: Send request
-client.sendRequest(21);
-if (client.waitForResponse(1000000)) {  // 1 second timeout
-    std::cout << "Result: " << client.getResponse() << std::endl;  // 42
-}
-```
-
 **Python Integration:**
 ```python
 import shm_pub_sub
@@ -244,8 +223,6 @@ if success:
 
 - **[📝 Complete Tutorials](tutorials_en.md)** - Comprehensive guides for all features
 - **[🔄 Pub/Sub Deep Dive](tutorials_shm_pub_sub_en.md)** - Master broadcast communication
-- **[🤝 Service Communication](tutorials_shm_service_en.md)** - Request-response patterns  
-- **[⚡ Action Communication](tutorials_shm_action_en.md)** - Long-running async tasks
 - **[🐍 Python API](tutorials_python_en.md)** - Python development guide
 
 ### 💡 Real-World Examples

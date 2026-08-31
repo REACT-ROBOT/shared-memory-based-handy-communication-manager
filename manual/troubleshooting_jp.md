@@ -7,11 +7,9 @@
 
 1. [ビルド・コンパイル問題](#ビルド・コンパイル問題)
 2. [共有メモリ通信の問題](#共有メモリ通信の問題)
-3. [Service通信の問題](#service通信の問題)
-4. [Action通信の問題](#action通信の問題)
-5. [パフォーマンス問題](#パフォーマンス問題)
-6. [環境設定問題](#環境設定問題)
-7. [デバッグツール](#デバッグツール)
+3. [パフォーマンス問題](#パフォーマンス問題)
+4. [環境設定問題](#環境設定問題)
+5. [デバッグツール](#デバッグツール)
 
 ## 🔨 ビルド・コンパイル問題
 
@@ -20,8 +18,6 @@
 **症状**:
 ```bash
 fatal error: shm_pub_sub.hpp: No such file or directory
-fatal error: shm_service.hpp: No such file or directory
-fatal error: shm_action.hpp: No such file or directory
 ```
 
 **原因と対処法**:
@@ -46,8 +42,6 @@ find /path/to/project -name "*.hpp" | grep shm
 **症状**:
 ```bash
 undefined reference to `irlab::shm::Publisher<int>::publish(int const&)'
-undefined reference to `irlab::shm::ServiceClient<int,int>::sendRequest(int const&)'
-undefined reference to `irlab::shm::ActionClient<int,int,int>::sendGoal(int const&)'
 ```
 
 **原因と対処法**:
@@ -55,10 +49,10 @@ undefined reference to `irlab::shm::ActionClient<int,int,int>::sendGoal(int cons
 ```bash
 # 1. ライブラリファイルの確認
 ls build/
-# libshm_pub_sub.so, libshm_service.so, libshm_action.so などがあることを確認
+# libshm_pub_sub.so などがあることを確認
 
 # 2. リンク時のライブラリ指定
-g++ your_program.cpp -L./build -lshm_pub_sub -lshm_service -lshm_action
+g++ your_program.cpp -L./build -lshm_pub_sub
 
 # 3. 実行時のライブラリパス設定
 export LD_LIBRARY_PATH=./build:$LD_LIBRARY_PATH
@@ -161,176 +155,6 @@ ls -la /dev/shm/
 
 # 3. 権限変更（必要に応じて）
 sudo chmod 666 /dev/shm/shm_*
-```
-
-## 🤝 Service通信の問題
-
-### ❌ 要求応答ができない
-
-**症状**: Service通信でクライアントが応答を受け取れない
-
-**診断手順**:
-
-```cpp
-// Service通信診断コード
-#include "shm_service.hpp"
-#include <iostream>
-#include <thread>
-#include <chrono>
-
-void diagnose_service_communication() {
-    using namespace irlab::shm;
-    
-    std::cout << "=== Service通信診断 ===" << std::endl;
-    
-    // 1. サーバーテスト
-    try {
-        ServiceServer<int, int> server("debug_service");
-        std::cout << "✅ ServiceServer作成成功" << std::endl;
-        
-        // テスト用の簡単な処理
-        if (server.hasRequest()) {
-            int request = server.getRequest();
-            server.sendResponse(request * 2);
-            std::cout << "✅ テスト要求処理成功" << std::endl;
-        }
-    } catch (const std::exception& e) {
-        std::cout << "❌ ServiceServer失敗: " << e.what() << std::endl;
-        std::cout << "原因の可能性:" << std::endl;
-        std::cout << "  - 共有メモリセグメントの作成失敗" << std::endl;
-        std::cout << "  - サービス名の重複" << std::endl;
-        return;
-    }
-    
-    // 2. クライアントテスト
-    try {
-        ServiceClient<int, int> client("debug_service");
-        std::cout << "✅ ServiceClient作成成功" << std::endl;
-        
-        // テスト要求送信
-        client.sendRequest(21);
-        std::cout << "✅ 要求送信成功" << std::endl;
-        
-        // 応答待機
-        if (client.waitForResponse(1000000)) {  // 1秒
-            int response = client.getResponse();
-            std::cout << "✅ Service通信成功: 21 -> " << response << std::endl;
-        } else {
-            std::cout << "❌ 応答タイムアウト" << std::endl;
-            std::cout << "原因の可能性:" << std::endl;
-            std::cout << "  - サーバーが動作していない" << std::endl;
-            std::cout << "  - サービス名の不一致" << std::endl;
-            std::cout << "  - サーバーの処理が遅い" << std::endl;
-        }
-    } catch (const std::exception& e) {
-        std::cout << "❌ ServiceClient失敗: " << e.what() << std::endl;
-    }
-}
-```
-
-### ❌ Serviceのタイムアウト問題
-
-**症状**: クライアントが応答を待つ間にタイムアウトする
-
-**対処法**:
-
-```cpp
-// タイムアウト時間の調整
-ServiceClient<int, int> client("slow_service");
-client.sendRequest(request_data);
-
-// デフォルト: 1秒 (1,000,000マイクロ秒)
-// 長時間処理用: 10秒
-if (client.waitForResponse(10000000)) {  // 10秒
-    auto response = client.getResponse();
-    std::cout << "応答受信: " << response << std::endl;
-} else {
-    std::cout << "サービス処理が遅いです" << std::endl;
-}
-
-// ノンブロッキングチェック
-if (client.hasResponse()) {
-    auto response = client.getResponse();
-    // 応答あり
-} else {
-    // まだ処理中
-}
-```
-
-### ❌ サービス名の重複
-
-**症状**: 同じサービス名で複数のサーバーが動作している
-
-**診断コマンド**:
-
-```bash
-# 共有メモリセグメントの確認
-ipcs -m | grep shm_service
-
-# プロセスの確認
-ps aux | grep service
-
-# 重複したサービスの整理
-ipcrm -m [shmid]  # 不要なセグメントを削除
-```
-
-## ⚡ Action通信の問題
-
-### ❌ Actionが開始されない
-
-**症状**: クライアントがゴールを送信してもアクションが開始されない
-
-**診断コード**:
-
-```cpp
-// Action通信診断コード
-#include "shm_action.hpp"
-#include <iostream>
-
-void diagnose_action_communication() {
-    using namespace irlab::shm;
-    
-    std::cout << "=== Action通信診断 ===" << std::endl;
-    
-    // 1. サーバーテスト
-    try {
-        ActionServer<int, int, int> server("debug_action");
-        std::cout << "✅ ActionServer作成成功" << std::endl;
-        
-        if (server.hasGoal()) {
-            auto goal = server.getGoal();
-            std::cout << "✅ ゴール受信: " << goal << std::endl;
-            
-            // 簡単な処理を実行
-            server.setSucceeded(goal * 2);
-            std::cout << "✅ Action完了" << std::endl;
-        } else {
-            std::cout << "❌ ゴールがありません" << std::endl;
-        }
-    } catch (const std::exception& e) {
-        std::cout << "❌ ActionServer失敗: " << e.what() << std::endl;
-        return;
-    }
-    
-    // 2. クライアントテスト
-    try {
-        ActionClient<int, int, int> client("debug_action");
-        std::cout << "✅ ActionClient作成成功" << std::endl;
-        
-        client.sendGoal(42);
-        std::cout << "✅ ゴール送信成功" << std::endl;
-        
-        // 状態確認
-        if (client.waitForResult(5000000)) {  // 5秒
-            auto result = client.getResult();
-            std::cout << "✅ Action結果受信: " << result << std::endl;
-        } else {
-            std::cout << "❌ Actionタイムアウト" << std::endl;
-        }
-    } catch (const std::exception& e) {
-        std::cout << "❌ ActionClient失敗: " << e.what() << std::endl;
-    }
-}
 ```
 
 ## ⚡ パフォーマンス問題
@@ -469,83 +293,6 @@ echo "プロセス監視:"
 ps aux | grep -E "(your_program_name|shm)"
 ```
 
-### Service/Action状態診断ツール
-
-```bash
-#!/bin/bash
-# service_action_debug.sh - Service/Action通信診断スクリプト
-
-SERVICE_NAME=${1:-"test_service"}
-
-echo "=== Service/Action通信診断 (Service: $SERVICE_NAME) ==="
-
-echo "1. 共有メモリセグメント:"
-ipcs -m | grep -E "(shm_service|shm_action)" || echo "サービス関連セグメントはありません"
-
-echo ""
-echo "2. 関連プロセス:"
-ps aux | grep -E "(service|action)" | grep -v grep || echo "関連プロセスはありません"
-
-echo ""
-echo "3. メモリ使用量:"
-free -h
-
-echo ""
-echo "4. システムロード:"
-uptime
-
-echo ""
-echo "5. システムログエラー:"
-dmesg | tail -10 | grep -i error || echo "最近のエラーはありません"
-```
-
-### ログ出力設定
-
-```cpp
-// debug_logger.hpp - デバッグ用ログ機能
-#ifndef DEBUG_LOGGER_HPP
-#define DEBUG_LOGGER_HPP
-
-#include <iostream>
-#include <fstream>
-#include <chrono>
-#include <iomanip>
-
-class DebugLogger {
-public:
-    static DebugLogger& getInstance() {
-        static DebugLogger instance;
-        return instance;
-    }
-    
-    template<typename... Args>
-    void log(Args&&... args) {
-        auto now = std::chrono::system_clock::now();
-        auto time_t = std::chrono::system_clock::to_time_t(now);
-        
-        std::cout << "[" << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S") << "] ";
-        (std::cout << ... << args) << std::endl;
-        
-        if (log_file_.is_open()) {
-            log_file_ << "[" << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S") << "] ";
-            (log_file_ << ... << args) << std::endl;
-            log_file_.flush();
-        }
-    }
-    
-    void enableFileLogging(const std::string& filename) {
-        log_file_.open(filename, std::ios::app);
-    }
-
-private:
-    std::ofstream log_file_;
-};
-
-#define DEBUG_LOG(...) DebugLogger::getInstance().log(__VA_ARGS__)
-
-#endif
-```
-
 ## 📞 サポートが必要な場合
 
 ### 情報収集
@@ -596,7 +343,7 @@ ps aux | grep -E "(your_program|shm|service|action)" | grep -v grep
 【環境情報】
 ・OS: Ubuntu 20.04
 ・コンパイラ: g++ 9.4.0
-・使用ライブラリ: shm_pub_sub, shm_service, shm_action v1.0
+・使用ライブラリ: shm_pub_sub v2.0
 
 【再現手順】
 1. プログラムをコンパイル
@@ -606,7 +353,7 @@ ps aux | grep -E "(your_program|shm|service|action)" | grep -v grep
 
 【試したこと】
 ・共有メモリセグメントの確認 (ipcs -m)
-・トピック名/サービス名の確認
+・トピック名の確認
 ・プロセスの起動順序確認
 ・...
 ```

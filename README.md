@@ -7,7 +7,9 @@
 ## Abstruct
 
 SHM is short for "Shared-memory based Handy-communication Manager".
-This provides ROS(Robot Operating System)-like interprocess communication such as Topic, Service and Action with shared memory.
+This provides ROS(Robot Operating System)-like interprocess Topic communication with shared memory.
+Service and Action were also provided up to v1.x, but they had no users and their
+handling of pthread objects in shared memory was unsafe, so they were removed in v2.0.0.
 This is based on the library developed by Dr. Prof. Koichi Ozaki for his laboratory.
 
 ## DEMO
@@ -105,7 +107,6 @@ ctest --output-on-failure
 
 # Run specific test suites
 ctest --output-on-failure -R "SHMPubSubTest"
-ctest --output-on-failure -R "SHMServiceTest" 
 ctest --output-on-failure -R "SharedMemoryPosixTest"
 ```
 
@@ -115,7 +116,7 @@ The project maintains comprehensive test coverage with automated CI testing:
 
 - **Line Coverage**: High coverage across all modules
 - **Function Coverage**: ~99%
-- **Integration Tests**: Publisher/Subscriber, Service, Action patterns
+- **Integration Tests**: Publisher/Subscriber patterns
 - **Performance Tests**: Throughput and latency validation
 
 **Note**: Performance tests may occasionally fail in CI environments due to timing constraints, but this does not affect the core functionality or coverage reporting.
@@ -170,7 +171,7 @@ Documentation is available both locally and online:
 
 The documentation includes:
 - Introduction and quickstart guides
-- Detailed tutorials for Publisher/Subscriber, Service, and Action patterns
+- Detailed tutorials for Publisher/Subscriber patterns
 - Python integration examples
 - API reference and troubleshooting guides
 

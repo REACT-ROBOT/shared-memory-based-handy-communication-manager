@@ -495,10 +495,6 @@ for thread in analytics_threads:
 - **[📖 Python Pub/Sub Examples](tutorials_shm_pub_sub_python_en.md)** - Detailed Python examples
 - **[🐍 Python API Reference](spec_en.md)** - Complete API specification
 
-### Advanced Topics
-- **[🤝 Service Communication](tutorials_shm_service_en.md)** - Request-response patterns
-- **[⚡ Action Communication](tutorials_shm_action_en.md)** - Asynchronous task management
-
 ## 💡 Best Practices
 
 ### Design Patterns

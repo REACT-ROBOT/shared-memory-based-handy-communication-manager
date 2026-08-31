@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(shm VERSION 1.1.0 LANGUAGES CXX)
+project(shm VERSION 2.0.0 LANGUAGES CXX)
 
 # ----------------------------------------------------------------------------
 # バージョン
@@ -26,6 +26,12 @@ project(shm VERSION 1.1.0 LANGUAGES CXX)
 # 1.1.0: reserve_aligned() を追加。shm_service / shm_action の共有メモリ配置を
 #        境界揃えに変更（ARM の SIGBUS 修正）。配置が変わるため、この版と
 #        1.0.0 以前を混在させて同じトピックに接続してはならない。
+# 2.0.0: shm_service / shm_action を削除。利用者が居らず、レビュー R01 で
+#        pthread オブジェクトの無条件再初期化 (F02)、mutex 外での述語アクセス
+#        (F03)、robust でない mutex とプロセス死からの復旧不能 (F08) という
+#        Critical/High 所見を抱えたままだったため、修正ではなく撤去を選んだ。
+#        再導入する場合は R01 の指摘を解消した設計で作り直すこと。
+#        提供するのは shm_base / shm_pub_sub / shm_tool のみ。
 # ----------------------------------------------------------------------------
 set(SHM_VERSION "${PROJECT_VERSION}" CACHE INTERNAL
     "Version of shared-memory-based-handy-communication-manager in this build tree")
@@ -41,21 +47,6 @@ if (DEBUG)
     set(DEBUG_OPTION "-fsanitize=address -fno-omit-frame-pointer")
 endif()
 
-# Coverage options
-if(ENABLE_COVERAGE)
-    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        set(COVERAGE_FLAGS "--coverage -g -O0")
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${COVERAGE_FLAGS}")
-        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${COVERAGE_FLAGS}")
-        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} --coverage")
-        set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} --coverage")
-        message(STATUS "Code coverage enabled")
-    else()
-        message(WARNING "Code coverage requires GCC or Clang")
-        set(ENABLE_COVERAGE OFF)
-    endif()
-endif()
-
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DBOOST_NO_AUTO_PTR -fPIC ${DEBUG_OPTION}")
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -69,8 +60,6 @@ endif()
 #project(core_cpp CXX)
 add_subdirectory(shm_base)
 add_subdirectory(shm_pub_sub)
-add_subdirectory(shm_service)
-add_subdirectory(shm_action)
 add_subdirectory(tools)
 
 FIND_PACKAGE(Doxygen)

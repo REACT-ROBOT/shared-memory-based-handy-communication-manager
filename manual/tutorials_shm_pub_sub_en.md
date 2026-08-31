@@ -996,8 +996,6 @@ int main() {
 
 ## 📚 Next Steps
 
-- **[🤝 Service Communication](tutorials_shm_service_en.md)** - For reliable request-response patterns
-- **[⚡ Action Communication](tutorials_shm_action_en.md)** - For long-running asynchronous tasks
 - **[🐍 Python Integration](tutorials_python_en.md)** - Multi-language development
 
 ---

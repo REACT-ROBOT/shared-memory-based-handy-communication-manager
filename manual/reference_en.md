@@ -18,7 +18,7 @@
 ### [3] ROS (Robot Operating System)
 **Open Robotics**. "ROS.org - Robot Operating System"
 - **URL**: <http://wiki.ros.org/>
-- **Overview**: Reference source for communication patterns (Pub/Sub, Service, Action) used in this library
+- **Overview**: Reference source for the communication pattern (Pub/Sub) used in this library
 
 ### [4] Communication Performance Research
 **Ozaki, Koichi**. "Performance Evaluation of Inter-Process Communication and Applications to Robot Control"
