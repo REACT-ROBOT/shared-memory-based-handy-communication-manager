@@ -141,16 +141,25 @@ endif()
 # standard-layout しか見ていないため、コピーコンストラクタや
 # デストラクタを持つ型が素通りして値が黙って化ける。
 #
-# ただし既存利用者の型を壊す可能性があるため、既定は OFF のままにする。
-# 使い方:
-#   1. 全パッケージを -DSHM_STRICT_TYPE_CHECK=ON でビルドし、
-#      コンパイルエラーになる型を洗い出す（実行不要・網羅的）
-#   2. 該当型を修正する
-#   3. Raspberry Pi 4 実機で挙動が変わらないことを確認する
-#   4. 既定を ON に切り替える
+# 既定は ON である。導入時に次の手順を踏んで安全を確認した:
+#   1. 全パッケージを -DSHM_STRICT_TYPE_CHECK=ON でビルドし、コンパイルエラーに
+#      なる型を洗い出した（実行不要・網羅的）
+#   2. 見つかった 4 件を修正した。いずれも std::vector を持つ型を汎用 Publisher で
+#      publish しており、別プロセスから購読すると SIGSEGV する実害があった
+#        - lidar / point_cloud の Python バインディングが特殊化を include し忘れ
+#        - sensor_daemon_base の例が std::vector を持つ型を publish
+#   3. Raspberry Pi 4 実機で全パッケージのビルドとテスト 92/92 を確認した
+#
+# 新しい型を publish するときにこの検査で止められた場合、その型は共有メモリに
+# 置けない。エラーメッセージに直し方が書いてある。どうしても可変長が必要なら
+# シリアライズする Publisher の特殊化を書くこと
+# （lidar_2D_data / point_cloud_2D_data / cv::Mat が実例）。
+#
+# OFF にすると検査が消えるが、実行時の検査（standard-layout は全環境、
+# trivially-copyable は ARM のみ）だけが残る。x86 では素通りするので推奨しない。
 # ----------------------------------------------------------------------------
 option(SHM_STRICT_TYPE_CHECK
-       "Require trivially-copyable payload types at compile time (R01-F07-b)" OFF)
+       "Require trivially-copyable payload types at compile time (R01-F07-b)" ON)
 if(SHM_STRICT_TYPE_CHECK)
     message(STATUS "Strict payload type checking is ON (trivially-copyable required)")
 endif()

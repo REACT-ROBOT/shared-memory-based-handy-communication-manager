@@ -637,6 +637,46 @@ if (st == SearchStatus::Success) { /* 融合してよい */ }
 
 **検証**: Release / ASan / TSan / UBSan の全構成を 3 回ずつ、**91/91 PASS**。
 
+### 完了: T-a（trivially-copyable の必須化 / R01-F07-b）
+
+`-DSHM_STRICT_TYPE_CHECK` を既定 **ON** にした。x86 でも ARM でも同じ型制約になる。
+
+**掃引で見つかった実害バグ 4 件**（いずれも `std::vector` を持つ型を汎用
+`Publisher<T>` で publish していた。共有メモリはバイト列なので vector の
+ヒープポインタがそのままコピーされ、**別プロセスで購読すると SIGSEGV**）
+
+| # | 箇所 | 内容 |
+|---|---|---|
+| 1 | `lidar_2D_data_python.cpp` | 特殊化ヘッダを include しておらず汎用版を実体化。C++ 側は特殊化で serialize しているのに Python 側だけ生バイトコピーだった |
+| 2 | `point_cloud_2D_data_python.cpp` | 同上 |
+| 3 | `sensor_daemon_base` の `LiDARScanData` | `std::vector` を持つ型を publish する「手本」になっていた。固定長配列＋有効数に変更 |
+| 4 | 同 `CameraImageData` | 同上 |
+
+**検証時の罠**: `fork()` した子プロセスでは親のヒープが copy-on-write で見えて
+しまうため、正常に動いてしまう。`exec` した完全に別のプロセスで初めて落ちる。
+これが今まで気付かれなかった理由でもある。
+
+**仕組みの罠**: 最初 `add_compile_definitions()` を使っていたが、これは
+ディレクトリスコープなので shm のサブツリーにしか効かず、洗い出したかった
+兄弟パッケージには届いていなかった。「違反 0 件」に見えたのは検査が届いて
+いなかっただけだった。`target_compile_definitions(... PUBLIC ...)` に変更して解決。
+
+**Raspberry Pi 4 実機で見つかった 2 件**
+
+| 内容 |
+|---|
+| v1 の名残で「ARM では alignof(T) が max_align_t を超えたら拒否」する判定が残っており、形式 v2 以降なら扱える `alignas(32)` の型が ARM でだけ弾かれていた。`if constexpr (is_arm_platform())` の中なので x86 では実行されず、実機でしか露見しない。レイアウトが保証できる上限（`MAX_PAYLOAD_ALIGNMENT`）との比較に置き換えた |
+| `shm_pub_sub_cv_python.cpp` の `boost::python::class_<>` に `boost::noncopyable` が付いておらず、`unique_ptr<ShmTopic>` 化でコピーが削除されてビルドエラー。移植前のコピー可能性自体が事故で、コピーすれば二重解放になっていた |
+
+**最終確認（Raspberry Pi 4 / aarch64）**
+
+```text
+ctest                      92/92 PASS
+全パッケージビルド          100%、static assertion 0 件、error 0 件
+```
+
+x86 側は Release（既定 ON）/ STRICT=OFF / ASan / TSan / UBSan で 92/92 PASS。
+
 ## 6. 実施順序
 
 形式変更を1回に束ねることを最優先にする。F07-b だけは独立トラックで並走させる。
@@ -700,7 +740,7 @@ P2 と P3 はどちらも共有メモリ形式を変えるので、**まとめ�
 |---|---|
 | 世代別セグメント（P3）を採るか | **採用する。** F01 を Critical のまま残さない |
 | 複数 Publisher を正式サポートするか | **正式サポートする。** §3A に保証と制約を明文化し、回帰テストを置く |
-| trivially-copyable の全プラットフォーム必須化 | **独立トラック（T-a）で進める。** `SHM_STRICT_TYPE_CHECK` を既定 OFF で先に入れ、全パッケージのビルドで違反型を洗い出し、**Raspberry Pi 4 実機での検証が済んでから**本流へマージして既定 ON にする |
+| trivially-copyable の全プラットフォーム必須化 | **完了（2026-08-31）。既定 ON。** 当初の方針: **独立トラック（T-a）で進める。** `SHM_STRICT_TYPE_CHECK` を既定 OFF で先に入れ、全パッケージのビルドで違反型を洗い出し、**Raspberry Pi 4 実機での検証が済んでから**本流へマージして既定 ON にする |
 
 ### 補足: trivially-copyable とは何か
 
