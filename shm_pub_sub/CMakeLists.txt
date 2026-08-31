@@ -6,9 +6,16 @@ set(package_version 20100204)
 option(DEBUG "switch on debug option" OFF)
 option(BUILD_TESTS "Build test programs" OFF)
 option(BUILD_EXAMPLES "Build examples" OFF)
-#for check memory leak
-if (DEBUG)
-  set(DEBUG_OPTION "-fsanitize=address -fno-omit-frame-pointer")
+# サニタイザの選択は最上位の CMakeLists.txt が行う（-DSANITIZER=...）。
+# add_subdirectory で取り込まれている場合は DEBUG_OPTION が既に設定されて
+# いるので上書きしない。単体でビルドされた場合のみ、従来どおり DEBUG=ON を
+# AddressSanitizer として解釈する。
+if (DEBUG AND NOT DEFINED DEBUG_OPTION)
+    set(DEBUG_OPTION "-fsanitize=address -fno-omit-frame-pointer -g")
+endif()
+if (DEFINED DEBUG_OPTION AND NOT DEBUG_OPTION STREQUAL "")
+    set(CMAKE_EXE_LINKER_FLAGS    "${CMAKE_EXE_LINKER_FLAGS} ${DEBUG_OPTION}")
+    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} ${DEBUG_OPTION}")
 endif()
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DBOOST_NO_AUTO_PTR -fPIC ${DEBUG_OPTION}")
 set(CMAKE_CXX_STANDARD 17)
@@ -17,6 +24,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(PkgConfig)
 if(BUILD_TESTS)
+    if(NOT DEFINED SHM_TEST_TIMEOUT)
+        set(SHM_TEST_TIMEOUT 60)
+    endif()
     pkg_search_module(GTEST REQUIRED gtest_main)
 endif()
 find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
@@ -172,7 +182,9 @@ if(BUILD_TESTS)
         # Google Testをリンクする
         ${GTEST_LDFLAGS}
       )
-    gtest_add_tests(TARGET shm_pub_sub_test)
+    gtest_add_tests(TARGET shm_pub_sub_test TEST_LIST shm_pub_sub_test_cases)
+  # ハングを FAIL にする（ctest の --timeout に依存させない）
+  set_tests_properties(${shm_pub_sub_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT})
 
     # データ破損・レースコンディション回帰テスト
     add_executable(shm_pub_sub_race_test
@@ -183,7 +195,9 @@ if(BUILD_TESTS)
         shm_pub_sub
         ${GTEST_LDFLAGS}
       )
-    gtest_add_tests(TARGET shm_pub_sub_race_test)
+    gtest_add_tests(TARGET shm_pub_sub_race_test TEST_LIST shm_pub_sub_race_test_cases)
+  # ハングを FAIL にする（ctest の --timeout に依存させない）
+  set_tests_properties(${shm_pub_sub_race_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT})
 
     # タイムスタンプ整合性テスト
     add_executable(shm_pub_sub_timestamp_test
@@ -194,7 +208,9 @@ if(BUILD_TESTS)
         shm_pub_sub
         ${GTEST_LDFLAGS}
       )
-    gtest_add_tests(TARGET shm_pub_sub_timestamp_test)
+    gtest_add_tests(TARGET shm_pub_sub_timestamp_test TEST_LIST shm_pub_sub_timestamp_test_cases)
+  # ハングを FAIL にする（ctest の --timeout に依存させない）
+  set_tests_properties(${shm_pub_sub_timestamp_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT})
 
     # 後発 Publisher による共有メモリ再初期化の回帰テスト
     add_executable(shm_pub_sub_late_publisher_test
@@ -205,7 +221,22 @@ if(BUILD_TESTS)
         shm_pub_sub
         ${GTEST_LDFLAGS}
       )
-    gtest_add_tests(TARGET shm_pub_sub_late_publisher_test)
+    gtest_add_tests(TARGET shm_pub_sub_late_publisher_test TEST_LIST shm_pub_sub_late_publisher_test_cases)
+  # ハングを FAIL にする（ctest の --timeout に依存させない）
+  set_tests_properties(${shm_pub_sub_late_publisher_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT})
+
+    # 入力検証・壊れた共有メモリ・マッピング漏れの回帰テスト (R01-F06 / F09)
+    add_executable(shm_pub_sub_validation_test
+        test/shm_pub_sub_validation_test.cpp
+      )
+    target_link_libraries(shm_pub_sub_validation_test
+        PRIVATE
+        shm_pub_sub
+        ${GTEST_LDFLAGS}
+      )
+    gtest_add_tests(TARGET shm_pub_sub_validation_test TEST_LIST shm_pub_sub_validation_test_cases)
+  # ハングを FAIL にする（ctest の --timeout に依存させない）
+  set_tests_properties(${shm_pub_sub_validation_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT})
 
     # レイアウト変更・共有メモリ作り直しの回帰テスト
     add_executable(shm_pub_sub_layout_test
@@ -216,5 +247,7 @@ if(BUILD_TESTS)
         shm_pub_sub
         ${GTEST_LDFLAGS}
       )
-    gtest_add_tests(TARGET shm_pub_sub_layout_test)
+    gtest_add_tests(TARGET shm_pub_sub_layout_test TEST_LIST shm_pub_sub_layout_test_cases)
+  # ハングを FAIL にする（ctest の --timeout に依存させない）
+  set_tests_properties(${shm_pub_sub_layout_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT})
 endif()

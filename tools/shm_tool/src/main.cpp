@@ -1,4 +1,5 @@
 #include <iostream>
+#include <stdexcept>
 #include <getopt.h>
 #include <string.h>
 
@@ -30,8 +31,10 @@ remove_usage()
 int
 main(int argc, char *argv[])
 {
-  int opt;
-  MODE mode;
+  // mode を未初期化のまま switch に入れていた。"list" でも "remove" でも
+  // ない引数を渡すと不定値で分岐する未定義動作になっていたため、
+  // 既定値を持たせて未知のコマンドは明示的に弾く。
+  MODE mode = LIST_MODE;
 
   progname = basename(argv[0]);
 
@@ -41,13 +44,21 @@ main(int argc, char *argv[])
     return 1;
   }
 
-  if (!strncmp(argv[1], "list", 4))
+  // strncmp の長さ指定では "listXXX" のような前方一致も通っていた。
+  // コマンド名は完全一致で判定する。
+  if (!strcmp(argv[1], "list"))
   {
     mode = LIST_MODE;
   }
-  else if (!strncmp(argv[1], "remove", 6))
+  else if (!strcmp(argv[1], "remove"))
   {
     mode = REMOVE_MODE;
+  }
+  else
+  {
+    std::cerr << progname << ": unknown command '" << argv[1] << "'" << std::endl << std::endl;
+    general_usage();
+    return 1;
   }
 
   FILE *fp;
@@ -100,10 +111,16 @@ main(int argc, char *argv[])
       remove_usage();
       return 1;
     }
-    irlab::shm::disconnectMemory(argv[2]);
+    try
+    {
+      irlab::shm::disconnectMemory(argv[2]);
+    }
+    catch (const std::exception &e)
+    {
+      std::cerr << progname << ": " << e.what() << std::endl;
+      return 1;
+    }
     break;
-  default:
-    general_usage();
   }
 
   return 0;

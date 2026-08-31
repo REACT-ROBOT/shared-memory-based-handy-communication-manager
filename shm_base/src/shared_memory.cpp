@@ -6,6 +6,37 @@ namespace irlab
 namespace shm
 {
 
+//! @brief 共有メモリ名として使える文字列かを検証する
+//! @param [in] name    検証する名前
+//! @param [in] context エラーメッセージに載せる呼び出し元
+//! @details 名前はそのまま /dev/shm 配下のファイル名になる。空文字列は
+//!          `name[0]` の範囲外参照になり、`..` やヌル文字は意図しない
+//!          パスを指し得るため、境界で弾く（R01-F06）。
+void
+validateShmName(const std::string &name, const char *context)
+{
+  if (name.empty())
+  {
+    throw std::invalid_argument(std::string(context) + ": shared memory name must not be empty");
+  }
+  // "/shm_" の接頭辞と、先頭の '/' を1つ剥がす分を見込んだ上限
+  constexpr size_t MAX_SHM_NAME_LENGTH = 200;
+  if (name.size() > MAX_SHM_NAME_LENGTH)
+  {
+    throw std::invalid_argument(std::string(context) + ": shared memory name is too long (" +
+                                std::to_string(name.size()) + " > " + std::to_string(MAX_SHM_NAME_LENGTH) + ")");
+  }
+  if (name.find('\0') != std::string::npos || name.find("..") != std::string::npos)
+  {
+    throw std::invalid_argument(std::string(context) + ": shared memory name must not contain '..' or NUL");
+  }
+  // 先頭の '/' を剥がした後が空になる名前（"/" だけ）も拒否する
+  if (name == "/")
+  {
+    throw std::invalid_argument(std::string(context) + ": shared memory name must not be \"/\"");
+  }
+}
+
 //! @brief 共有メモリを破棄する(POSIX版)
 //! @param [in] name 共有メモリ名
 //! @return なし
@@ -20,6 +51,10 @@ namespace shm
 int
 disconnectMemory(std::string name)
 {
+  // 空文字列のまま name[0] を触っていた（R01-F06）。名前は共有メモリのパスに
+  // なるため、空・過長・パス区切りの悪用を API 境界で弾く。
+  validateShmName(name, "shm::disconnectMemory()");
+
   if (name[0] == '/')
   {
     name = name.erase(0, 1);
@@ -53,18 +88,25 @@ SharedMemoryPosix::SharedMemoryPosix(std::string name, int oflag, PERM perm)
   : SharedMemory(oflag, perm)
   , shm_name(name)
 {
+  // 空文字列のまま shm_name[0] を触っていた（R01-F06）
+  validateShmName(shm_name, "shm::SharedMemoryPosix()");
+
   if (shm_name[0] == '/')
   {
     shm_name = shm_name.erase(0, 1);
   }
 }
 
+//! @brief デストラクタ
+//! @details 以前は fd を閉じるだけで munmap していなかったため、明示的に
+//!          disconnect() しない通常の寿命終了でマッピングがプロセス終了まで
+//!          残っていた。長時間動くプロセスで Publisher/Subscriber を作り直すと
+//!          アドレス空間と VMA を食い潰し、最終的に mmap 失敗に至る（R01-F09）。
+//!          disconnect() は shm_ptr / shm_fd を見て冪等に書かれているので、
+//!          既に切断済みでも安全に呼べる。
 SharedMemoryPosix::~SharedMemoryPosix()
 {
-  if (shm_fd >= 0)
-  {
-    close(shm_fd);
-  }
+  disconnect();
 }
 
 bool
@@ -78,15 +120,37 @@ SharedMemoryPosix::connect(size_t size)
     return false;
   }
   struct stat stat;
-  fstat(shm_fd, &stat);
+  // fstat の失敗を無視すると未初期化の st_size を使ってしまう（R01-F06）
+  if (fstat(shm_fd, &stat) != 0)
+  {
+    close(shm_fd);
+    shm_fd = -1;
+    return false;
+  }
   if (size != 0 && static_cast<size_t>(stat.st_size) < size)
   {
     if (ftruncate(shm_fd, size) < 0)
     {
-      throw std::runtime_error("shm::getMemory(): Could not change shared memory size!");
+      close(shm_fd);
+      shm_fd = -1;
+      throw std::runtime_error("shm::SharedMemoryPosix::connect(): Could not change shared memory size!");
     }
     // To Update stat.st_size
-    fstat(shm_fd, &stat);
+    if (fstat(shm_fd, &stat) != 0)
+    {
+      close(shm_fd);
+      shm_fd = -1;
+      return false;
+    }
+  }
+
+  // 長さ 0 の共有メモリは mmap できない。作成直後に他プロセスが
+  // ftruncate する前を掴んだ場合はここに来るので、失敗として扱う。
+  if (stat.st_size <= 0)
+  {
+    close(shm_fd);
+    shm_fd = -1;
+    return false;
   }
 
   // mmap はファイル全長で行うため、shm_size にも実際にマッピングした長さを

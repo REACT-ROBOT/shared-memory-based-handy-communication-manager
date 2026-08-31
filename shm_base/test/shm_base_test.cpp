@@ -289,9 +289,18 @@ TEST_F(RingBufferTest, SizeCalculation) {
     EXPECT_GT(RingBuffer::getSize(sizeof(int), 3), RingBuffer::getSize(sizeof(int), 1));
     EXPECT_GT(RingBuffer::getSize(sizeof(double), 3), RingBuffer::getSize(sizeof(int), 3));
     
-    // Test with zero values (should handle gracefully)
+    // element_size == 0 は正当な入力（空の vector を publish したトピック）
     EXPECT_GT(RingBuffer::getSize(0, 1), 0);
-    EXPECT_GT(RingBuffer::getSize(sizeof(int), 0), 0);
+
+    // buffer_num == 0 と負値は API 境界で拒否する（R01-F06）。
+    // 以前は「そのまま計算して何らかの値を返す」挙動で、
+    //   - 0  … 呼び出し側が attach 経路に落ちて未初期化のヘッダを読む
+    //   - 負 … size_t へ変換されて巨大なオフセットになり SIGSEGV
+    // となっていた。返り値で誤魔化さず例外にする。
+    EXPECT_THROW(RingBuffer::getSize(sizeof(int), 0), std::invalid_argument);
+    EXPECT_THROW(RingBuffer::getSize(sizeof(int), -1), std::invalid_argument);
+    EXPECT_THROW(RingBuffer::getSize(sizeof(int), static_cast<int>(RingBuffer::MAX_BUFFER_NUM) + 1),
+                 std::invalid_argument);
 }
 
 // getSize() の返り値は 8 バイト境界の倍数でなければならない。

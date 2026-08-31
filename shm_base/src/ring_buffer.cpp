@@ -21,10 +21,112 @@ getCurrentTimeUSec()
 size_t
 RingBuffer::getSize(size_t element_size, int buffer_num)
 {
+  // 負値や過大な値をそのまま計算に流すと size_t への変換で巨大なオフセットになり、
+  // 呼び出し側が範囲外ポインタを作る。API 境界で弾く（R01-F06）。
+  if (buffer_num <= 0 || static_cast<size_t>(buffer_num) > MAX_BUFFER_NUM)
+  {
+    throw std::invalid_argument("shm::RingBuffer::getSize(): buffer_num must be in [1, " +
+                                std::to_string(MAX_BUFFER_NUM) + "], but got " + std::to_string(buffer_num));
+  }
+  if (element_size > MAX_ELEMENT_SIZE)
+  {
+    throw std::invalid_argument("shm::RingBuffer::getSize(): element_size " + std::to_string(element_size) +
+                                " exceeds the limit " + std::to_string(MAX_ELEMENT_SIZE));
+  }
+
   // Use aligned layout calculation for accurate size
   size_t mutex_offset, cond_offset, element_size_offset, buf_num_offset, timestamp_offset, data_offset;
-  return calculateAlignedLayout(element_size, buffer_num, mutex_offset, cond_offset, element_size_offset,
-                                buf_num_offset, timestamp_offset, data_offset);
+  const size_t total = calculateAlignedLayout(element_size, buffer_num, mutex_offset, cond_offset,
+                                              element_size_offset, buf_num_offset, timestamp_offset, data_offset);
+  if (total > MAX_TOTAL_SIZE)
+  {
+    throw std::invalid_argument("shm::RingBuffer::getSize(): total size " + std::to_string(total) +
+                                " exceeds the limit " + std::to_string(MAX_TOTAL_SIZE));
+  }
+  return total;
+}
+
+//! @brief 既存の共有メモリのレイアウトが実マッピング長に収まっているか検証する
+//! @details 共有メモリ上の element_size / buf_num は「そう書いてあるだけ」で、
+//!          切り詰められた領域や別形式の領域を読むと任意の値が出てくる。
+//!          その値からポインタを組み立てる前に、加減乗算を溢れ検査付きで行い、
+//!          全域が mapping_size に収まることを確認する（R01-F06）。
+bool
+RingBuffer::validateLayout(const unsigned char *first_ptr, size_t mapping_size, std::string *reason)
+{
+  auto fail = [reason](const std::string &msg) {
+    if (reason != nullptr)
+    {
+      *reason = msg;
+    }
+    return false;
+  };
+
+  if (first_ptr == nullptr)
+  {
+    return fail("first_ptr is null");
+  }
+  if (reinterpret_cast<uintptr_t>(first_ptr) % 8 != 0)
+  {
+    return fail("first_ptr is not 8-byte aligned");
+  }
+
+  // element_size / buf_num を読むために、まずその位置までマッピングされているか確認する。
+  // ダミー値で求めた配置でも両者のオフセットは buffer_num に依存しない。
+  size_t d_mutex, d_cond, d_elem_off, d_bufnum_off, d_ts, d_data;
+  calculateAlignedLayout(0, 1, d_mutex, d_cond, d_elem_off, d_bufnum_off, d_ts, d_data);
+
+  const size_t header_end = std::max(d_elem_off, d_bufnum_off) + sizeof(size_t);
+  if (mapping_size < header_end)
+  {
+    return fail("mapping is smaller than the header (" + std::to_string(mapping_size) + " < " +
+                std::to_string(header_end) + ")");
+  }
+
+  const size_t element_size = *reinterpret_cast<const size_t *>(first_ptr + d_elem_off);
+  const size_t buf_num      = *reinterpret_cast<const size_t *>(first_ptr + d_bufnum_off);
+
+  // element_size == 0 は異常ではない。空の vector を publish したトピックや、
+  // まだ一度も publish されていない vector トピックが正当にこの状態になる。
+  // 危険なのは過大な値のほうなので、上限だけを見る。
+  if (element_size > MAX_ELEMENT_SIZE)
+  {
+    return fail("element_size " + std::to_string(element_size) + " is out of range");
+  }
+  if (buf_num == 0 || buf_num > MAX_BUFFER_NUM)
+  {
+    return fail("buf_num " + std::to_string(buf_num) + " is out of range");
+  }
+
+  // element_size * buf_num を溢れ検査付きで行う。上の上限で実際には溢れないが、
+  // 上限を緩めたときに静かに壊れないよう明示的に検査する。
+  size_t payload_bytes = 0;
+  if (__builtin_mul_overflow(element_size, buf_num, &payload_bytes))
+  {
+    return fail("element_size * buf_num overflows");
+  }
+
+  size_t mutex_offset, cond_offset, element_size_offset, buf_num_offset, timestamp_offset, data_offset;
+  const size_t required =
+      calculateAlignedLayout(element_size, static_cast<int>(buf_num), mutex_offset, cond_offset, element_size_offset,
+                             buf_num_offset, timestamp_offset, data_offset);
+
+  size_t payload_end = 0;
+  if (__builtin_add_overflow(data_offset, payload_bytes, &payload_end))
+  {
+    return fail("data_offset + payload overflows");
+  }
+  if (required < payload_end || required > MAX_TOTAL_SIZE)
+  {
+    return fail("computed layout size " + std::to_string(required) + " is inconsistent");
+  }
+  if (mapping_size < required)
+  {
+    return fail("mapping is smaller than the layout (" + std::to_string(mapping_size) + " < " +
+                std::to_string(required) + "); the shared memory is truncated or of another format");
+  }
+
+  return true;
 }
 
 bool
@@ -129,7 +231,27 @@ RingBuffer::RingBuffer(unsigned char *first_ptr, size_t size, int buffer_num)
   // Use aligned layout calculation for ARM compatibility
   size_t mutex_offset, cond_offset, element_size_offset, buf_num_offset, timestamp_offset, data_offset;
 
-  if (buffer_num != 0 && size != 0)
+  // 生成経路（buffer_num 指定あり）は API 境界として入力を検証する。
+  // 0 を渡すと下の attach 経路に落ちて未初期化のヘッダを読むため、0 も弾く。
+  if (buffer_num != 0)
+  {
+    if (buffer_num < 0 || static_cast<size_t>(buffer_num) > MAX_BUFFER_NUM)
+    {
+      throw std::invalid_argument("shm::RingBuffer: buffer_num must be in [1, " + std::to_string(MAX_BUFFER_NUM) +
+                                  "], but got " + std::to_string(buffer_num));
+    }
+    if (size > MAX_ELEMENT_SIZE)
+    {
+      throw std::invalid_argument("shm::RingBuffer: element_size " + std::to_string(size) + " exceeds the limit " +
+                                  std::to_string(MAX_ELEMENT_SIZE));
+    }
+  }
+
+  // size == 0（要素長 0 の vector Publisher など）でも buffer_num が指定されて
+  // いれば生成経路として扱う。以前は attach 経路に落ちて共有メモリ上の
+  // buf_num（新規なら 0）でレイアウトを計算するため、data_list が
+  // timestamp_list と重なる位置を指していた。
+  if (buffer_num != 0)
   {
     // Calculate aligned layout for new buffer creation
     calculateAlignedLayout(size, buffer_num, mutex_offset, cond_offset, element_size_offset, buf_num_offset,
@@ -151,9 +273,25 @@ RingBuffer::RingBuffer(unsigned char *first_ptr, size_t size, int buffer_num)
     element_size = reinterpret_cast<size_t *>(memory_ptr + temp_element_size_offset);
     buf_num = reinterpret_cast<size_t *>(memory_ptr + temp_buf_num_offset);
 
+    // 共有メモリ上の値は「そう書いてあるだけ」なので、ポインタを組み立てる前に
+    // 現実的な範囲に収まっているか確認する。マッピング長との突き合わせは
+    // 呼び出し側の validateLayout() が行う（ここでは長さを知り得ない）。
+    // element_size == 0 は空 vector トピックで正当に発生する（上の validateLayout
+    // のコメント参照）。過大な値だけを弾く。
+    if (*element_size > MAX_ELEMENT_SIZE)
+    {
+      throw std::runtime_error("shm::RingBuffer: element_size " + std::to_string(*element_size) +
+                               " in shared memory is out of range; the segment is corrupted or of another format");
+    }
+    if (*buf_num == 0 || *buf_num > MAX_BUFFER_NUM)
+    {
+      throw std::runtime_error("shm::RingBuffer: buf_num " + std::to_string(*buf_num) +
+                               " in shared memory is out of range; the segment is corrupted or of another format");
+    }
+
     // Second pass: calculate aligned layout based on actual parameters from shared memory
-    calculateAlignedLayout(*element_size, *buf_num, mutex_offset, cond_offset, element_size_offset, buf_num_offset,
-                           timestamp_offset, data_offset);
+    calculateAlignedLayout(*element_size, static_cast<int>(*buf_num), mutex_offset, cond_offset, element_size_offset,
+                           buf_num_offset, timestamp_offset, data_offset);
     expected_element_size = *element_size;
     expected_buf_num      = *buf_num;
   }
@@ -258,10 +396,14 @@ RingBuffer::initializeContents(size_t element_size_arg, int buffer_num)
   *element_size = element_size_arg;
   *buf_num      = buffer_num;
 
+  // 走査範囲のスナップショットも作り直したレイアウトに合わせる
+  expected_element_size = element_size_arg;
+  expected_buf_num      = static_cast<size_t>(buffer_num);
+
   initializeExclusiveAccess();
 
   // Initialize all timestamp buffers to 0
-  for (size_t i = 0; i < *buf_num; ++i)
+  for (size_t i = 0; i < static_cast<size_t>(buffer_num); ++i)
   {
     timestamp_list[i].store(0, std::memory_order_relaxed);
   }
@@ -355,7 +497,11 @@ RingBuffer::getNewestBufferNum()
   size_t   newest_buffer         = -1;
   bool     found_valid_timestamp = false;
 
-  for (size_t i = 0; i < *buf_num; i++)
+  // 走査範囲には構築時のスナップショット expected_buf_num を使う。
+  // 共有メモリ上の *buf_num は他プロセスの再初期化でいつでも増え得るが、
+  // timestamp_list / data_list のオフセットは構築時のレイアウトのままなので、
+  // *buf_num を信じて回すとマッピング外を読むことになる（R01-F01）。
+  for (size_t i = 0; i < expected_buf_num; i++)
   {
     uint64_t ts = timestamp_list[i].load();
 
@@ -400,7 +546,8 @@ RingBuffer::getOldestBufferNum()
   uint64_t oldest_value  = std::numeric_limits<uint64_t>::max();
   int      oldest_buffer = 0;
   bool     found         = false;
-  for (size_t i = 0; i < *buf_num; i++)
+  // 走査範囲は構築時のスナップショット（理由は getNewestBufferNum() のコメント参照）
+  for (size_t i = 0; i < expected_buf_num; i++)
   {
     uint64_t ts = timestamp_list[i].load(std::memory_order_acquire);
     if (isBeingWritten(ts))
@@ -432,7 +579,7 @@ RingBuffer::getOldestBufferNum()
 bool
 RingBuffer::allocateBuffer(int buffer_num)
 {
-  if (buffer_num < 0 || buffer_num >= *buf_num)
+  if (buffer_num < 0 || static_cast<size_t>(buffer_num) >= expected_buf_num)
   {
     return false;
   }
@@ -508,7 +655,8 @@ RingBuffer::waitFor(uint64_t timeout_usec)
 bool
 RingBuffer::isUpdated() const
 {
-  for (size_t i = 0; i < *buf_num; i++)
+  // 走査範囲は構築時のスナップショット（理由は getNewestBufferNum() のコメント参照）
+  for (size_t i = 0; i < expected_buf_num; i++)
   {
     uint64_t ts = timestamp_list[i].load();
     // Skip buffers being written and invalid timestamps (0)
@@ -550,6 +698,40 @@ RingBuffer::isLayoutChanged() const
     return true;
   }
   return (*element_size != expected_element_size) || (*buf_num != expected_buf_num);
+}
+
+//! @brief 検証つきで既存の共有メモリへ接続する
+//! @details 宣言側のコメントを参照（R01-F06）
+std::unique_ptr<RingBuffer>
+attachRingBuffer(SharedMemory &memory, std::string *reason)
+{
+  unsigned char *ptr = memory.getPtr();
+  if (ptr == nullptr)
+  {
+    if (reason != nullptr)
+    {
+      *reason = "shared memory is not mapped";
+    }
+    return nullptr;
+  }
+
+  if (!RingBuffer::validateLayout(ptr, memory.getSize(), reason))
+  {
+    return nullptr;
+  }
+
+  try
+  {
+    return std::make_unique<RingBuffer>(ptr);
+  }
+  catch (const std::exception &e)
+  {
+    if (reason != nullptr)
+    {
+      *reason = e.what();
+    }
+    return nullptr;
+  }
 }
 
 }  // namespace shm

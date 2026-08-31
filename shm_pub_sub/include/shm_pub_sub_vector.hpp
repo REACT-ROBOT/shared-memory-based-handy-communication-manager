@@ -128,6 +128,19 @@ Publisher<std::vector<T>>::Publisher(std::string name, int buffer_num, PERM perm
     throw std::runtime_error("shm::Publisher: Be setted not POD class in vector!");
   }
 
+  if (name.empty())
+  {
+    throw std::runtime_error("shm::Publisher: Please set name!");
+  }
+
+  // 負値・過大値は境界で弾く（R01-F06）
+  if (buffer_num <= 0 || static_cast<size_t>(buffer_num) > RingBuffer::MAX_BUFFER_NUM)
+  {
+    throw std::runtime_error("shm::Publisher: buffer_num must be in [1, " +
+                             std::to_string(RingBuffer::MAX_BUFFER_NUM) + "], but got " +
+                             std::to_string(buffer_num));
+  }
+
   shared_memory = std::make_unique<SharedMemoryPosix>(shm_name, O_RDWR | O_CREAT, shm_perm);
   shared_memory->connect(RingBuffer::getSize(sizeof(T) * vector_size, shm_buf_num));
   if (shared_memory->isDisconnected())
@@ -143,11 +156,17 @@ Publisher<std::vector<T>>::Publisher(std::string name, int buffer_num, PERM perm
   unsigned char *first_ptr = shared_memory->getPtr();
   if (RingBuffer::checkInitialized(first_ptr))
   {
-    // 再初期化しない読み出し用の接続で既存の要素サイズを確認する
-    const size_t existing_element_size = RingBuffer(first_ptr).getElementSize();
-    if (existing_element_size != 0 && (existing_element_size % sizeof(T)) == 0)
+    // 再初期化しない読み出し用の接続で既存の要素サイズを確認する。
+    // 壊れた／別形式の共有メモリを掴んでいる場合は nullptr が返るので、
+    // 引き継ぎを諦めて新しいレイアウトで作り直す（R01-F06）。
+    std::unique_ptr<RingBuffer> probe = attachRingBuffer(*shared_memory);
+    if (probe != nullptr)
     {
-      vector_size = existing_element_size / sizeof(T);
+      const size_t existing_element_size = probe->getElementSize();
+      if (existing_element_size != 0 && (existing_element_size % sizeof(T)) == 0)
+      {
+        vector_size = existing_element_size / sizeof(T);
+      }
     }
   }
 
@@ -316,11 +335,21 @@ Subscriber<std::vector<T>>::subscribe(bool *is_success)
         return return_buffers_[return_index_];
       }
 
-      ring_buffer         = std::make_unique<RingBuffer>(shared_memory->getPtr());
+      // 検証つきの接続（R01-F06）
+      ring_buffer = attachRingBuffer(*shared_memory);
+      if (ring_buffer == nullptr)
+      {
+        // マッピングが古い（他プロセスがレイアウトを広げた）可能性があるため、
+        // 共有メモリごと切断して次回に張り直させる。ここで居座ると
+        // ring_buffer == nullptr のまま isLayoutChanged() の経路に入れない。
+        shared_memory->disconnect();
+        *is_success = false;
+        return return_buffers_[return_index_];
+      }
       size_t element_size = ring_buffer->getElementSize();
       vector_size         = element_size / sizeof(T);
       return_buffers_[0].resize(vector_size);
-    return_buffers_[1].resize(vector_size);
+      return_buffers_[1].resize(vector_size);
     }
     catch (const std::bad_alloc &e)
     {
@@ -334,11 +363,20 @@ Subscriber<std::vector<T>>::subscribe(bool *is_success)
   {
     try
     {
-      ring_buffer         = std::make_unique<RingBuffer>(shared_memory->getPtr());
+      ring_buffer = attachRingBuffer(*shared_memory);
+      if (ring_buffer == nullptr)
+      {
+        // マッピングが古い（他プロセスがレイアウトを広げた）可能性があるため、
+        // 共有メモリごと切断して次回に張り直させる。ここで居座ると
+        // ring_buffer == nullptr のまま isLayoutChanged() の経路に入れない。
+        shared_memory->disconnect();
+        *is_success = false;
+        return return_buffers_[return_index_];
+      }
       size_t element_size = ring_buffer->getElementSize();
       vector_size         = element_size / sizeof(T);
       return_buffers_[0].resize(vector_size);
-    return_buffers_[1].resize(vector_size);
+      return_buffers_[1].resize(vector_size);
       ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
     }
     catch (const std::bad_alloc &e)
@@ -432,7 +470,13 @@ Subscriber<std::vector<T>>::waitFor(uint64_t timeout_usec)
     {  // 500ms timeout (increased)
       return false;
     }
-    ring_buffer         = std::make_unique<RingBuffer>(shared_memory->getPtr());
+    ring_buffer = attachRingBuffer(*shared_memory);
+    if (ring_buffer == nullptr)
+    {
+      // 理由は subscribe() 側の同じ箇所のコメントを参照
+      shared_memory->disconnect();
+      return false;
+    }
     size_t element_size = ring_buffer->getElementSize();
     vector_size         = element_size / sizeof(T);
     return_buffers_[0].resize(vector_size);
@@ -444,11 +488,19 @@ Subscriber<std::vector<T>>::waitFor(uint64_t timeout_usec)
   {
     try
     {
-      ring_buffer         = std::make_unique<RingBuffer>(shared_memory->getPtr());
+      ring_buffer = attachRingBuffer(*shared_memory);
+      if (ring_buffer == nullptr)
+      {
+        // マッピングが古い（他プロセスがレイアウトを広げた）可能性があるため、
+        // 共有メモリごと切断して次回に張り直させる。ここで居座ると
+        // ring_buffer == nullptr のまま isLayoutChanged() の経路に入れない。
+        shared_memory->disconnect();
+        return false;
+      }
       size_t element_size = ring_buffer->getElementSize();
       vector_size         = element_size / sizeof(T);
       return_buffers_[0].resize(vector_size);
-    return_buffers_[1].resize(vector_size);
+      return_buffers_[1].resize(vector_size);
       ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
     }
     catch (const std::bad_alloc &e)

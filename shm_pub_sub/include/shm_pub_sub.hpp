@@ -199,6 +199,15 @@ Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm)
     throw std::runtime_error("shm::Publisher: Please set name!");
   }
 
+  // 負値は size_t へ変換されて巨大なループ／オフセットになり、0 は未初期化の
+  // ヘッダを読む経路に落ちる。どちらも境界で弾く（R01-F06）。
+  if (buffer_num <= 0 || static_cast<size_t>(buffer_num) > RingBuffer::MAX_BUFFER_NUM)
+  {
+    throw std::runtime_error("shm::Publisher: buffer_num must be in [1, " +
+                             std::to_string(RingBuffer::MAX_BUFFER_NUM) + "], but got " +
+                             std::to_string(buffer_num));
+  }
+
   try
   {
     shared_memory = std::make_unique<SharedMemoryPosix>(shm_name, O_RDWR | O_CREAT, shm_perm);
@@ -430,7 +439,18 @@ Subscriber<T>::subscribe(bool *is_success)
         *is_success = false;
         return return_buffers_[return_index_];
       }
-      ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
+      // 切り詰められた／別形式の共有メモリに接続するとマッピング外を指す
+      // ポインタが作られるため、必ず検証つきの接続を通す（R01-F06）
+      ring_buffer = attachRingBuffer(*shared_memory);
+      if (ring_buffer == nullptr)
+      {
+        // マッピングが古い（他プロセスがレイアウトを広げた）可能性があるため、
+        // 共有メモリごと切断して次回に張り直させる。ここで居座ると
+        // ring_buffer == nullptr のまま isLayoutChanged() の経路に入れない。
+        shared_memory->disconnect();
+        *is_success = false;
+        return return_buffers_[return_index_];
+      }
     }
     catch (const std::bad_alloc &e)
     {
@@ -450,7 +470,16 @@ Subscriber<T>::subscribe(bool *is_success)
     }
     try
     {
-      ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
+      ring_buffer = attachRingBuffer(*shared_memory);
+      if (ring_buffer == nullptr)
+      {
+        // マッピングが古い（他プロセスがレイアウトを広げた）可能性があるため、
+        // 共有メモリごと切断して次回に張り直させる。ここで居座ると
+        // ring_buffer == nullptr のまま isLayoutChanged() の経路に入れない。
+        shared_memory->disconnect();
+        *is_success = false;
+        return return_buffers_[return_index_];
+      }
       ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
     }
     catch (const std::bad_alloc &e)
@@ -567,7 +596,13 @@ Subscriber<T>::waitFor(uint64_t timeout_usec)
       return false;
     }
 
-    ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
+    ring_buffer = attachRingBuffer(*shared_memory);
+    if (ring_buffer == nullptr)
+    {
+      // 理由は subscribe() 側の同じ箇所のコメントを参照
+      shared_memory->disconnect();
+      return false;
+    }
     ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
   }
   // 既に接続済みだが ring_buffer が未初期化の場合に対応
@@ -580,7 +615,15 @@ Subscriber<T>::waitFor(uint64_t timeout_usec)
     }
     try
     {
-      ring_buffer = std::make_unique<RingBuffer>(shared_memory->getPtr());
+      ring_buffer = attachRingBuffer(*shared_memory);
+      if (ring_buffer == nullptr)
+      {
+        // マッピングが古い（他プロセスがレイアウトを広げた）可能性があるため、
+        // 共有メモリごと切断して次回に張り直させる。ここで居座ると
+        // ring_buffer == nullptr のまま isLayoutChanged() の経路に入れない。
+        shared_memory->disconnect();
+        return false;
+      }
       ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
     }
     catch (const std::bad_alloc &e)
