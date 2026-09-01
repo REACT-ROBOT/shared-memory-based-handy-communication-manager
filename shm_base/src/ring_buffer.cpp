@@ -191,6 +191,12 @@ RingBuffer::TopicContract::matches(const TopicContract &other, std::string *reas
     return false;
   };
 
+  auto toHex = [](uint32_t v) {
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%08x", v);
+    return std::string(buf);
+  };
+
   auto kind_name = [](PayloadKind k) -> const char * {
     switch (k)
     {
@@ -211,22 +217,42 @@ RingBuffer::TopicContract::matches(const TopicContract &other, std::string *reas
     return fail("element size mismatch (segment " + std::to_string(other.element_size) + " bytes, this process expects " +
                 std::to_string(element_size) + " bytes)");
   }
-  // 利用者が shm_schema<T> で指定した版。**移植性のある**識別子なので、
-  // 両者が指定していれば必ず一致しなければならない（R03-F05）。
-  if (schema_version != 0 && other.schema_version != 0 && schema_version != other.schema_version)
+  // 書式の識別子（SHM_DECLARE_LAYOUT / SHM_DECLARE_SERIALIZED_FORMAT）。
+  //
+  // 「片方が 0 なら照合しない」としてはならない（R04-F09）。
+  // 版はセグメント生成時にしか書かれないので、宣言を後から足したトピックは
+  // セグメント側が 0 のまま固定される。片側 0 を素通りさせると、
+  // **宣言を導入した瞬間・書式を変えた瞬間という、最も検査が要る局面で
+  // 検査が消える**。実際 R03 ではその状態になっており、
+  // shm_schema<T> は実機で一度も照合されていなかった。
+  //
+  // 0 は「宣言が無い」であって「何でもよい」ではない。
+  // 片側だけ 0 なら、レイアウトが一致しているかを**確かめる手段が無い**ので拒む。
+  if (schema_version != other.schema_version)
   {
-    return fail("schema version mismatch (segment v" + std::to_string(other.schema_version) +
-                ", this process expects v" + std::to_string(schema_version) +
-                "). Remove it with 'shm_tool remove <topic>' or use a different topic name");
+    if (schema_version != 0 && other.schema_version != 0)
+    {
+      return fail("payload format mismatch (segment 0x" + toHex(other.schema_version) + ", this process expects 0x" +
+                  toHex(schema_version) + "); the member layout or the serialization format changed");
+    }
+    if (other.schema_version == 0)
+    {
+      return fail("the segment was created by a build that did not declare this payload's format, "
+                  "so its layout cannot be verified against this process (which expects 0x" +
+                  toHex(schema_version) + ")");
+    }
+    return fail("this build does not declare this payload's format, but the segment does (0x" +
+                toHex(other.schema_version) +
+                "); this process is probably older than the one that created the segment");
   }
+
   // schema_id は __PRETTY_FUNCTION__ のハッシュなので、**同じツールチェインでしか
-  // 一致しない**。異なるコンパイラ／言語バインディング間では別の値になり得るため、
-  // どちらかが 0 の場合や版が明示されている場合は照合しない（R03-F05）。
-  const bool version_is_authoritative = (schema_version != 0 && other.schema_version != 0);
-  if (!version_is_authoritative && schema_id != 0 && other.schema_id != 0 && schema_id != other.schema_id)
+  // 一致しない**。異なるコンパイラ／言語バインディング間では別の値になり得る。
+  // 書式が宣言されていればそちらが正本なので、ここは宣言が無い場合の保険として使う。
+  const bool format_is_declared = (schema_version != 0);
+  if (!format_is_declared && schema_id != 0 && other.schema_id != 0 && schema_id != other.schema_id)
   {
-    return fail("payload type mismatch: the segment holds a different type of the same size. "
-                "Remove it with 'shm_tool remove <topic>' or use a different topic name");
+    return fail("payload type mismatch: the segment holds a different type of the same size");
   }
   if (alignment != 0 && other.alignment != 0 && (other.alignment % alignment) != 0)
   {

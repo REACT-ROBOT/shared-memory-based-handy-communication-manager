@@ -55,7 +55,7 @@ protected:
   void TearDown() override { cleanup(); }
   void cleanup()
   {
-    for (const char *t : { "lh_reorder", "lh_ok" })
+    for (const char *t : { "lh_reorder", "lh_ok", "lh_asym" })
     {
       try
       {
@@ -215,4 +215,60 @@ TEST_F(SHMLayoutHashTest, MissingOrMisorderedMembersAreRejected)
                 "この形は検出できない（既知の限界）。検出できるようになったらこの記述を消すこと");
 
   SUCCEED();
+}
+
+// -----------------------------------------------------------------------------
+// R04-F09: 片方だけ書式を宣言している場合も拒まなければならない
+//
+// 版はセグメント生成時にしか書かれない。宣言を後から足したトピックは
+// セグメント側が 0 のまま固定されるので、「片方が 0 なら照合しない」と
+// していると、**宣言を導入した瞬間・書式を変えた瞬間という最も検査が要る
+// 局面で検査が消える**。R03 の実装がその状態で、shm_schema<T> は実機で
+// 一度も照合されていなかった。
+//
+// 0 は「宣言が無い」であって「何でもよい」ではない。
+// -----------------------------------------------------------------------------
+TEST_F(SHMLayoutHashTest, AnUndeclaredSegmentIsRejectedByADeclaredProcess)
+{
+  Publisher<LayoutA> pub("lh_asym", 3);
+  LayoutA            sent{};
+  sent.count = 7;
+  pub.publish(sent);
+
+  SharedMemoryPosix shm("lh_asym", O_RDWR, DEFAULT_PERM);
+  ASSERT_TRUE(shm.connect());
+  ShmHeader *header = reinterpret_cast<ShmHeader *>(shm.getPtr());
+  ASSERT_NE(header->schema_version, 0u);
+
+  // 宣言が無かった頃のビルドが作ったセグメントに見せかける
+  header->schema_version = 0;
+
+  Subscriber<LayoutA> sub("lh_asym");
+  bool                ok = false;
+  sub.subscribe(&ok);
+  EXPECT_FALSE(ok) << "書式を確かめる手段が無いのに接続できてしまった";
+}
+
+// -----------------------------------------------------------------------------
+// 逆向き（自分が未宣言・セグメントが宣言済み）も拒む
+//
+// 再デプロイ後に古いプロセスが生き残っている場合がこれにあたる。
+// -----------------------------------------------------------------------------
+TEST_F(SHMLayoutHashTest, ADeclaredSegmentIsRejectedByAnUndeclaredProcess)
+{
+  // int は宣言不要（版 0）なので、そのトピックのセグメントに版を書き込むと
+  // 「セグメントは宣言済み、自分は未宣言」の状態を作れる。
+  Publisher<int> pub("lh_asym", 3);
+  pub.publish(5);
+
+  SharedMemoryPosix shm("lh_asym", O_RDWR, DEFAULT_PERM);
+  ASSERT_TRUE(shm.connect());
+  ShmHeader *header = reinterpret_cast<ShmHeader *>(shm.getPtr());
+  ASSERT_EQ(header->schema_version, 0u);
+  header->schema_version = 0xABCDEF01u;
+
+  Subscriber<int> sub("lh_asym");
+  bool            ok = false;
+  sub.subscribe(&ok);
+  EXPECT_FALSE(ok) << "自分が書式を知らないのに接続できてしまった";
 }
