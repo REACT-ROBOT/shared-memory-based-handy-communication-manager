@@ -293,6 +293,9 @@ Publisher<std::vector<T>>::publishOnce(const std::vector<T> &data)
 
   // 実際に書いた長さをスロットに記録する。容量は要求より大きいことがあるので、
   // 読み手は容量ではなくこの値から要素数を求める。
+  // 世代切替との競合を決定的に再現するためのフック（既定では何もしない）
+  SHM_FIRE_TEST_HOOK_BEFORE_COMMIT();
+
   ring_buffer->commitBuffer(oldest_buffer, sizeof(T) * vector_size);
 
   ring_buffer->signal();

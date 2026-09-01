@@ -61,6 +61,9 @@ endif()
 if(SHM_REQUIRE_LAYOUT)
     target_compile_definitions(shm_pub_sub PUBLIC SHM_REQUIRE_LAYOUT)
 endif()
+if(SHM_ENABLE_TEST_HOOKS)
+    target_compile_definitions(shm_pub_sub PUBLIC SHM_ENABLE_TEST_HOOKS)
+endif()
 
 set_target_properties(shm_pub_sub PROPERTIES
 	PUBLIC_HEADER "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/shm_pub_sub.hpp>"
@@ -316,6 +319,18 @@ if(BUILD_TESTS)
       )
     gtest_add_tests(TARGET shm_pub_sub_layout_hash_test TEST_LIST shm_pub_sub_layout_hash_test_cases)
   set_tests_properties(${shm_pub_sub_layout_hash_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT} RESOURCE_LOCK dev_shm)
+
+    # 世代切替と publish の競合を決定的に検査する（R04-F24）
+    add_executable(shm_pub_sub_cutover_test
+        test/shm_pub_sub_cutover_test.cpp
+      )
+    target_link_libraries(shm_pub_sub_cutover_test
+        PRIVATE
+        shm_pub_sub
+        ${GTEST_LDFLAGS}
+      )
+    gtest_add_tests(TARGET shm_pub_sub_cutover_test TEST_LIST shm_pub_sub_cutover_test_cases)
+  set_tests_properties(${shm_pub_sub_cutover_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT} RESOURCE_LOCK dev_shm)
 
     # 時刻指定読み出し（タイムマシン）の回帰テスト
     add_executable(shm_pub_sub_timemachine_test

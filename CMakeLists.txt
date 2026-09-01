@@ -196,6 +196,27 @@ option(SHM_REQUIRE_LAYOUT
 if(SHM_REQUIRE_LAYOUT)
     message(STATUS "Payload format declaration is REQUIRED (SHM_DECLARE_LAYOUT)")
 endif()
+
+# ----------------------------------------------------------------------------
+# 競合を決定的に再現するためのテスト用フック（R04-F24）
+#
+# 世代切替と publish の競合は、外から叩くだけでは狙った順序で起こせない。
+# R04 のレビューでは、cutover 三点セット（publish 後の世代確認 / 切替直後の
+# 回収）を丸ごと取り消しても全テストが緑のままであることが実証された。
+# 決定的に検査するには publish の途中で切替を差し込む必要がある。
+#
+# テストのビルドでのみ ON にする。製品ビルドには何も残らない
+# （フックの宣言ごとプリプロセッサで消える）。
+# ----------------------------------------------------------------------------
+option(SHM_ENABLE_TEST_HOOKS
+       "Expose hooks that let tests interleave a generation cutover with a publish (R04-F24)" OFF)
+if(BUILD_TESTS)
+    # テストを作るときは常に有効にする
+    set(SHM_ENABLE_TEST_HOOKS ON CACHE BOOL "" FORCE)
+endif()
+if(SHM_ENABLE_TEST_HOOKS)
+    message(STATUS "Test hooks are ON (SHM_ENABLE_TEST_HOOKS)")
+endif()
 # NOTE: ここで add_compile_definitions() を使ってはならない。
 #       ディレクトリスコープなので、このサブツリー（shm_base / shm_pub_sub / tools）
 #       にしか効かず、上位のワークスペースに並ぶ兄弟パッケージ

@@ -56,6 +56,9 @@ endif()
 if(SHM_REQUIRE_LAYOUT)
     target_compile_definitions(shm_base PUBLIC SHM_REQUIRE_LAYOUT)
 endif()
+if(SHM_ENABLE_TEST_HOOKS)
+    target_compile_definitions(shm_base PUBLIC SHM_ENABLE_TEST_HOOKS)
+endif()
 
 set_target_properties(shm_base PROPERTIES
 	PUBLIC_HEADER include/shm_base.hpp

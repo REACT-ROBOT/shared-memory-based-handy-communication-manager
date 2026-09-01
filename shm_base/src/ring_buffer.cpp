@@ -14,6 +14,14 @@ namespace irlab
 namespace shm
 {
 
+#ifdef SHM_ENABLE_TEST_HOOKS
+namespace test_hooks
+{
+//! 定義はここに 1 つだけ置く。既定では何も設定されていない。
+std::function<void()> before_commit;
+}  // namespace test_hooks
+#endif
+
 // ============================================================================
 // レイアウトの静的検査
 //

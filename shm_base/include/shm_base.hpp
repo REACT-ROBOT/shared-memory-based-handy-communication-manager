@@ -17,6 +17,7 @@
 #include <stdexcept>
 #include <mutex>
 #include <atomic>
+#include <functional>
 #include <cstdint>
 #include <type_traits>
 #include <memory>
@@ -583,6 +584,39 @@ schema_version_of()
 {
   return shm_schema<T>::version;
 }
+
+/*!
+ * \~japanese-en 競合を決定的に再現するためのテスト用フック．
+ *
+ * \~japanese-en 世代切替と publish の競合は、外から叩くだけでは狙った順序で
+ *               起こせない。実際、R04 のレビューでは「修正を丸ごと取り消しても
+ *               全テストが緑のまま」であることが実証された（R04-F24）。
+ *               決定的に検査するには、publish の途中で切替を差し込む必要がある。
+ *
+ * \~japanese-en `SHM_ENABLE_TEST_HOOKS` を定義したビルドでのみ有効で、
+ *               既定では宣言ごと消える。製品ビルドには何も残らない。
+ */
+#ifdef SHM_ENABLE_TEST_HOOKS
+namespace test_hooks
+{
+//! publish がスロットを確保した後、commit する直前に呼ばれる。
+//! ここで世代を進めれば「旧世代へ commit する writer」を確実に作れる。
+extern std::function<void()> before_commit;
+
+//! @brief フックが設定されていれば呼ぶ
+inline void
+fireBeforeCommit()
+{
+  if (before_commit)
+  {
+    before_commit();
+  }
+}
+}  // namespace test_hooks
+#define SHM_FIRE_TEST_HOOK_BEFORE_COMMIT() ::irlab::shm::test_hooks::fireBeforeCommit()
+#else
+#define SHM_FIRE_TEST_HOOK_BEFORE_COMMIT() ((void)0)
+#endif
 
 //! @brief この boot を識別する値。読めない環境では 0
 //! @details 再起動をまたいで残ったセグメントを見分けるために使う。

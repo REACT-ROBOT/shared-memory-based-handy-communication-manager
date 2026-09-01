@@ -480,6 +480,9 @@ Publisher<T>::publishOnce(const T &data)
 
   // 発行番号の採番とスロットの解放。番号はここで採るので、
   // 「番号が小さい＝先にコミットされた」が常に成り立つ。
+  // 世代切替との競合を決定的に再現するためのフック（既定では何もしない）
+  SHM_FIRE_TEST_HOOK_BEFORE_COMMIT();
+
   ring_buffer->commitBuffer(oldest_buffer, sizeof(T));
 
   ring_buffer->signal();
