@@ -37,11 +37,32 @@ atomic で置き、writer がその印のあるスロットを避ける**方式�
 
 ---
 
-## 制約 A — `shm_schema<T>` の必須化（コンパイルエラー）
+## 制約 A — 型のレイアウトを自動でハッシュする（コンパイルエラー）
+
+> **2026-09-01 改訂**: 初版は `shm_schema<T>` に**手で版番号を書かせる**案だった。
+> これは次の事実確認により撤回する。
+>
+> - `shm_ws` は `project(NIKON-ShelfTransportSystem)` という**単一の CMake プロジェクト**であり、
+>   `add_subdirectory` 配下を同じコンパイラ・同じヘッダで一括ビルドしている
+>   （`find_package(shm_base)` している 9 パッケージも同じビルドツリー内で解決される）
+> - `colcon_ws` 側は shm を使っていない
+> - `deploy_to_raspi.sh` は `bin/` と `lib/` を `rsync --delete` で丸ごと入れ替える
+>
+> つまり **同時に走るバイナリは常に同じビルド由来**で、同じ型名なら同じバイト表現が
+> コンパイラによって保証される。手で維持する版番号は、その目的においてはほぼ空振りである。
+>
+> 残る穴は 2 つだけで、**(a) 再デプロイ後に古いプロセスが生き残っている**、
+> **(b) 共有メモリのセグメントが残っている**（設計上プロセス終了で消さない）。
+> このとき「同じ型名・同じサイズ・メンバの並びだけ違う」が起き得る。
+> サイズが変われば `element_size` の照合で、形式が変われば ABI で捕まるので、
+> **版が埋めているのは「同サイズの並べ替え／型入れ替え」だけ**である。
+>
+> それは**人間に番号を維持させなくても、レイアウトから自動で導出できる**。
 
 ### 何を強制するか
 
-独自に定義した型を publish / subscribe するとき、**書式の版の宣言を必須にする**。
+共有メモリに載せる型について、**メンバを 1 度だけ並べさせる**。
+そこからレイアウトのハッシュを `constexpr` で組み立て、接続時に照合する。
 
 ### 利用者コード
 
@@ -51,43 +72,74 @@ struct LidarScan {
   float    ranges[1081];
 };
 
-// これが無いとコンパイルエラー
+// メンバを並べるだけ。版番号は書かない。
+SHM_DECLARE_LAYOUT(LidarScan, count, ranges);
+```
+
+展開されるもの（概略）:
+
+```cpp
 namespace irlab { namespace shm {
-template <> struct shm_schema<LidarScan> { static constexpr uint32_t version = 3; };
+template <> struct shm_schema<LidarScan> {
+  // sizeof(T) / alignof(T) と、各メンバの offsetof / sizeof を畳み込む。
+  // 並べ替え・型入れ替え・サイズ変更・アライメント変更がすべてここに出る。
+  static constexpr uint32_t version = layout_hash<LidarScan>(
+      { offsetof(LidarScan, count),  sizeof(LidarScan::count)  },
+      { offsetof(LidarScan, ranges), sizeof(LidarScan::ranges) });
+};
 }}
 ```
 
-違反時のメッセージ:
+宣言が無ければコンパイルエラー:
 
 ```
-error: static assertion failed: shm::Publisher : this payload type has no shm_schema<T>
-       specialization. Declare the wire-format version so that incompatible builds are
-       rejected instead of reading each other's bytes:
-           template <> struct shm_schema<YourType> { static constexpr uint32_t version = 1; };
-       Bump the version whenever you add, remove, reorder or retype a member.
+error: static assertion failed: shm::Publisher : this payload type has no layout
+       declaration. Declare it so that a stale process or a leftover segment with a
+       different member order is rejected instead of being read as if it matched:
+           SHM_DECLARE_LAYOUT(YourType, member1, member2, ...);
 ```
-
-`int` / `float` / `double` などの算術型と、ライブラリが用意した特殊化（cv::Mat など）は対象外。
 
 ### 何が防げるか
 
-- **R04-F09**: 現状 `schema_version` は「両者が 0 以外を指定したときだけ」照合される。
-  版を導入した瞬間・上げた瞬間は必ず片側が 0 になるので、**最も必要な局面で検査が消える**。
-  必須化すれば 0 が存在しなくなり、この抜け道が構造的に消える。
-- **R04-F03 の発火経路**: 「書式を変えた新バイナリが、旧書式のペイロードを新パーサで読む」を止められる。
-  現状これが point_cloud の範囲外読み出しを現実的にする主因になっている。
+- **メンバの並べ替え・型入れ替え**。`element_size`（`sizeof`）が同じでも別物だと分かる。
+  これが現状唯一の取りこぼしで、再デプロイ後に古いプロセスが生き残っている場合に起きる。
+- **メンバの追加・削除**。`sizeof(T)` が変わるので確実に出る
+  （既存のパディングに収まる追加でも、後続メンバの `offsetof` が動くので出る）。
+- **版番号の上げ忘れ**。判断そのものが無くなる。
 
 ### 何が防げないか
 
-- 版を上げ忘れた場合。これは検出できない（人間の規律に依存する）。
-  ただし「書式を変えたら版を上げる」は 1 行なので、レビューで見落としにくい。
+- **レイアウトが同一のまま意味だけ変えた**場合（`float range` を m から mm にした等）。
+  ここだけは人間にしか分からないので、任意の第 2 引数で明示できるようにする:
+
+  ```cpp
+  SHM_DECLARE_LAYOUT(LidarScan, count, ranges);            // 通常
+  SHM_DECLARE_LAYOUT_REV(LidarScan, /*revision*/ 2, count, ranges);  // 単位を変えた等
+  ```
+
+  書く頻度は、版番号を常時維持するのに比べて桁違いに低い。
+- メンバの並べ方を間違えて書いた場合。ただし存在しないメンバ名はコンパイルエラーになる。
+
+### 採らなかった案: CMake プロジェクトのパスからハッシュを作る
+
+「人間に番号を維持させず自動で導出する」という発想は正しいが、パスは使えない。
+
+- 参加者は全員同じ CMake プロジェクトなので、ハッシュが**定数になり何も検出できない**
+- パッケージ単位のパスにすると、`sensor_daemons` と `react_cv` が**通信できなくなる**。
+  パッケージをまたぐ通信こそがこのライブラリの用途なので本末転倒
+
+同じ理由で「ビルド ID（git commit やビルド時刻）を全バイナリに焼く」案も、
+単体では強すぎる。1 行直して再ビルドしただけで全デーモンの再起動と
+`shm_tool remove` を強制することになる。
+ただし **(a) 古いプロセスが生き残っている** を確実に検出できる唯一の方法ではあるので、
+`shm_tool doctor`（制約 D）でビルド ID を**表示するだけ**にして、
+接続の可否には使わない、という扱いにする。
 
 ### 移行コスト
 
-- 独自型ごとに 3 行。既存の型に一括で付ける作業が一度だけ発生する。
-- `SHM_STRICT_TYPE_CHECK` と同じく、既定 ON / オプトアウト可（`SHM_REQUIRE_SCHEMA=OFF`）にできる。
-
----
+- 共有メモリに載せる型ごとに 1 行。初版案（版番号）と行数は同じだが、
+  **維持する判断が消える**ぶん実質の負担は下がる。
+- `SHM_STRICT_TYPE_CHECK` と同じく、既定 ON / オプトアウト可（`SHM_REQUIRE_LAYOUT=OFF`）にできる。
 
 ## 制約 B — トピック定義の一元化と、**履歴長**による バッファ数の導出
 
@@ -134,16 +186,13 @@ LiDAR が 10Hz、`buf_num = 3` なら履歴は **300ms** しかない。
 ### 利用者コード
 
 ```cpp
-// msgs/lidar_scan.hpp — 型と、その「バイト表現の版」を宣言する
+// msgs/lidar_scan.hpp — 型と、そのレイアウト宣言
 #include <shm_base.hpp>
 
 struct LidarScan { uint32_t count; float ranges[1081]; };
 
-// 版は**型に属する**（制約 A）。メンバを足す・消す・並べ替える・型を変える、
-// あるいは意味を変えた（単位を m から mm にした等）ときに増やす。
-namespace irlab { namespace shm {
-template <> struct shm_schema<LidarScan> { static constexpr uint32_t version = 3; };
-}}
+// メンバを並べるだけ（制約 A）。版番号は書かない。
+SHM_DECLARE_LAYOUT(LidarScan, count, ranges);
 ```
 
 ```cpp
@@ -158,11 +207,11 @@ SHM_DEFINE_TOPIC(LidarScanTopic,
   /* 必要な履歴 */ shm::millis(1500));   // 1Hz の消費者が 1s 前まで遡れるように
 ```
 
-> **版をトピック定義に書かないのは意図的である。**
-> 版は型のバイト表現に属するものであって、トピックに属するものではない。
+> **レイアウトの識別子をトピック定義に書かないのは意図的である。**
+> それは型のバイト表現に属するものであって、トピックに属するものではない。
 > `SHM_DEFINE_TOPIC` の引数にすると、同じ型を 2 つのトピックで使ったときに
 > `shm_schema<T>` が二重に定義されてコンパイルエラーになるし、
-> 片方だけ版を書き換えるという矛盾も作れてしまう。
+> 片方だけ書き換えるという矛盾も作れてしまう。
 > 型の定義の隣に 1 回だけ書き、トピック定義は型を参照するだけにする。
 
 展開されるもの:
@@ -327,7 +376,7 @@ use(a, b);                                  // ← 誤り。a は b と同じか
 
 | 順 | 制約 | 理由 |
 |---|---|---|
-| 1 | **A（schema 版の必須化）** | 単独で入れられる。R04-F09 を構造的に消し、F03 の発火経路を塞ぐ。利用者の負担は型ごとに 3 行 |
+| 1 | **A（レイアウトの自動ハッシュ）** | 単独で入れられる。R04-F09 を構造的に消し、F03 の発火経路を塞ぐ。利用者の負担は型ごとに 1 行で、維持する判断は無い |
 | 2 | **D（`shm_tool doctor`）** | 既存 API を一切変えない。ABI 4 の実機投入前に必要 |
 | 3 | **B（トピック定義の一元化・履歴長からの導出）** | 本命。宣言するのは発行レートと必要な履歴長で、参加者数ではない。ただし新旧 API が併存するので移行方針を決めてから入れたい |
 | 4 | **C（起動時・実行時の突き合わせ）** | B とセットで効く。単独でも F13 の部分は価値がある |
