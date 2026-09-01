@@ -168,6 +168,34 @@ option(SHM_STRICT_TYPE_CHECK
 if(SHM_STRICT_TYPE_CHECK)
     message(STATUS "Strict payload type checking is ON (trivially-copyable required)")
 endif()
+
+# ----------------------------------------------------------------------------
+# ペイロード書式の宣言を必須にするか（R04 / 制約 A）
+#
+# `element_size`（sizeof）の照合は「同サイズのままメンバを並べ替えた」変更を
+# 通してしまう。再デプロイ後に古いプロセスが生き残っている場合や、古い
+# セグメントが残っている場合に、別物を同じ形式として読み合うことになる。
+#
+# SHM_DECLARE_LAYOUT() でメンバを並べておくと、offsetof と sizeof から
+# レイアウトのハッシュが自動で作られ、その穴が閉じる。版番号を手で維持する
+# 必要はない（並べ替え・型入れ替え・追加・削除・アライメント変更が全て出る）。
+#
+# **既定は OFF である。** workspace には 90 種類以上のペイロード型があり、
+# 一斉に必須化すると複数リポジトリのビルドが同時に止まるため。
+# 移行はパッケージ単位で行う:
+#   1. そのパッケージを -DSHM_REQUIRE_LAYOUT=ON でビルドする
+#   2. 止まった型に SHM_DECLARE_LAYOUT() を足す
+#      （ワイヤ形式が serialize() で決まる型は SHM_DECLARE_SERIALIZED_FORMAT()）
+#   3. 全パッケージが済んだらここの既定を ON にする
+#
+# 宣言していない型は従来どおり動く（schema_id と element_size だけで照合する）。
+# どのトピックが未宣言かは `shm_tool doctor` で確認できる。
+# ----------------------------------------------------------------------------
+option(SHM_REQUIRE_LAYOUT
+       "Require every payload type to declare its wire format at compile time (R04)" OFF)
+if(SHM_REQUIRE_LAYOUT)
+    message(STATUS "Payload format declaration is REQUIRED (SHM_DECLARE_LAYOUT)")
+endif()
 # NOTE: ここで add_compile_definitions() を使ってはならない。
 #       ディレクトリスコープなので、このサブツリー（shm_base / shm_pub_sub / tools）
 #       にしか効かず、上位のワークスペースに並ぶ兄弟パッケージ

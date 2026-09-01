@@ -49,6 +49,7 @@ class Publisher<std::vector<T>>
   // ここでも同じ制約を課す（R02-F01）。要素型が trivially copyable でないと、
   // 共有メモリへのバイトコピーで意味が壊れる。
   SHM_ASSERT_SHAREABLE(T, "shm::Publisher<std::vector<T>>");
+  SHM_ASSERT_FORMAT_DECLARED(T, "shm::Publisher<std::vector<T>>");
 
 public:
   Publisher(std::string name = "", int buffer_num = 3, PERM perm = DEFAULT_PERM);
@@ -96,6 +97,7 @@ class Subscriber<std::vector<T>>
   // ここでも同じ制約を課す（R02-F01）。要素型が trivially copyable でないと、
   // 共有メモリへのバイトコピーで意味が壊れる。
   SHM_ASSERT_SHAREABLE(T, "shm::Subscriber<std::vector<T>>");
+  SHM_ASSERT_FORMAT_DECLARED(T, "shm::Subscriber<std::vector<T>>");
 
 public:
   Subscriber(std::string name = "");

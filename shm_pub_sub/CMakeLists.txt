@@ -58,6 +58,9 @@ set_target_properties(shm_pub_sub PROPERTIES
 if(SHM_STRICT_TYPE_CHECK)
     target_compile_definitions(shm_pub_sub PUBLIC SHM_STRICT_TYPE_CHECK)
 endif()
+if(SHM_REQUIRE_LAYOUT)
+    target_compile_definitions(shm_pub_sub PUBLIC SHM_REQUIRE_LAYOUT)
+endif()
 
 set_target_properties(shm_pub_sub PROPERTIES
 	PUBLIC_HEADER "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/shm_pub_sub.hpp>"
@@ -301,6 +304,18 @@ if(BUILD_TESTS)
     gtest_add_tests(TARGET shm_pub_sub_r04_test TEST_LIST shm_pub_sub_r04_test_cases)
   # ハングを FAIL にする（ctest の --timeout に依存させない）
   set_tests_properties(${shm_pub_sub_r04_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT} RESOURCE_LOCK dev_shm)
+
+    # ペイロード書式の宣言（R04 / 制約 A）の回帰テスト
+    add_executable(shm_pub_sub_layout_hash_test
+        test/shm_pub_sub_layout_hash_test.cpp
+      )
+    target_link_libraries(shm_pub_sub_layout_hash_test
+        PRIVATE
+        shm_pub_sub
+        ${GTEST_LDFLAGS}
+      )
+    gtest_add_tests(TARGET shm_pub_sub_layout_hash_test TEST_LIST shm_pub_sub_layout_hash_test_cases)
+  set_tests_properties(${shm_pub_sub_layout_hash_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT} RESOURCE_LOCK dev_shm)
 
     # 時刻指定読み出し（タイムマシン）の回帰テスト
     add_executable(shm_pub_sub_timemachine_test

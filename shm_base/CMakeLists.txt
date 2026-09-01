@@ -53,6 +53,9 @@ set_target_properties(shm_base PROPERTIES
 if(SHM_STRICT_TYPE_CHECK)
     target_compile_definitions(shm_base PUBLIC SHM_STRICT_TYPE_CHECK)
 endif()
+if(SHM_REQUIRE_LAYOUT)
+    target_compile_definitions(shm_base PUBLIC SHM_REQUIRE_LAYOUT)
+endif()
 
 set_target_properties(shm_base PROPERTIES
 	PUBLIC_HEADER include/shm_base.hpp

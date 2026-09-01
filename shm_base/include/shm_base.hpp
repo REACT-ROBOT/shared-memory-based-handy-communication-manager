@@ -453,31 +453,76 @@ type_schema_id()
 }
 
 /*!
- * \~japanese-en トピックのペイロード書式の版を、利用者が明示するためのトレイト．
+ * \~japanese-en トピックのペイロード書式を識別するトレイト．
  *
- * \~japanese-en type_schema_id<T>() は `__PRETTY_FUNCTION__` の hash なので、
- *               **同じツールチェインでしか一致しない**。コンパイラや標準ライブラリ、
- *               言語バインディングが違えば同じ型でも別の値になり得るし、逆に
- *               「型名は同じだがメンバを足した」という**互換性を壊す変更**は
- *               検出できない（R03-F05）。
+ * \~japanese-en 直接特殊化せず、`SHM_DECLARE_LAYOUT()` か
+ *               `SHM_DECLARE_SERIALIZED_FORMAT()` を使って宣言すること。
  *
- * \~japanese-en 別ビルドのプロセスと通信する構造体には、この版を明示すること。
- *               版は両者が 0 以外を指定したときだけ照合され、食い違えば接続を拒む。
- *               メンバの追加・削除・並べ替え・型変更のたびに増やす。
+ * \~japanese-en `type_schema_id<T>()`（`__PRETTY_FUNCTION__` の hash）は
+ *               **同じツールチェインでしか一致せず**、しかも「型名は同じだが
+ *               メンバを並べ替えた」という互換性を壊す変更を検出できない。
+ *               `element_size`（`sizeof`）の照合も、**同サイズの並べ替えは通してしまう**。
+ *               その穴を埋めるのがこの値である。
  *
- * @code
- * struct ScanHeader { uint32_t count; float angle_min; };
- * namespace irlab { namespace shm {
- * template <> struct shm_schema<ScanHeader> { static constexpr uint32_t version = 3; };
- * }}
- * @endcode
+ * \~japanese-en `declared` が false のまま publish / subscribe しようとすると、
+ *               `SHM_REQUIRE_LAYOUT` が有効ならコンパイルエラーになる。
  */
 template <typename T>
 struct shm_schema
 {
-  //! 0 は「未指定」。その場合は type_schema_id<T>() だけで照合する。
+  //! 利用者が書式を宣言したか。宣言マクロだけが true にする。
+  static constexpr bool declared = false;
+  //! 書式の識別子。0 は「未宣言」。
   static constexpr uint32_t version = 0;
 };
+
+//! @brief レイアウト記述の 1 要素（メンバの位置と大きさ）
+struct LayoutField
+{
+  uint64_t offset;
+  uint64_t size;
+};
+
+//! @brief FNV-1a で 64bit 値を 1 つ畳み込む
+constexpr uint64_t
+fold_layout_word(uint64_t hash, uint64_t value)
+{
+  for (int i = 0; i < 8; ++i)
+  {
+    hash ^= (value >> (i * 8)) & 0xFFULL;
+    hash *= 1099511628211ULL;
+  }
+  return hash;
+}
+
+/*!
+ * \~japanese-en 型のメモリレイアウトからハッシュを作る．
+ *
+ * \~japanese-en `sizeof(T)` / `alignof(T)` と、各メンバの `offsetof` / `sizeof` を畳み込む。
+ *               メンバの並べ替え・型入れ替え・追加・削除・アライメント変更が
+ *               すべてここに出るので、**人間が版番号を維持する必要がない**。
+ *
+ * \~japanese-en 捕まえられないのは「レイアウトが同一のまま意味だけ変えた」場合だけで
+ *               （`float range` を m から mm にした等）、そこは `revision` で明示する。
+ */
+template <size_t N>
+constexpr uint32_t
+layout_hash(uint64_t type_size, uint64_t type_align, uint32_t revision, const LayoutField (&fields)[N])
+{
+  uint64_t hash = 1469598103934665603ULL;  // FNV-1a offset basis
+  hash          = fold_layout_word(hash, type_size);
+  hash          = fold_layout_word(hash, type_align);
+  hash          = fold_layout_word(hash, revision);
+  hash          = fold_layout_word(hash, N);
+  for (size_t i = 0; i < N; ++i)
+  {
+    hash = fold_layout_word(hash, fields[i].offset);
+    hash = fold_layout_word(hash, fields[i].size);
+  }
+  const uint32_t folded = static_cast<uint32_t>(hash ^ (hash >> 32));
+  // 0 は「未宣言」を表すので避ける
+  return folded == 0 ? 1u : folded;
+}
 
 //! @brief shm_schema<T>::version を取り出す
 template <typename T>
@@ -486,6 +531,141 @@ schema_version_of()
 {
   return shm_schema<T>::version;
 }
+
+//! @brief 利用者が書式を宣言したか
+template <typename T>
+constexpr bool
+schema_is_declared()
+{
+  return shm_schema<T>::declared;
+}
+
+}  // namespace shm
+
+}  // namespace irlab
+
+// ============================================================================
+// ペイロード書式の宣言マクロ
+//
+// 共有メモリに載せる型は、次のどちらかで書式を宣言する。
+//
+//   SHM_DECLARE_LAYOUT(T, member...)          POD ペイロード（ワイヤ形式＝メモリレイアウト）
+//   SHM_DECLARE_SERIALIZED_FORMAT(T, rev)     シリアライズ型（ワイヤ形式は serialize() が決める）
+//
+// どちらも名前空間の外（グローバルスコープ）で書くこと。
+// ============================================================================
+
+//! 1 メンバぶんの記述
+#define SHM_LAYOUT_FIELD(T, m) ::irlab::shm::LayoutField{ offsetof(T, m), sizeof(T::m) }
+
+// メンバ列を LayoutField の並びへ展開する（最大 32 個）
+#define SHM_LF_1(T, a) SHM_LAYOUT_FIELD(T, a)
+#define SHM_LF_2(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_1(T, __VA_ARGS__))
+#define SHM_LF_3(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_2(T, __VA_ARGS__))
+#define SHM_LF_4(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_3(T, __VA_ARGS__))
+#define SHM_LF_5(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_4(T, __VA_ARGS__))
+#define SHM_LF_6(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_5(T, __VA_ARGS__))
+#define SHM_LF_7(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_6(T, __VA_ARGS__))
+#define SHM_LF_8(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_7(T, __VA_ARGS__))
+#define SHM_LF_9(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_8(T, __VA_ARGS__))
+#define SHM_LF_10(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_9(T, __VA_ARGS__))
+#define SHM_LF_11(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_10(T, __VA_ARGS__))
+#define SHM_LF_12(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_11(T, __VA_ARGS__))
+#define SHM_LF_13(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_12(T, __VA_ARGS__))
+#define SHM_LF_14(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_13(T, __VA_ARGS__))
+#define SHM_LF_15(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_14(T, __VA_ARGS__))
+#define SHM_LF_16(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_15(T, __VA_ARGS__))
+#define SHM_LF_17(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_16(T, __VA_ARGS__))
+#define SHM_LF_18(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_17(T, __VA_ARGS__))
+#define SHM_LF_19(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_18(T, __VA_ARGS__))
+#define SHM_LF_20(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_19(T, __VA_ARGS__))
+#define SHM_LF_21(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_20(T, __VA_ARGS__))
+#define SHM_LF_22(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_21(T, __VA_ARGS__))
+#define SHM_LF_23(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_22(T, __VA_ARGS__))
+#define SHM_LF_24(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_23(T, __VA_ARGS__))
+#define SHM_LF_25(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_24(T, __VA_ARGS__))
+#define SHM_LF_26(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_25(T, __VA_ARGS__))
+#define SHM_LF_27(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_26(T, __VA_ARGS__))
+#define SHM_LF_28(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_27(T, __VA_ARGS__))
+#define SHM_LF_29(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_28(T, __VA_ARGS__))
+#define SHM_LF_30(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_29(T, __VA_ARGS__))
+#define SHM_LF_31(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_30(T, __VA_ARGS__))
+#define SHM_LF_32(T, a, ...) SHM_LAYOUT_FIELD(T, a), SHM_LF_EXPAND(SHM_LF_31(T, __VA_ARGS__))
+
+#define SHM_LF_EXPAND(x) x
+#define SHM_LF_PICK(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, _17, _18, _19, _20, _21, _22, _23, _24, _25, _26, _27, _28, _29, _30, _31, _32, NAME, ...) NAME
+#define SHM_LF_LIST(T, ...)                                                                                            \
+  SHM_LF_EXPAND(SHM_LF_PICK(__VA_ARGS__, SHM_LF_32, SHM_LF_31, SHM_LF_30, SHM_LF_29, SHM_LF_28, SHM_LF_27, SHM_LF_26, SHM_LF_25, SHM_LF_24, SHM_LF_23, SHM_LF_22, SHM_LF_21, SHM_LF_20, SHM_LF_19, SHM_LF_18, SHM_LF_17, SHM_LF_16, SHM_LF_15, SHM_LF_14, SHM_LF_13, SHM_LF_12, SHM_LF_11, SHM_LF_10, SHM_LF_9, SHM_LF_8, SHM_LF_7, SHM_LF_6, SHM_LF_5, SHM_LF_4, SHM_LF_3, SHM_LF_2, SHM_LF_1)(T, __VA_ARGS__))
+
+/*!
+ * \~japanese-en POD ペイロードの書式を、メンバの並びから自動で宣言する．
+ *
+ * \~japanese-en 版番号は書かない。メンバを並べるだけで、並べ替え・型入れ替え・
+ *               追加・削除・アライメント変更がハッシュに出る。
+ *
+ * @code
+ * struct LidarScan { uint32_t count; float ranges[1081]; };
+ * SHM_DECLARE_LAYOUT(LidarScan, count, ranges);
+ * @endcode
+ */
+#define SHM_DECLARE_LAYOUT(T, ...) SHM_DECLARE_LAYOUT_REV(T, 0, __VA_ARGS__)
+
+/*!
+ * \~japanese-en レイアウトが同一のまま**意味だけ**変えたときに版を上げるための形．
+ *
+ * \~japanese-en 例: `float range` の単位を m から mm にした。
+ *               メンバの型も並びも変わらないので自動ハッシュでは検出できない。
+ *               この場合だけ revision を増やす。
+ */
+#define SHM_DECLARE_LAYOUT_REV(T, revision, ...)                                                                       \
+  namespace irlab                                                                                                      \
+  {                                                                                                                    \
+  namespace shm                                                                                                        \
+  {                                                                                                                    \
+  template <>                                                                                                          \
+  struct shm_schema<T>                                                                                                 \
+  {                                                                                                                    \
+    static constexpr bool     declared = true;                                                                          \
+    static constexpr uint32_t version =                                                                                 \
+        ::irlab::shm::layout_hash(sizeof(T), alignof(T), static_cast<uint32_t>(revision),                               \
+                                  { SHM_LF_LIST(T, __VA_ARGS__) });                                                     \
+  };                                                                                                                   \
+  }                                                                                                                    \
+  }                                                                                                                    \
+  static_assert(std::is_standard_layout<T>::value,                                                                      \
+                "SHM_DECLARE_LAYOUT: offsetof() requires a standard-layout type")
+
+/*!
+ * \~japanese-en シリアライズ型の書式を宣言する．
+ *
+ * \~japanese-en cv::Mat / Lidar2dScanData / PointCloud2DScanData のように、
+ *               ワイヤ形式が**構造体のメモリレイアウトではなく `serialize()` の実装**で
+ *               決まる型に使う。レイアウトからは導出できないので、
+ *               `serialize()` / `deserialize()` を書き換えたときに revision を増やす。
+ */
+#define SHM_DECLARE_SERIALIZED_FORMAT(T, revision)                                                                     \
+  namespace irlab                                                                                                      \
+  {                                                                                                                    \
+  namespace shm                                                                                                        \
+  {                                                                                                                    \
+  template <>                                                                                                          \
+  struct shm_schema<T>                                                                                                 \
+  {                                                                                                                    \
+    static constexpr bool     declared = true;                                                                          \
+    static constexpr uint32_t version  = static_cast<uint32_t>(revision);                                               \
+    static_assert((revision) != 0, "SHM_DECLARE_SERIALIZED_FORMAT: revision must not be 0");                             \
+  };                                                                                                                   \
+  }                                                                                                                    \
+  }                                                                                                                    \
+  struct shm_declare_serialized_format_needs_semicolon_##__LINE__
+
+namespace irlab
+{
+
+namespace shm
+{
+
+
 
 //!          レイアウトを読む前にこのヘッダだけで妥当性を判定できる。
 struct ShmHeader

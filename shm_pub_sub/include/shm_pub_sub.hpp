@@ -79,6 +79,27 @@ namespace shm
 #define SHM_ASSERT_SHAREABLE(T, who)
 #endif
 
+// ペイロードの書式が宣言されていることを要求する（既定 OFF）。
+//
+// 宣言があると、`element_size`（sizeof）が同じままメンバを並べ替えただけの
+// 変更も検出できる。再デプロイ後に古いプロセスが生き残っている場合や、
+// 古いセグメントが残っている場合に効く。
+//
+// 既定 OFF なのは移行のためである。workspace には 90 種類以上のペイロード型が
+// あり、一斉に必須化すると複数リポジトリのビルドが同時に止まる。
+// パッケージ単位で ON にして順に移行し、全部済んだら既定を ON にする。
+#ifdef SHM_REQUIRE_LAYOUT
+#define SHM_ASSERT_FORMAT_DECLARED(T, who)                                                                             \
+  static_assert(::irlab::shm::shm_schema<T>::declared || std::is_arithmetic<T>::value || std::is_enum<T>::value,        \
+                who " : this payload type has no format declaration. Declare it so that a stale process or a "          \
+                    "leftover segment with a different member order is rejected instead of being read as if it "        \
+                    "matched:\n"                                                                                        \
+                    "    SHM_DECLARE_LAYOUT(YourType, member1, member2, ...);            // POD payload\n"               \
+                    "    SHM_DECLARE_SERIALIZED_FORMAT(YourType, 1);                     // serialize() defines it")
+#else
+#define SHM_ASSERT_FORMAT_DECLARED(T, who)
+#endif
+
 // ****************************************************************************
 //! @class Publisher
 //! @brief   \~english     Class representing a publisher that outputs topics to shared memory
@@ -100,6 +121,7 @@ template <typename T>
 class Publisher
 {
   SHM_ASSERT_SHAREABLE(T, "shm::Publisher");
+  SHM_ASSERT_FORMAT_DECLARED(T, "shm::Publisher");
 
 public:
   Publisher(std::string name = "", int buffer_num = 3, PERM perm = DEFAULT_PERM);
@@ -157,6 +179,7 @@ template <typename T>
 class Subscriber
 {
   SHM_ASSERT_SHAREABLE(T, "shm::Subscriber");
+  SHM_ASSERT_FORMAT_DECLARED(T, "shm::Subscriber");
 
 public:
   Subscriber(std::string name = "");
