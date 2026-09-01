@@ -159,7 +159,16 @@ ShmTopic::ShmTopic(std::string name, PERM perm, bool create)
   (void)create;
 }
 
-ShmTopic::~ShmTopic() = default;
+ShmTopic::~ShmTopic()
+{
+  // マッピングを手放す前にスロットの robust mutex を解放する。
+  // 握ったまま munmap すると、スレッドの robust list が解放済み領域を指し、
+  // **後続の無関係な pthread_mutex_trylock が SIGSEGV する**（R04）。
+  if (ring_ != nullptr)
+  {
+    ring_->releaseOwnedSlots();
+  }
+}
 
 //! @brief 容量を増やす際の刻み
 //! @details 要求のたびにぴったり作り直すと、長さが 1 要素ずつ揺れるだけで
@@ -222,6 +231,12 @@ ShmTopic::openRoot(bool create, size_t initial_capacity, int buf_num, size_t pay
   //
   // current_tag_ を 0 にしておけば、follow()/ensureCapacity() は必ず
   // attachGeneration() からやり直すので、sequence_source も張り直される。
+  // robust mutex を握ったまま munmap すると後続の trylock が落ちるので、
+  // マッピングを手放す前に必ず解放する（R04）。
+  if (ring_ != nullptr)
+  {
+    ring_->releaseOwnedSlots();
+  }
   ring_.reset();
   data_.reset();
   root_ring_.reset();
@@ -332,6 +347,12 @@ ShmTopic::attachGeneration(uint64_t tag, const RingBuffer::TopicContract *expect
       rb.setSequenceSource(root_ring_->sequenceCounter());
     }
   };
+
+  // 差し替える前に、今の ring_ が握っているスロットを解放する（R04）
+  if (ring_ != nullptr)
+  {
+    ring_->releaseOwnedSlots();
+  }
 
   if (generation <= 1)
   {
@@ -495,6 +516,8 @@ ShmTopic::createNextGeneration(uint64_t from_tag, size_t capacity, int buf_num, 
     {
       migrated_up_to = migrateHistory(*ring_, initializer, 0);
     }
+    // probe を切る前に、initializer が握ったままのスロットを解放する（R04）
+    initializer.releaseOwnedSlots();
   }
   catch (const std::exception &e)
   {
@@ -542,6 +565,10 @@ ShmTopic::createNextGeneration(uint64_t from_tag, size_t capacity, int buf_num, 
       }
       migrated_up_to = drained;
     }
+  }
+  if (old_ring != nullptr)
+  {
+    old_ring->releaseOwnedSlots();
   }
   old_ring.reset();
   old_segment.reset();

@@ -706,6 +706,17 @@ public:
   void commitBuffer(int buffer_num, size_t payload_size, uint64_t capture_monotonic_us = 0);
   //! @brief 書かずにスロットを手放す
   void releaseBuffer(int buffer_num);
+
+  /*!
+   * \~japanese-en このインスタンスが確保したままのスロットを全て解放する．
+   *
+   * \~japanese-en robust mutex を握ったまま共有メモリを munmap すると、
+   *               スレッドの robust list が解放済み領域を指したままになり、
+   *               **後続の無関係な pthread_mutex_trylock が SIGSEGV する**。
+   *               マッピングを手放す前に必ず呼ぶこと（R04）。
+   *               デストラクタからは呼べない（破棄順序が保証されないため）。
+   */
+  void releaseOwnedSlots();
   /*!
    * \~japanese-en 別のリングバッファから取り出したサンプルを、素性を保ったまま取り込む．
    *               レイアウト世代を切り替えるときに履歴を引き継ぐために使う．

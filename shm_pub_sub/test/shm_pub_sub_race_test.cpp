@@ -237,6 +237,14 @@ TEST_F(SHMPubSubRaceTest, PublishMustNotWriteToUnallocatedBuffer) {
     EXPECT_NE(m.words[0], 0xCAFEu)
         << "確保に失敗したはずの publish の内容が購読できてしまった";
   }
+
+
+  // 確保したスロットは、**共有メモリを手放す前に**必ず解放する。
+  // robust mutex を握ったまま munmap すると、スレッドの robust list が
+  // 解放済み領域を指したままになり、**後続の無関係なテストの
+  // pthread_mutex_trylock が SIGSEGV する**（R04 で実際に踏んだ）。
+  rb.releaseOwnedSlots();
+
 }
 
 // -----------------------------------------------------------------------------

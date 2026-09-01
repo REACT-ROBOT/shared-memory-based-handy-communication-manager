@@ -543,6 +543,45 @@ RingBuffer::RingBuffer(unsigned char *first_ptr, size_t size, int buffer_num, si
 
 RingBuffer::~RingBuffer()
 {
+  // ここで releaseOwnedSlots() を呼んではならない。
+  // RingBuffer より先に共有メモリのマッピングが消えている場合があり
+  //（破棄順序は利用者側のスコープ次第）、デストラクタから共有メモリへ
+  // 書きに行くと SIGSEGV する。解放は「マッピングがまだ生きていると
+  // 呼び出し側が知っている場所」で明示的に行うこと。
+}
+
+//! @brief このインスタンスが確保したまま手放していないスロットを解放する
+//! @details 放置すると 2 つの実害がある（R04）。
+//!   1. スロットが永久に「書き込み中」のまま残り、リングが実質的に縮む。
+//!      robust mutex はプロセスが死んだときしか回収されないので、
+//!      同じプロセス内では二度と使えなくなる。
+//!   2. **より深刻**: PTHREAD_MUTEX_ROBUST の mutex はロック中、スレッドの
+//!      robust list（カーネルに登録された連結リスト）に繋がれる。そのリストの
+//!      ノードは mutex 自身、つまり共有メモリ上にある。解放しないまま共有メモリを
+//!      munmap すると、リストが解放済み領域を指したままになり、**後続の無関係な
+//!      pthread_mutex_trylock がそこを書きに行って SIGSEGV する**。
+//!      「別のトピックの publish が、前に確保しっぱなしにしたロックのせいで落ちる」
+//!      という、原因の分からないクラッシュになる。
+//!
+//! **必ず共有メモリのマッピングが生きているうちに呼ぶこと。**
+//! 中身は書き込み途中なので、発行番号を 0 にして読み手から見えなくする。
+void
+RingBuffer::releaseOwnedSlots()
+{
+  if (owned_slots == nullptr || slot_base == nullptr)
+  {
+    return;
+  }
+  for (size_t i = 0; i < expected_buf_num; ++i)
+  {
+    const int index = static_cast<int>(i);
+    if (!ownsSlot(index))
+    {
+      continue;
+    }
+    slot(index)->sequence.store(0, std::memory_order_release);
+    releaseBuffer(index);
+  }
 }
 
 //! @brief ヘッダの値からポインタを組み立てる
