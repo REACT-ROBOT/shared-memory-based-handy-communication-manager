@@ -177,12 +177,10 @@ classDiagram
     
     class RingBuffer {
         -unsigned char* memory_ptr
-        -pthread_mutex_t* mutex
-        -pthread_cond_t* condition
-        -size_t* element_size
-        -size_t* buf_num
-        -atomic_uint64_t* timestamp_list
+        -ShmHeader* header
+        -SlotRecord* slot_base
         -unsigned char* data_list
+        -atomic_uint64_t* sequence_source
         -uint64_t timestamp_us
         -uint64_t data_expiry_time_us
         +RingBuffer(unsigned char* first_ptr, size_t size, int buffer_num)
@@ -240,40 +238,27 @@ classDiagram
 @htmlonly
 <div class="mermaid">
 graph TB
-    subgraph "Shared Memory Segment"
-        subgraph "Metadata Area"
-            MUTEX[pthread_mutex_t]
-            COND[pthread_cond_t]
-            ESIZE[element_size]
-            BUFNUM[buffer_num]
+    subgraph "root segment /shm_&lt;topic&gt; (generation 1, also the directory)"
+        HDR["ShmHeader (192 B)<br/>magic / abi_major / total_size<br/>element_capacity / buf_num / payload_alignment<br/>slot_offset / slot_size / data_offset<br/>generation / sequence / boot_id_hash<br/><b>latest_generation</b> (16-bit generation + 48-bit nonce)<br/>element_size / schema_id / payload_kind<br/>schema_version / segment_nonce"]
+        subgraph "SlotRecord[] (128 B each, cache-line aligned)"
+            SR0["sequence (atomic)<br/>payload_size (atomic)<br/>capture_monotonic_us (atomic)<br/>capture_realtime_us (atomic)<br/>owner (robust mutex)"]
+            SRN["… buf_num entries"]
         end
-        
-        subgraph "Timestamp Area"
-            TS0["timestamp[0]"]
-            TS1["timestamp[1]"]
-            TS2["timestamp[2]"]
-            TSN["timestamp[n-1]"]
-        end
-        
-        subgraph "Data Area"
-            DATA0["data_buffer[0]"]
-            DATA1["data_buffer[1]"]
-            DATA2["data_buffer[2]"]
-            DATAN["data_buffer[n-1]"]
+        subgraph "payload area (payload_alignment)"
+            D0["slot 0"]
+            DN["… buf_num entries"]
         end
     end
-    
-    MUTEX --> COND
-    COND --> ESIZE
-    ESIZE --> BUFNUM
-    BUFNUM --> TS0
-    TS0 --> TS1
-    TS1 --> TS2
-    TS2 --> TSN
-    TSN --> DATA0
-    DATA0 --> DATA1
-    DATA1 --> DATA2
-    DATA2 --> DATAN
+
+    subgraph "generation segment /shm_&lt;topic&gt;#&lt;gen&gt;-&lt;nonce&gt;"
+        G["Same structure. A layout change never rebuilds the<br/>live segment; it <b>creates a new generation</b>"]
+    end
+
+    HDR --> SR0
+    SR0 --> SRN
+    SRN --> D0
+    D0 --> DN
+    HDR -.->|pointed to by latest_generation| G
 </div>
 <script type="module">
   import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
@@ -377,7 +362,7 @@ sequenceDiagram
     end
     
     Sub->>+RB: waitFor(timeout_usec)
-    Note over RB: Wait with pthread_cond_timedwait
+    Note over RB: Poll the sequence number at a short interval (no condition variable)
     
     alt Signal received before timeout
         RB-->>-Sub: true
@@ -397,84 +382,139 @@ sequenceDiagram
 
 ## Ring Buffer Algorithm
 
-### Buffer Selection Algorithm
+### Buffer Selection (writer)
 
-@htmlonly
-<div class="mermaid">
-flowchart TD
-    Start([Start]) --> GetOldest[Identify buffer with oldest timestamp]
-    GetOldest --> TryAlloc{Try buffer allocation}
-    TryAlloc -->|Success| WriteData[Write data]
-    TryAlloc -->|Failure| CheckRetry{Retry count < 10?}
-    CheckRetry -->|Yes| Wait[Wait 1ms]
-    Wait --> GetOldest
-    CheckRetry -->|No| Error[Error: Buffer allocation failed]
-    WriteData --> UpdateTime[Update timestamp]
-    UpdateTime --> Signal[Send signal via condition variable]
-    Signal --> End([End])
-    Error --> End
-</div>
-<script type="module">
-  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
-  mermaid.initialize({ startOnLoad: true });
-</script>
-@endhtmlonly
+The point is that the writer **tries every slot, oldest first**. Aiming at a single
+slot means a publish fails while a reader sits on that one slot, even when others are free.
 
-### Data Reading Algorithm
+1. `ensureCapacity()` — attach to a generation that satisfies the request; create a
+   new generation if the current one is too small.
+2. Remember the generation tag.
+3. Walk the slots in increasing sequence order and `trylock` each **without waiting**.
+4. If every slot is busy, wait on the oldest one for at most `SLOT_LOCK_TIMEOUT_US` (2 ms).
+5. `commitBuffer()` — take a sequence number from the **root** counter and release the slot.
+6. If the generation tag changed while committing, publish again into the new
+   generation, **carrying the original capture time over**.
 
-@htmlonly
-<div class="mermaid">
-flowchart TD
-    Start([Start]) --> CheckConn{Shared memory connected?}
-    CheckConn -->|No| Reconnect[Try reconnection]
-    Reconnect --> ConnSuccess{Connection success?}
-    ConnSuccess -->|No| ReturnFail[Return failure]
-    ConnSuccess -->|Yes| GetNewest
-    CheckConn -->|Yes| GetNewest[Identify buffer with newest timestamp]
-    GetNewest --> ValidBuffer{Valid buffer?}
-    ValidBuffer -->|No| ReturnOld[Return previous value and failure flag]
-    ValidBuffer -->|Yes| CheckExpiry{Data within expiry time?}
-    CheckExpiry -->|No| ReturnOld
-    CheckExpiry -->|Yes| ReadData[Read data]
-    ReadData --> ReturnSuccess[Return data and success flag]
-    ReturnFail --> End([End])
-    ReturnOld --> End
-    ReturnSuccess --> End
-</div>
-<script type="module">
-  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
-  mermaid.initialize({ startOnLoad: true });
-</script>
-@endhtmlonly
+### Data Reading (reader)
+
+1. `follow()` — move to the generation that is currently live. If the payload format
+   disagrees, fail here **without touching the payload**.
+2. Pick the slot with the largest sequence number.
+3. If no slot is valid, distinguish `Empty` (nothing has ever been published, i.e. the
+   topic-wide sequence counter is 0) from `Contended` (everything happened to be busy;
+   **retrying is worthwhile**).
+4. `readSample()` — lock the slot and read the payload and its metadata as a single
+   snapshot, then unlock.
+5. On failure retry up to 5 times, then return the previous value with a false flag.
 
 ## Synchronization Mechanism
 
-### Mutex and Condition Variable
+### A robust mutex per slot; no condition variable
 
-@htmlonly
-<div class="mermaid">
-stateDiagram-v2
-    [*] --> Unlocked : Initial state
-    
-    state Publisher {
-        Unlocked --> Locked : pthread_mutex_lock
-        Locked --> Writing : Buffer allocation success
-        Writing --> Unlocked : pthread_mutex_unlock + pthread_cond_signal
-        Locked --> Unlocked : Buffer allocation failure + pthread_mutex_unlock
-    }
-    
-    state Subscriber {
-        Unlocked --> Waiting : waitFor() called
-        Waiting --> Unlocked : Timeout
-        Waiting --> Processing : Signal received
-        Processing --> Unlocked : Data reading complete
-    }
-</div>
-<script type="module">
-  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
-  mermaid.initialize({ startOnLoad: true });
-</script>
-@endhtmlonly
+The original format guarded the whole segment with one mutex and signalled completion
+through a condition variable. Neither is used any more.
+
+- **A segment-wide mutex serialises publishers.** Each slot now owns its mutex, so a
+  writer only has to take one free slot.
+- **A condition variable cannot be recovered when its owner dies.**
+  `RingBuffer::signal()` is now an empty function and `waitFor()` polls the sequence
+  number at a short interval, so a subscriber never hangs because a publisher died.
+
+Besides `PTHREAD_PROCESS_SHARED`, the slot mutex sets:
+
+| Attribute | Why |
+|---|---|
+| `PTHREAD_MUTEX_ROBUST` | the kernel reports an owner's death as `EOWNERDEAD`, so liveness is **never guessed from a timestamp** |
+| `PTHREAD_PRIO_INHERIT` | avoids priority inversion when a SCHED_FIFO control loop waits for a slot held by a lower-priority process |
+
+**Readers take this mutex too.** Comparing the sequence number before and after the copy
+detects a torn sample, but the writer's `memcpy` and the reader's `memcpy` could still
+touch the same ordinary memory concurrently, which is a data race — undefined behaviour —
+under the C++ memory model. The critical section is one `memcpy` long.
+
+# 🧬 Layout Generations
+
+A topic whose payload length varies (a vector, an image) needs a different capacity over
+time. The live segment is **never rebuilt**; a new generation is created as a separate
+segment instead, so a participant still holding the old one keeps a valid mapping.
+
+```
+generation 1      : /shm_<topic>                   root; both data and directory
+generation N >= 2 : /shm_<topic>#<N>-<nonce hex12>
+```
+
+The nonce in the name matters. With a fixed `#N`, the remains of a process that died
+while creating the segment occupy the name, and `O_EXCL` fails forever after. Reclaiming
+it "after a timeout" would kill a creator that is merely slow or stopped. A nonce removes
+the contest for the name, so liveness never has to be guessed from elapsed time.
+
+The live generation is published through the root header's `latest_generation`, which
+packs the **generation (high 16 bits) and the nonce (low 48 bits) into one word** so that
+a single CAS makes both visible at once.
+
+Only segments that are provably not live are removed: an older generation, or the same
+generation with a different nonce (the loser of a cutover race). A **higher** generation
+number is never touched — it may be under construction.
+
+# 🧾 Declaring the Payload Format
+
+Comparing `element_size` lets a reordering of members through, because `sizeof` does not
+change. Declare the layout so that such a change is caught:
+
+```cpp
+struct LidarScan { uint32_t count; float ranges[1081]; };
+SHM_DECLARE_LAYOUT(LidarScan, count, ranges);
+```
+
+The hash is built at compile time from `sizeof(T)`, `alignof(T)` and every member's
+`offsetof`/`sizeof`, so **no version number has to be maintained by hand**. Omitting a
+member, or listing them out of declaration order, is a compile error.
+
+| Case | Macro |
+|---|---|
+| POD payload | `SHM_DECLARE_LAYOUT(T, member...)` |
+| Same layout, different meaning (a unit change) | `SHM_DECLARE_LAYOUT_REV(T, revision, member...)` |
+| Wire format defined by `serialize()` | `SHM_DECLARE_SERIALIZED_FORMAT(T, revision)` |
+
+Build with `-DSHM_REQUIRE_LAYOUT=ON` to make an undeclared payload type a compile error
+(off by default, to allow an incremental migration).
+
+# ⏱ Reading by Time (the time machine)
+
+Built for "fetch the scan closest in time to this odometry update".
+
+| Type | Meaning |
+|---|---|
+| `TimeQuery{time_us, policy}` | the time to search for, and the policy |
+| `SearchPolicy` | `Nearest` / `AtOrBefore` / `AtOrAfter` |
+| `SearchStatus` | `Success` / `NotConnected` / `Empty` / `TooOld` / `TooNew` / `Contended` |
+| `SampleInfo` | sequence number, capture times, payload size |
+| `RetentionWindow` | the range of history currently held |
+
+**Only `CLOCK_MONOTONIC_RAW` is used for searching.** The wall clock is recorded but never
+searched, because NTP steps make it unusable as a reference.
+
+History depth is `buf_num ÷ publish rate`. A 10 Hz sensor with `buf_num = 3` holds only
+300 ms. `getRetentionWindow()` and `shm_tool doctor` report what is actually held.
+
+# 🛠 Operations
+
+| Command | Purpose |
+|---|---|
+| `shm_tool list` | list `/dev/shm` |
+| `shm_tool remove <topic>` | remove a topic including every generation |
+| `shm_tool doctor [topic]` | read the headers and report whether the segments are usable |
+
+`doctor` marks anything that needs action with ★ and exits 1: an uninitialised segment,
+a foreign format, an ABI mismatch, remains from before the last reboot, a name whose
+nonce disagrees with the header, and stale generations. "Format not declared" is only a
+note, and leaves the exit code at 0.
+
+When the shared-memory format changes incompatibly, **run `shm_tool remove` before
+swapping binaries and restart every process on the topic together**. A leftover segment
+makes the connection fail immediately with the reason and the recovery command — it never
+stalls.
 
 # ⚡ Performance Characteristics
 
@@ -485,8 +525,8 @@ Shared memory segment size is calculated by the following formula:
 ```
 total_size = metadata_size + timestamp_array_size + data_array_size
 
-metadata_size = sizeof(pthread_mutex_t) + sizeof(pthread_cond_t) + 
-                sizeof(size_t) + sizeof(size_t)
+metadata_size = sizeof(ShmHeader)               // fixed 192 B
+              + sizeof(SlotRecord) * buffer_num  // 128 B per slot
 
 timestamp_array_size = sizeof(uint64_t) * buffer_num
 
@@ -544,7 +584,7 @@ graph TB
     end
     
     subgraph "Default Settings"
-        Default["DEFAULT_PERM = 0666<br/>(All users read/write)"]
+        Default["DEFAULT_PERM = 0660<br/>(owner and group only)<br/>pass PERM_ALL = 0666 for the old behaviour"]
     end
     
     Owner --> Read
@@ -566,38 +606,15 @@ graph TB
 
 ## Data Integrity
 
-@htmlonly
-<div class="mermaid">
-sequenceDiagram
-    participant P1 as Publisher 1
-    participant P2 as Publisher 2
-    participant Mutex as Mutex
-    participant Buffer as SharedBuffer
-    participant S as Subscriber
-    
-    Note over P1,S: Concurrent writes from multiple Publishers
-    
-    P1->>+Mutex: lock()
-    P2->>Mutex: lock() (blocked)
-    Mutex-->>-P1: Acquisition success
-    
-    P1->>Buffer: Write data
-    P1->>Buffer: Update timestamp
-    P1->>+Mutex: unlock() + signal()
-    Mutex-->>-P2: Acquisition success
-    
-    P2->>Buffer: Write data
-    P2->>Buffer: Update timestamp
-    P2->>Mutex: unlock() + signal()
-    
-    S->>Buffer: Read latest data
-    Note over S: Gets P2's data
-</div>
-<script type="module">
-  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
-  mermaid.initialize({ startOnLoad: true });
-</script>
-@endhtmlonly
+Concurrent publishers do not serialise, because they take different slots.
+Consistency is decided by the **sequence number, never by a timestamp**. Sequence
+numbers come from a single atomic in the root segment via `fetch_add`, so they are
+unique across the topic and are never reused.
+
+If timestamps were used, two publishes within the same microsecond would be
+indistinguishable, and an ABA would appear once the ring wrapped and the same slot was
+re-acquired: the before/after values match while the contents are a different sample.
+A monotonically increasing, never-reused sequence number makes that impossible.
 
 # ❌ Error Handling
 

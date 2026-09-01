@@ -76,6 +76,63 @@ set(CMAKE_CXX_STANDARD 17)
 
 ## 🧠 共有メモリ通信の問題
 
+### ❌ まず `shm_tool doctor` を実行する
+
+共有メモリまわりで様子がおかしいときは、コードを読む前にこれを実行する。
+`/dev/shm` の全セグメントのヘッダを読み、そのまま使えるかを報告する。
+
+```bash
+shm_tool doctor            # 全部
+shm_tool doctor lidar_scan # トピックを絞る
+```
+
+対処が必要なものには ★ が付き、終了コードが 1 になる。
+
+| 表示 | 意味 | 対処 |
+|---|---|---|
+| ★ABI n（このビルドは m） | 古い形式のセグメントが残っている | `shm_tool remove <topic>` してから全プロセスを起動し直す |
+| ★未初期化 | 作成途中で止まった残骸 | 同上 |
+| ★再起動前に作られた残骸 | `/dev/shm` が再起動で消えなかった | 同上 |
+| ★古い世代の残骸 / 切り替え競争に負けた残骸 | 世代切替の後始末が済んでいない | 同上（放置しても動作はする） |
+| ★名前とヘッダが食い違う | 手で複製・改名した可能性 | 同上 |
+| 書式が未宣言（注記） | `SHM_DECLARE_LAYOUT` がまだ付いていない | 動作はする。付けると同サイズの並べ替えも検出できる |
+
+### ❌ 「ABI major version mismatch」で publish / subscribe が失敗する
+
+共有メモリの形式が非互換に変わったときに出る。プロセス終了では
+セグメントが消えないので、前の版のものが残っている。
+
+```
+shm::Publisher: root segment is not usable: ABI major version mismatch
+(segment 3, this build 4) [topic 'lidar_scan']. Remove the segment with
+'shm_tool remove lidar_scan' and restart every process on this topic
+```
+
+メッセージのとおり `shm_tool remove` してから、**そのトピックを使う全プロセスを
+同時に起動し直す**こと。片方だけ入れ替えると、古いプロセスが古い形式のまま
+セグメントを作り直してしまう。ロボットの再起動でも `/dev/shm` は消える。
+
+### ❌ 「the segment was created by a build that did not declare this payload's format」
+
+その型に `SHM_DECLARE_LAYOUT` を後から足したときに出る。宣言が無かった頃の
+セグメントが残っていて、レイアウトが一致しているか確かめる手段が無い状態である。
+`shm_tool remove <topic>` で一度消せばよい。
+
+### ❌ 時刻を合わせた読み出しが「データが無い」と言う / 古い値が返る
+
+保持できる履歴の長さは `buf_num ÷ 発行レート` である。10Hz のセンサを
+`buf_num = 3` で持つと **300ms 分しか残らない**ので、1Hz で動く消費者が
+1 秒前のオドメトリに合わせようとすると届かない。
+
+`shm_tool doctor` の「履歴」列に、実際に保持している時間幅が出る。
+足りなければ Publisher の `buffer_num` を増やすこと。
+
+なお `SearchPolicy::Nearest` は有効なサンプルが 1 つでもあれば必ず
+「最も近いもの」を返すので、どれだけ離れていても `TooOld` にならない。
+ずれの上限を決めたい場合は `subscribeAlignedTo()` の `max_skew_us` を指定する。
+
+
+
 ### ❌ データが受信されない（共有メモリ）
 
 **症状**: `subscribe()`で`state`が常に`false`

@@ -287,6 +287,60 @@ while (running.load()) {
 }
 ```
 
+## 🩺 Shared Memory Segments
+
+### Run `shm_tool doctor` first
+
+Before reading any code, run this. It reads the header of every segment in `/dev/shm`
+and reports whether it is usable.
+
+```bash
+shm_tool doctor            # everything
+shm_tool doctor lidar_scan # one topic
+```
+
+Anything that needs action is marked ★ and makes the exit code 1.
+
+| Report | Meaning | What to do |
+|---|---|---|
+| ★ABI n (this build is m) | a segment of an older format is still there | `shm_tool remove <topic>`, then restart every process on the topic |
+| ★uninitialised | remains of a creator that died | same |
+| ★created before the last reboot | `/dev/shm` survived a reboot | same |
+| ★stale generation | a cutover was not cleaned up | same (harmless if left) |
+| ★name and header disagree | copied or renamed by hand | same |
+| format not declared (note) | `SHM_DECLARE_LAYOUT` not added yet | works as is; adding it also catches a same-size reordering |
+
+### "ABI major version mismatch" on publish / subscribe
+
+Segments outlive the processes that made them, so one from a previous release is still
+around.
+
+```
+shm::Publisher: root segment is not usable: ABI major version mismatch
+(segment 3, this build 4) [topic 'lidar_scan']. Remove the segment with
+'shm_tool remove lidar_scan' and restart every process on this topic
+```
+
+Do exactly that, and **restart every process on that topic together**. Swapping only
+some of them lets an old process recreate the segment in the old format. A reboot also
+clears `/dev/shm`.
+
+### "the segment was created by a build that did not declare this payload's format"
+
+This appears after adding `SHM_DECLARE_LAYOUT` to a type: a segment created before the
+declaration is still there, so its layout cannot be verified. Remove it once.
+
+### A time-aligned read says there is no data, or returns something old
+
+History depth is `buf_num ÷ publish rate`. A 10 Hz sensor with `buf_num = 3` keeps only
+**300 ms**, so a consumer running at 1 Hz cannot reach an odometry sample from a second
+ago. The retention column of `shm_tool doctor` shows what is actually held; raise the
+publisher's `buffer_num` if it is too short.
+
+Note that `SearchPolicy::Nearest` always returns the closest existing sample, however far
+away it is, so it never reports `TooOld`. Pass `max_skew_us` to `subscribeAlignedTo()` to
+bound the skew.
+
 ## 🔍 Debugging Tools and Techniques
 
 ### 1. 📊 Memory Inspection

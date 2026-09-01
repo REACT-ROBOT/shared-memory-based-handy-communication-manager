@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(shm VERSION 4.0.0 LANGUAGES CXX)
+project(shm VERSION 5.0.0 LANGUAGES CXX)
 
 # ----------------------------------------------------------------------------
 # バージョン
@@ -44,6 +44,20 @@ project(shm VERSION 4.0.0 LANGUAGES CXX)
 #        **v3 以前のセグメントとは接続できない。入れ替え前に `shm_tool remove`。**
 #        既定権限を 0666 から 0660 に変更した（other を落とした）。別ユーザー間で
 #        共有する必要がある場合は同じグループにするか PERM_ALL を明示すること。
+# 5.0.0: 3 回目・4 回目のレビュー (R03/R04) の指摘に対応。**ABI を 4 に上げた**。
+#        ShmHeader が 128 から 192 バイトになり、v4 未満のセグメントとは接続できない。
+#        **入れ替え前に `shm_tool remove` で既存の /dev/shm/shm_* を消し、
+#        そのトピックを使う全プロセスを同時に入れ替えること。**
+#        残っていても壊れず、理由と復旧手順を書いた例外で即座に失敗する
+#        （`shm_tool doctor` でどのセグメントが古いか一覧できる）。
+#
+#        主な変更:
+#          - 世代セグメント名にノンスを含め、時間で他プロセスの生死を判定するのを廃止
+#          - 発行番号の採番元を root の 1 つに一元化
+#          - reader もスロットの robust mutex を取る（payload の data race を解消）
+#          - writer は空きスロットを古い順に全走査する
+#          - SHM_DECLARE_LAYOUT によるペイロード書式の宣言（`SHM_REQUIRE_LAYOUT`、既定 OFF）
+#          - `shm_tool doctor` を追加
 # ----------------------------------------------------------------------------
 set(SHM_VERSION "${PROJECT_VERSION}" CACHE INTERNAL
     "Version of shared-memory-based-handy-communication-manager in this build tree")
