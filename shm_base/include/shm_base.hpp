@@ -715,8 +715,10 @@ public:
    */
   bool adoptSample(const SampleInfo &info, const void *payload, size_t bytes);
 
-  //! @brief 発行番号カウンタの現在値
+  //! @brief 発行番号カウンタの現在値（トピック全体で一意な採番の最大値）
   uint64_t getSequenceCounter() const;
+  //! @brief 採番元（root）のカウンタの現在値。自セグメントのものではない
+  uint64_t currentSequence() const;
 
   /*!
    * \~japanese-en 発行番号の採番元を外部（root セグメント）に差し替える．
@@ -936,6 +938,13 @@ private:
   //! publish/subscribe のたびに構築すると毎回ヒープ確保が走るのでキャッシュする。
   std::unique_ptr<RingBuffer>        root_ring_;
   std::unique_ptr<SharedMemoryPosix> data_;  //!< 現世代（世代 1 のときは nullptr）
+  //! 現世代のリングバッファ。
+  //!
+  //! **不変条件（R04-F01/F22）**: ring_ は root_ のマッピングに依存する。
+  //!   - 世代 1 では ring_ 自体が root_ のマッピング上にある
+  //!   - どの世代でも ring_->sequence_source は root_ のヘッダ内を指す
+  //! したがって **root_ を差し替える／破棄する前に、必ず ring_ を先に捨てること**。
+  //! メンバの宣言順もこれに合わせてある（破棄は宣言の逆順なので ring_ が先）。
   std::unique_ptr<RingBuffer>        ring_;
   uint64_t                           current_tag_;  //!< 現在接続している世代タグ
   std::string                        last_error_;

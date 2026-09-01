@@ -1053,7 +1053,10 @@ RingBuffer::findBufferNum(const TimeQuery &query, SearchStatus *status) const
     //   - 一度も publish されていない            → Empty
     //   - 全スロットがたまたま書き込み中だった   → Contended（再試行の価値あり）
     // 面数が少ない（2 面など）リングを writer が全速で回していると後者は現実に起きる。
-    if (header->sequence.load(std::memory_order_acquire) == 0)
+    //
+    // 判定にはトピック全体の採番カウンタを使う。自セグメントの header->sequence を
+    // 見ると、世代 2 以降では常に 0 なので必ず Empty になってしまう（R04-F07）。
+    if (currentSequence() == 0)
     {
       set_status(SearchStatus::Empty);
     }
@@ -1258,7 +1261,19 @@ RingBuffer::commitBuffer(int buffer_num, size_t payload_size, uint64_t capture_m
 uint64_t
 RingBuffer::getSequenceCounter() const
 {
-  return header->sequence.load(std::memory_order_acquire);
+  return currentSequence();
+}
+
+//! @brief このトピックで今までに採番された発行番号の最大値
+//! @details 採番元は root のカウンタなので、**自セグメントの header->sequence を
+//!          見てはならない**。世代 2 以降のセグメントの header->sequence は
+//!          commit が sequence_source を使う以上、永久に 0 のままである。
+//!          これを見誤ると「一度も publish されていない」と誤判定する（R04-F07）。
+uint64_t
+RingBuffer::currentSequence() const
+{
+  const std::atomic<uint64_t> *counter = (sequence_source != nullptr) ? sequence_source : &header->sequence;
+  return counter->load(std::memory_order_acquire);
 }
 
 //! @brief 発行番号の採番元を差し替える
@@ -1290,11 +1305,18 @@ RingBuffer::readSample(int buffer_num, void *dst, size_t dst_size, SampleInfo *i
   int r = lockSlotWithin(&s->owner, SLOT_LOCK_TIMEOUT_US);
   if (r == EOWNERDEAD)
   {
-    // writer が書き込み中に死んだ。中身は壊れている前提なので無効化する。
+    // 前の所有者が死んだ。一貫性を宣言してロックを引き継ぐ。
+    //
+    // **ここでデータを捨ててはならない**（R04-F06）。R03-F04 で reader も
+    // このロックを取るようになったため、EOWNERDEAD は「writer が書き込み中に
+    // 死んだ」を意味しなくなった。単に読んでいた reader が死んだだけかもしれない。
+    // 以前はここで sequence を 0 にしていたので、subscriber ノードが落ちた瞬間に
+    // publish 済みの最新センサ値が消えていた。
+    //
+    // writer が書き込み中に死んだ場合は allocateBuffer() が既に sequence を 0 に
+    // しているので、下の `sequence == 0` 判定がそのまま拾う。
     pthread_mutex_consistent(&s->owner);
-    s->sequence.store(0, std::memory_order_release);
-    pthread_mutex_unlock(&s->owner);
-    return false;
+    r = 0;
   }
   if (r != 0)
   {

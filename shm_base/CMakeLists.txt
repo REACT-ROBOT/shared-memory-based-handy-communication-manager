@@ -94,7 +94,12 @@ if(BUILD_TESTS)
     )
   gtest_add_tests(TARGET shm_base_test TEST_LIST shm_base_test_cases)
   # ハングを FAIL にする（ctest の --timeout に依存させない）
-  set_tests_properties(${shm_base_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT})
+  # /dev/shm はプロセス横断の単一の名前空間であり、各 fixture の TearDown は
+  # 自分の担当トピックを unlink する。並列実行すると兄弟テストが使用中の
+  # セグメントを消してしまうので、共通のリソース鍵で直列化する（R04-F28）。
+  # RUN_SERIAL ではなく RESOURCE_LOCK を使うのは、競合しているのが
+  # 「CPU」ではなく「/dev/shm という名前空間」だからである。
+  set_tests_properties(${shm_base_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT} RESOURCE_LOCK dev_shm)
 endif()
 
 FIND_PACKAGE(Doxygen)

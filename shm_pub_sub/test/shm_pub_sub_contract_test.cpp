@@ -67,6 +67,11 @@ size_t countSegments(const std::string &prefix)
   return n;
 }
 
+//! 現在有効な世代番号
+//! @details latest_generation は「世代 16bit + ノンス 48bit」のパック値なので、
+//!          生の値を比較すると世代 1（= 1<<48）でも大きな数になり、
+//!          EXPECT_GT(gen, 3) のような前提が**必ず通ってしまう**（R04-F25）。
+//!          必ず unpackGeneration() を通すこと。
 uint64_t latestGeneration(const std::string &topic)
 {
   SharedMemoryPosix shm(topic, O_RDWR, DEFAULT_PERM);
@@ -74,7 +79,7 @@ uint64_t latestGeneration(const std::string &topic)
   {
     return 0;
   }
-  return reinterpret_cast<const ShmHeader *>(shm.getPtr())->latest_generation.load();
+  return unpackGeneration(reinterpret_cast<const ShmHeader *>(shm.getPtr())->latest_generation.load());
 }
 }  // namespace
 

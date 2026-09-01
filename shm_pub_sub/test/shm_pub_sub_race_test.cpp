@@ -20,6 +20,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <mutex>
 #include <thread>
 #include <vector>
 #include <csignal>
@@ -61,21 +62,42 @@ struct TornReadResult {
   uint64_t torn = 0;
 };
 
+// publisher スレッドが投げた例外は、そのままだと std::terminate になり
+// FAIL ではなくアボートとして現れる（R04-F28）。数えて本体で EXPECT に落とす。
+struct PublishFailures {
+  std::atomic<uint64_t> count{0};
+  std::string           first;
+  std::mutex            mtx;
+
+  void record(const std::exception& e) {
+    if (count.fetch_add(1) == 0) {
+      std::lock_guard<std::mutex> lock(mtx);
+      first = e.what();
+    }
+  }
+};
+
 TornReadResult runTornReadStress(const std::string& topic, int buffer_num,
-                                 std::chrono::milliseconds duration) {
+                                 std::chrono::milliseconds duration,
+                                 PublishFailures* failures) {
   std::atomic<bool> stop(false);
   TornReadResult result;
 
   std::thread pub_thread([&]() {
-    irlab::shm::Publisher<BigMsg> pub(topic, buffer_num);
-    BigMsg msg;
-    for (uint32_t seq = 1; !stop.load(std::memory_order_relaxed); ++seq) {
-      msg.fill(seq);
-      pub.publish(msg);
+    try {
+      irlab::shm::Publisher<BigMsg> pub(topic, buffer_num);
+      BigMsg msg;
+      for (uint32_t seq = 1; !stop.load(std::memory_order_relaxed); ++seq) {
+        msg.fill(seq);
+        pub.publish(msg);
+      }
+    } catch (const std::exception& e) {
+      failures->record(e);
     }
   });
 
   std::thread sub_thread([&]() {
+    try {
     irlab::shm::Subscriber<BigMsg> sub(topic);
     while (!stop.load(std::memory_order_relaxed)) {
       bool success = false;
@@ -92,6 +114,9 @@ TornReadResult runTornReadStress(const std::string& topic, int buffer_num,
                     << "]=" << m.words[bad] << std::endl;
         }
       }
+    }
+    } catch (const std::exception& e) {
+      failures->record(e);
     }
   });
 
@@ -111,6 +136,7 @@ protected:
     irlab::shm::disconnectMemory("race_torn_single");
     irlab::shm::disconnectMemory("race_unallocated_write");
     irlab::shm::disconnectMemory("race_slot_reclaim");
+    irlab::shm::disconnectMemory("race_contention_held");
     irlab::shm::disconnectMemory("race_contention_fast");
     irlab::shm::disconnectMemory("race_contention_sane");
     irlab::shm::disconnectMemory("race_failed_read_clobber");
@@ -126,8 +152,10 @@ protected:
 // ライブラリが保証すべきであり、torn read は 1 件も許容しない。
 // -----------------------------------------------------------------------------
 TEST_F(SHMPubSubRaceTest, SubscribeMustNeverReturnTornData) {
+  PublishFailures failures;
   TornReadResult r =
-      runTornReadStress("/race_torn_default", 3, std::chrono::milliseconds(4000));
+      runTornReadStress("/race_torn_default", 3, std::chrono::milliseconds(4000), &failures);
+  EXPECT_EQ(failures.count.load(), 0u) << "ワーカースレッドが例外を投げた: " << failures.first;
 
   std::cout << "default buffers: reads=" << r.reads << " torn=" << r.torn
             << std::endl;
@@ -142,8 +170,10 @@ TEST_F(SHMPubSubRaceTest, SubscribeMustNeverReturnTornData) {
 // 上書きサイクルが最短になるため torn read が最も高頻度に再現する。
 // -----------------------------------------------------------------------------
 TEST_F(SHMPubSubRaceTest, SubscribeMustNeverReturnTornDataSingleBuffer) {
+  PublishFailures failures;
   TornReadResult r =
-      runTornReadStress("/race_torn_single", 1, std::chrono::milliseconds(2000));
+      runTornReadStress("/race_torn_single", 1, std::chrono::milliseconds(2000), &failures);
+  EXPECT_EQ(failures.count.load(), 0u) << "ワーカースレッドが例外を投げた: " << failures.first;
 
   std::cout << "single buffer: reads=" << r.reads << " torn=" << r.torn
             << std::endl;
@@ -296,24 +326,102 @@ TEST_F(SHMPubSubRaceTest, CrashedWriterSlotsMustBeReclaimed) {
 }
 
 // -----------------------------------------------------------------------------
-// 競合カウンタ: 「publisher の書き込みが購読側に対して速すぎる」を検出できる
+// 競合カウンタ: スロットが長く塞がれたことを数えられる
 //
-// 実運用（例: rplidar_daemon → lidar_2D_to_point_cloud_2D）で書き込みレートが
-// 読み出し処理に対して速すぎないかを定量チェックするための仕組み。
-// 過負荷条件ではカウンタが上がり、正常なレート設計ではほぼ 0 に留まる。
+// R03-F04 で reader もスロットの robust mutex を取るようになったため、
+// 「writer が reader を追い越した」だけでは競合は観測されなくなった
+// （reader は負けて捨てるのではなく、短時間待って必ず読める）。
+// カウンタが上がるのは **スロットが SLOT_LOCK_TIMEOUT_US を超えて塞がったとき**
+// だけである。
+//
+// R03 対応時にこのテストの期待値を retry>0 から failure==0 へ緩めたが、
+// それだけだと過負荷条件と正常条件の assertion が同一になり、カウンタ機構が
+// 壊れても気づけなくなっていた（R04-F27）。ここでは外部からスロットの mutex を
+// 保持して、**決定的に**カウンタが上がることを確かめる。
 // -----------------------------------------------------------------------------
-TEST_F(SHMPubSubRaceTest, ContentionCountersDetectWriterOutpacingReader) {
-  // 過負荷条件: 単一バッファ + 全力 publish → 競合が必ず観測される
+TEST_F(SHMPubSubRaceTest, ContentionCountersCountSlotsHeldLongerThanTheTimeout) {
+  const std::string topic = "race_contention_held";
+
+  irlab::shm::Publisher<BigMsg> pub(topic, 1);
+  BigMsg msg;
+  msg.fill(7);
+  pub.publish(msg);
+
+  irlab::shm::Subscriber<BigMsg> sub(topic);
+  sub.setDataExpiryTime_us(0);
+  {
+    bool ok = false;
+    sub.subscribe(&ok);
+    ASSERT_TRUE(ok) << "前提: 競合が無ければ読めること";
+  }
+  sub.resetContentionCounts();
+
+  // 唯一のスロットの mutex を外から保持する。allocateBuffer() ではなく
+  // mutex を直接握るのは、発行番号を 0 に落とさず「有効なデータがあるのに
+  // 読めない」状態を作るためである。
+  irlab::shm::SharedMemoryPosix shm(topic, O_RDWR,
+                                    static_cast<irlab::shm::PERM>(0));
+  ASSERT_TRUE(shm.connect());
+  unsigned char* ptr = shm.getPtr();
+  const irlab::shm::ShmHeader* header =
+      reinterpret_cast<const irlab::shm::ShmHeader*>(ptr);
+  irlab::shm::SlotRecord* slot = reinterpret_cast<irlab::shm::SlotRecord*>(
+      ptr + header->slot_offset);
+  ASSERT_NE(slot->sequence.load(), 0u) << "前提: スロットに有効なデータがあること";
+  ASSERT_EQ(pthread_mutex_lock(&slot->owner), 0);
+
+  constexpr int ATTEMPTS = 3;
+  for (int i = 0; i < ATTEMPTS; ++i) {
+    bool ok = false;
+    sub.subscribe(&ok);
+    EXPECT_FALSE(ok) << "スロットが塞がっているのに成功を返した";
+  }
+
+  ASSERT_EQ(pthread_mutex_unlock(&slot->owner), 0);
+
+  // subscribe 1 回につき MAX_READ_RETRY 回の再試行が起き、最後に失敗が 1 回計上される
+  EXPECT_GT(sub.getContentionRetryCount(), 0u)
+      << "スロットが塞がり続けたのに競合が一度も計上されなかった（カウンタが機能していない）";
+  EXPECT_EQ(sub.getContentionFailureCount(), static_cast<uint64_t>(ATTEMPTS))
+      << "読み出しの失敗が計上されていない";
+
+  // 解放すれば元どおり読めること
+  bool ok = false;
+  const BigMsg& m = sub.subscribe(&ok);
+  EXPECT_TRUE(ok);
+  if (ok) {
+    EXPECT_EQ(m.words[0], 7u);
+  }
+
+  sub.resetContentionCounts();
+  EXPECT_EQ(sub.getContentionRetryCount(), 0u);
+  EXPECT_EQ(sub.getContentionFailureCount(), 0u);
+}
+
+// -----------------------------------------------------------------------------
+// 過負荷でも、スロットの排他が短時間で終わる限り競合は計上されない
+//
+// R03-F04 の相互排他が効いていることの裏返しの確認。ここが 0 でなくなったら、
+// スロットの臨界区間が想定より長く滞留している。
+// -----------------------------------------------------------------------------
+TEST_F(SHMPubSubRaceTest, ShortCriticalSectionsDoNotShowUpAsContention) {
+  PublishFailures failures;
+
+  // 過負荷条件: 単一バッファ + 全力 publish
   {
     const std::string topic = "/race_contention_fast";
     std::atomic<bool> stop(false);
 
     std::thread pub_thread([&]() {
-      irlab::shm::Publisher<BigMsg> pub(topic, 1);
-      BigMsg msg;
-      for (uint32_t seq = 1; !stop.load(std::memory_order_relaxed); ++seq) {
-        msg.fill(seq);
-        pub.publish(msg);
+      try {
+        irlab::shm::Publisher<BigMsg> pub(topic, 1);
+        BigMsg msg;
+        for (uint32_t seq = 1; !stop.load(std::memory_order_relaxed); ++seq) {
+          msg.fill(seq);
+          pub.publish(msg);
+        }
+      } catch (const std::exception& e) {
+        failures.record(e);
       }
     });
 
@@ -331,34 +439,28 @@ TEST_F(SHMPubSubRaceTest, ContentionCountersDetectWriterOutpacingReader) {
     std::cout << "overload: reads=" << reads
               << " retry=" << sub.getContentionRetryCount()
               << " failure=" << sub.getContentionFailureCount() << std::endl;
-    // reader は payload コピーの間スロットを排他するようになったので（R03-F04）、
-    // writer と読み合っても「負けて捨てる」ことが無くなった。retry が積み上がるのは
-    // スロットが SLOT_LOCK_TIMEOUT_US を超えて塞がったときだけで、過負荷でも
-    // 通常は 0 のままである。したがって retry>0 は要求できない。
-    // ここで確かめるべきは「過負荷でも読み続けられ、失敗が出ないこと」。
     ASSERT_GT(reads, 0u) << "過負荷条件で一度も読めていない";
     EXPECT_EQ(sub.getContentionFailureCount(), 0u)
         << "スロットの排他が想定より長く滞留している";
-
-    // reset の確認（カウンタ自体は診断用に残してある）
-    sub.resetContentionCounts();
-    EXPECT_EQ(sub.getContentionRetryCount(), 0u);
-    EXPECT_EQ(sub.getContentionFailureCount(), 0u);
   }
 
-  // 正常レート条件: 3面バッファ + 5ms 間隔 publish → 競合はほぼ 0
+  // 正常レート条件: 3面バッファ + 5ms 間隔 publish
   {
     const std::string topic = "/race_contention_sane";
     std::atomic<bool> stop(false);
 
     std::thread pub_thread([&]() {
-      irlab::shm::Publisher<BigMsg> pub(topic);  // buffer_num = 3
-      BigMsg msg;
-      uint32_t seq = 0;
-      while (!stop.load(std::memory_order_relaxed)) {
-        msg.fill(++seq);
-        pub.publish(msg);
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      try {
+        irlab::shm::Publisher<BigMsg> pub(topic);  // buffer_num = 3
+        BigMsg msg;
+        uint32_t seq = 0;
+        while (!stop.load(std::memory_order_relaxed)) {
+          msg.fill(++seq);
+          pub.publish(msg);
+          std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+      } catch (const std::exception& e) {
+        failures.record(e);
       }
     });
 
@@ -377,12 +479,12 @@ TEST_F(SHMPubSubRaceTest, ContentionCountersDetectWriterOutpacingReader) {
               << " retry=" << sub.getContentionRetryCount()
               << " failure=" << sub.getContentionFailureCount() << std::endl;
     ASSERT_GT(reads, 0u);
-    // まれなプリエンプションによる単発リトライは許容するが、
-    // レート設計が正しければ読み出しの 1% を超えることはない
     EXPECT_LE(sub.getContentionRetryCount(), reads / 100 + 1)
         << "正常なレートで競合が多発している";
     EXPECT_EQ(sub.getContentionFailureCount(), 0u);
   }
+
+  EXPECT_EQ(failures.count.load(), 0u) << "ワーカースレッドが例外を投げた: " << failures.first;
 }
 
 // -----------------------------------------------------------------------------
@@ -412,16 +514,21 @@ TEST_F(SHMPubSubRaceTest, FailedSubscribeMustNotCorruptPreviousValue) {
   irlab::shm::Subscriber<BigMsg> sub(topic);
 
   std::atomic<bool> stop(false);
+  PublishFailures failures;
   std::thread pub_thread([&]() {
-    BigMsg msg;
-    for (uint32_t seq = 2; !stop.load(std::memory_order_relaxed); ++seq) {
-      msg.fill(seq);
-      pub.publish(msg);
+    try {
+      BigMsg msg;
+      for (uint32_t seq = 2; !stop.load(std::memory_order_relaxed); ++seq) {
+        msg.fill(seq);
+        pub.publish(msg);
+      }
+    } catch (const std::exception& e) {
+      failures.record(e);
     }
   });
 
   uint64_t successes            = 0;
-  uint64_t failures             = 0;
+  uint64_t read_failures        = 0;
   uint64_t clobbered            = 0;  // 失敗時に直前の成功値と違っていた回数
   uint64_t torn_after_failure   = 0;  // 失敗時に内部矛盾した値が残っていた回数
   uint32_t last_good            = 0;
@@ -437,7 +544,7 @@ TEST_F(SHMPubSubRaceTest, FailedSubscribeMustNotCorruptPreviousValue) {
       have_good = true;
       continue;
     }
-    ++failures;
+    ++read_failures;
     if (!have_good) {
       continue;
     }
@@ -452,11 +559,12 @@ TEST_F(SHMPubSubRaceTest, FailedSubscribeMustNotCorruptPreviousValue) {
   stop.store(true);
   pub_thread.join();
 
-  std::cout << "  success=" << successes << " failure=" << failures
+  std::cout << "  success=" << successes << " failure=" << read_failures
             << " (失敗時に前回値が壊れた " << clobbered
             << " / うち内部矛盾 " << torn_after_failure << ")" << std::endl;
 
-  ASSERT_GT(failures, 0u) << "前提: 失敗を発生させられていない。テストの負荷設定を見直すこと";
+  EXPECT_EQ(failures.count.load(), 0u) << "ワーカースレッドが例外を投げた: " << failures.first;
+  ASSERT_GT(read_failures, 0u) << "前提: 失敗を発生させられていない。テストの負荷設定を見直すこと";
 
   EXPECT_EQ(torn_after_failure, 0u) << "失敗した subscribe() が torn な値を返り値に残した";
   EXPECT_EQ(clobbered, 0u) << "失敗した subscribe() が直前の成功値を書き換えた";

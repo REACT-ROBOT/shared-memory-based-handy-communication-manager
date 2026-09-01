@@ -203,7 +203,29 @@ ShmTopic::openRoot(bool create, size_t initial_capacity, int buf_num, size_t pay
   {
     return true;
   }
+
+  // ここから root を張り直す。**その前に root のマッピングに依存するものを
+  // 全て捨てなければならない**（R04-F01）。
+  //
+  //   - 世代 1 の ring_ は root と同じマッピングを指している
+  //   - 全世代の ring_ の sequence_source は root のヘッダ内を指している
+  //   - root_ring_ も同様
+  //
+  // 下の attach_existing() が成功すると `root_ = std::move(existing)` で
+  // 古い SharedMemoryPosix が munmap される。ここで捨てておかないと、
+  // 直後に follow()/ensureCapacity() が ring_->isLayoutChanged() を呼んで
+  // 解放済み領域を読み、SIGSEGV する。
+  //
+  // 引き金は「root セグメントが unlink され作り直される」ことで、
+  // 稼働中の Publisher/Subscriber の傍らで `shm_tool remove <topic>` を
+  // 実行する、あるいは Publisher プロセスが再起動する、という運用で普通に起きる。
+  //
+  // current_tag_ を 0 にしておけば、follow()/ensureCapacity() は必ず
+  // attachGeneration() からやり直すので、sequence_source も張り直される。
+  ring_.reset();
+  data_.reset();
   root_ring_.reset();
+  current_tag_ = 0;
 
   auto attach_existing = [&]() -> bool {
     auto existing = std::make_unique<SharedMemoryPosix>(name_, O_RDWR, static_cast<PERM>(0));
@@ -616,7 +638,23 @@ ShmTopic::ensureCapacity(size_t required_capacity, int buf_num, size_t payload_a
   size_t       want      = required_capacity;
   if (alignment > 1 && (want % alignment) != 0)
   {
+    if (want > RingBuffer::MAX_ELEMENT_SIZE - alignment)
+    {
+      last_error_ = "the requested payload size overflows when aligned";
+      return false;
+    }
     want += alignment - (want % alignment);
+  }
+
+  // 1 スロットの上限を超える要求は、どれだけ世代を進めても満たせない。
+  // ここで断らないと growCapacity() が上限で clamp した容量のまま
+  // 成功を返し、呼び出し側が要求どおりの長さを memcpy してスロットの外へ
+  // 書き込む（R04-F02）。
+  if (want > RingBuffer::MAX_ELEMENT_SIZE)
+  {
+    last_error_ = "the requested payload size (" + std::to_string(want) + " bytes) exceeds the per-slot maximum (" +
+                  std::to_string(RingBuffer::MAX_ELEMENT_SIZE) + " bytes)";
+    return false;
   }
 
   if (!openRoot(true, want, buf_num, alignment, &contract))
@@ -666,7 +704,10 @@ ShmTopic::ensureCapacity(size_t required_capacity, int buf_num, size_t payload_a
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
       continue;
     }
-    return true;
+
+    // 世代は進んだが、それで要求を満たせたとは限らない。
+    // 満たしていなければループ先頭の判定へ戻して確かめ直す。
+    // **決して「世代を作れた」だけで成功を返さないこと**（R04-F02）。
   }
 
   last_error_ = "could not settle on a layout generation after " + std::to_string(MAX_GENERATION_ATTEMPTS) +

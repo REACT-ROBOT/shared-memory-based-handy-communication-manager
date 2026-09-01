@@ -191,7 +191,12 @@ if(BUILD_TESTS)
       )
     gtest_add_tests(TARGET shm_pub_sub_test TEST_LIST shm_pub_sub_test_cases)
   # ハングを FAIL にする（ctest の --timeout に依存させない）
-  set_tests_properties(${shm_pub_sub_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT})
+  # /dev/shm はプロセス横断の単一の名前空間であり、各 fixture の TearDown は
+  # 自分の担当トピックを unlink する。並列実行すると兄弟テストが使用中の
+  # セグメントを消してしまうので、共通のリソース鍵で直列化する（R04-F28）。
+  # RUN_SERIAL ではなく RESOURCE_LOCK を使うのは、競合しているのが
+  # 「CPU」ではなく「/dev/shm という名前空間」だからである。
+  set_tests_properties(${shm_pub_sub_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT} RESOURCE_LOCK dev_shm)
 
     # データ破損・レースコンディション回帰テスト
     add_executable(shm_pub_sub_race_test
@@ -204,7 +209,7 @@ if(BUILD_TESTS)
       )
     gtest_add_tests(TARGET shm_pub_sub_race_test TEST_LIST shm_pub_sub_race_test_cases)
   # ハングを FAIL にする（ctest の --timeout に依存させない）
-  set_tests_properties(${shm_pub_sub_race_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT})
+  set_tests_properties(${shm_pub_sub_race_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT} RESOURCE_LOCK dev_shm)
 
     # タイムスタンプ整合性テスト
     add_executable(shm_pub_sub_timestamp_test
@@ -217,7 +222,7 @@ if(BUILD_TESTS)
       )
     gtest_add_tests(TARGET shm_pub_sub_timestamp_test TEST_LIST shm_pub_sub_timestamp_test_cases)
   # ハングを FAIL にする（ctest の --timeout に依存させない）
-  set_tests_properties(${shm_pub_sub_timestamp_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT})
+  set_tests_properties(${shm_pub_sub_timestamp_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT} RESOURCE_LOCK dev_shm)
 
     # 後発 Publisher による共有メモリ再初期化の回帰テスト
     add_executable(shm_pub_sub_late_publisher_test
@@ -230,7 +235,7 @@ if(BUILD_TESTS)
       )
     gtest_add_tests(TARGET shm_pub_sub_late_publisher_test TEST_LIST shm_pub_sub_late_publisher_test_cases)
   # ハングを FAIL にする（ctest の --timeout に依存させない）
-  set_tests_properties(${shm_pub_sub_late_publisher_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT})
+  set_tests_properties(${shm_pub_sub_late_publisher_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT} RESOURCE_LOCK dev_shm)
 
     # 入力検証・壊れた共有メモリ・マッピング漏れの回帰テスト (R01-F06 / F09)
     add_executable(shm_pub_sub_validation_test
@@ -243,7 +248,7 @@ if(BUILD_TESTS)
       )
     gtest_add_tests(TARGET shm_pub_sub_validation_test TEST_LIST shm_pub_sub_validation_test_cases)
   # ハングを FAIL にする（ctest の --timeout に依存させない）
-  set_tests_properties(${shm_pub_sub_validation_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT})
+  set_tests_properties(${shm_pub_sub_validation_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT} RESOURCE_LOCK dev_shm)
 
     # 共有メモリ形式 v2 の回帰テスト (R01-F04 / F05 / F06 / F07-a / 複数 Publisher)
     add_executable(shm_pub_sub_format_v2_test
@@ -256,7 +261,7 @@ if(BUILD_TESTS)
       )
     gtest_add_tests(TARGET shm_pub_sub_format_v2_test TEST_LIST shm_pub_sub_format_v2_test_cases)
   # ハングを FAIL にする（ctest の --timeout に依存させない）
-  set_tests_properties(${shm_pub_sub_format_v2_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT})
+  set_tests_properties(${shm_pub_sub_format_v2_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT} RESOURCE_LOCK dev_shm)
 
     # 再レビュー R02 の指摘に対する回帰テスト
     add_executable(shm_pub_sub_contract_test
@@ -269,7 +274,7 @@ if(BUILD_TESTS)
       )
     gtest_add_tests(TARGET shm_pub_sub_contract_test TEST_LIST shm_pub_sub_contract_test_cases)
   # ハングを FAIL にする（ctest の --timeout に依存させない）
-  set_tests_properties(${shm_pub_sub_contract_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT})
+  set_tests_properties(${shm_pub_sub_contract_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT} RESOURCE_LOCK dev_shm)
 
     # 3 回目のレビュー R03 の指摘に対する回帰テスト
     add_executable(shm_pub_sub_r03_test
@@ -282,7 +287,20 @@ if(BUILD_TESTS)
       )
     gtest_add_tests(TARGET shm_pub_sub_r03_test TEST_LIST shm_pub_sub_r03_test_cases)
   # ハングを FAIL にする（ctest の --timeout に依存させない）
-  set_tests_properties(${shm_pub_sub_r03_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT})
+  set_tests_properties(${shm_pub_sub_r03_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT} RESOURCE_LOCK dev_shm)
+
+    # 4 回目のレビュー R04 の指摘に対する回帰テスト
+    add_executable(shm_pub_sub_r04_test
+        test/shm_pub_sub_r04_test.cpp
+      )
+    target_link_libraries(shm_pub_sub_r04_test
+        PRIVATE
+        shm_pub_sub
+        ${GTEST_LDFLAGS}
+      )
+    gtest_add_tests(TARGET shm_pub_sub_r04_test TEST_LIST shm_pub_sub_r04_test_cases)
+  # ハングを FAIL にする（ctest の --timeout に依存させない）
+  set_tests_properties(${shm_pub_sub_r04_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT} RESOURCE_LOCK dev_shm)
 
     # 時刻指定読み出し（タイムマシン）の回帰テスト
     add_executable(shm_pub_sub_timemachine_test
@@ -295,7 +313,7 @@ if(BUILD_TESTS)
       )
     gtest_add_tests(TARGET shm_pub_sub_timemachine_test TEST_LIST shm_pub_sub_timemachine_test_cases)
   # ハングを FAIL にする（ctest の --timeout に依存させない）
-  set_tests_properties(${shm_pub_sub_timemachine_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT})
+  set_tests_properties(${shm_pub_sub_timemachine_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT} RESOURCE_LOCK dev_shm)
 
     # レイアウト世代セグメントの回帰テスト (R01-F01)
     add_executable(shm_pub_sub_generation_test
@@ -308,7 +326,7 @@ if(BUILD_TESTS)
       )
     gtest_add_tests(TARGET shm_pub_sub_generation_test TEST_LIST shm_pub_sub_generation_test_cases)
   # ハングを FAIL にする（ctest の --timeout に依存させない）
-  set_tests_properties(${shm_pub_sub_generation_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT})
+  set_tests_properties(${shm_pub_sub_generation_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT} RESOURCE_LOCK dev_shm)
 
     # レイアウト変更・共有メモリ作り直しの回帰テスト
     add_executable(shm_pub_sub_layout_test
@@ -321,5 +339,5 @@ if(BUILD_TESTS)
       )
     gtest_add_tests(TARGET shm_pub_sub_layout_test TEST_LIST shm_pub_sub_layout_test_cases)
   # ハングを FAIL にする（ctest の --timeout に依存させない）
-  set_tests_properties(${shm_pub_sub_layout_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT})
+  set_tests_properties(${shm_pub_sub_layout_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT} RESOURCE_LOCK dev_shm)
 endif()
