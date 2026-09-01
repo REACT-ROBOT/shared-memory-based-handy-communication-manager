@@ -78,7 +78,8 @@ getCurrentRealtimeUSec()
 //! @details /dev/shm は tmpfs なので通常は再起動で消えるが、消えなかった場合に
 //!          「前回起動時の monotonic 時刻」を有効なものとして扱わないようにする。
 //!          読めない環境では 0 を返し、その場合は照合しない。
-static uint64_t
+//!          shm_tool doctor が「再起動前の残骸」を見分けるためにも使う。
+uint64_t
 getBootIdHash()
 {
   static const uint64_t cached = [] {

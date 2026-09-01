@@ -584,6 +584,10 @@ schema_version_of()
   return shm_schema<T>::version;
 }
 
+//! @brief この boot を識別する値。読めない環境では 0
+//! @details 再起動をまたいで残ったセグメントを見分けるために使う。
+uint64_t getBootIdHash();
+
 //! @brief 利用者が書式を宣言したか
 template <typename T>
 constexpr bool
