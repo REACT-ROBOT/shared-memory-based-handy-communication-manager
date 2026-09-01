@@ -49,12 +49,56 @@ getCurrentTimeUSec()
 //!            - buf_num=1 で reader が全力で回ると writer が確保できず publish が失敗
 //!            - 同じスロットを狙う reader 同士が互いに弾き合う
 //!          スロットの臨界区間は memcpy 1 回ぶんしかないので、短い上限まで
-//!          待てば十分に解消する。CLOCK_REALTIME を使う pthread_mutex_timedlock は
-//!          NTP の時刻補正で待ち時間が伸縮するため、単調時計での自前待ちにする。
+//!          待てば十分に解消する。
+//!
+//!          待ち方は **カーネルで眠る**（`pthread_mutex_clocklock`）。
+//!          以前は trylock + sched_yield のスピンだったが、CPU が過負荷のときに
+//!          待ち手が自分の量子を浪費するだけで保持者に CPU が回らず、
+//!          2ms の上限をあっさり超えていた。実測では 20 スレッドの負荷下で
+//!          buf_num=1 の publish が 25 回中 16 回失敗した。
+//!
+//!          時計は CLOCK_MONOTONIC を使う。CLOCK_REALTIME を使う
+//!          `pthread_mutex_timedlock` は NTP の時刻補正で待ち時間が伸縮する。
 //! @return 0 なら取得（EOWNERDEAD なら consistent 宣言が必要）、EBUSY なら時間切れ
+#if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 30))
+#if defined(__SANITIZE_THREAD__)
+// GCC: TSan 有効
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+// Clang: TSan 有効
+#else
+#define SHM_HAS_CLOCKLOCK 1
+#endif
+#else
+#define SHM_HAS_CLOCKLOCK 1
+#endif
+#endif
+
 static int
 lockSlotWithin(pthread_mutex_t *mutex, uint64_t timeout_us)
 {
+  if (timeout_us == 0)
+  {
+    return pthread_mutex_trylock(mutex);
+  }
+
+  // ThreadSanitizer は pthread_mutex_clocklock を捕捉しないため、ロックの獲得が
+  // 見えず「未ロックの mutex を unlock した」と誤検出する。TSan の目的は競合検出で
+  // あって性能ではないので、そのビルドでは下のスピン待ちを使う。
+#if defined(SHM_HAS_CLOCKLOCK)
+  struct timespec deadline;
+  clock_gettime(CLOCK_MONOTONIC, &deadline);
+  deadline.tv_nsec += static_cast<long>(timeout_us % 1000000ULL) * 1000L;
+  deadline.tv_sec += static_cast<time_t>(timeout_us / 1000000ULL);
+  if (deadline.tv_nsec >= 1000000000L)
+  {
+    deadline.tv_nsec -= 1000000000L;
+    ++deadline.tv_sec;
+  }
+  const int r = pthread_mutex_clocklock(mutex, CLOCK_MONOTONIC, &deadline);
+  return (r == ETIMEDOUT) ? EBUSY : r;
+#else
+  // 古い glibc 向けの代替。スピンなので過負荷では不利だが、動作はする。
   const uint64_t deadline = getCurrentTimeUSec() + timeout_us;
   for (;;)
   {
@@ -69,6 +113,7 @@ lockSlotWithin(pthread_mutex_t *mutex, uint64_t timeout_us)
     }
     sched_yield();
   }
+#endif
 }
 
 //! @brief 壁時計の時刻[usec]

@@ -428,6 +428,20 @@ Besides `PTHREAD_PROCESS_SHARED`, the slot mutex sets:
 | `PTHREAD_MUTEX_ROBUST` | the kernel reports an owner's death as `EOWNERDEAD`, so liveness is **never guessed from a timestamp** |
 | `PTHREAD_PRIO_INHERIT` | avoids priority inversion when a SCHED_FIFO control loop waits for a slot held by a lower-priority process |
 
+### Give the ring more slots than there are participants
+
+Because readers take a slot lock too, **the number of slots must exceed the number of
+participants that read and write concurrently**. `buffer_num = 1` makes a writer and a
+reader fight over the only slot, and under CPU pressure a publish can fail to acquire it
+(it reports the failure rather than corrupting anything). The default is 3.
+
+```
+buffer_num >= ceil(publish_rate * required_history) + concurrent_writers + headroom(~2)
+```
+
+The first term comes from how far back consumers need to look. `shm_tool doctor` reports
+the history actually held.
+
 **Readers take this mutex too.** Comparing the sequence number before and after the copy
 detects a torn sample, but the writer's `memcpy` and the reader's `memcpy` could still
 touch the same ordinary memory concurrently, which is a data race — undefined behaviour —
