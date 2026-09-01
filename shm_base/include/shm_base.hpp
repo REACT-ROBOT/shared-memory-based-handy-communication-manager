@@ -476,12 +476,63 @@ struct shm_schema
   static constexpr uint32_t version = 0;
 };
 
-//! @brief レイアウト記述の 1 要素（メンバの位置と大きさ）
+//! @brief レイアウト記述の 1 要素（メンバの位置・大きさ・境界）
 struct LayoutField
 {
   uint64_t offset;
   uint64_t size;
+  uint64_t align;
 };
+
+/*!
+ * \~japanese-en 並べたメンバが型を隙間なく覆っているかを検査する．
+ *
+ * \~japanese-en `SHM_DECLARE_LAYOUT()` にメンバを書き漏らしても、書いた側から見える
+ *               `offsetof` / `sizeof` は変わらないので、そのままではハッシュが同じに
+ *               なってしまう。ここで次を確かめることで、書き漏らしの大半を
+ *               **コンパイルエラーにする**。
+ *
+ *                 - 最初のメンバがオフセット 0 にあること（先頭の書き漏らし）
+ *                 - 宣言順とオフセット順が一致し、重なっていないこと（並べ間違い）
+ *                 - メンバ間の隙間が、次のメンバの境界調整に必要な分より小さいこと
+ *                   （間の書き漏らし）
+ *                 - 末尾の余りが型の境界より小さいこと（末尾の書き漏らし）
+ *
+ * \~japanese-en 唯一検出できないのは「書き漏らしたメンバが、どのみち必要な
+ *               パディングにちょうど収まる」場合である（`uint32_t a; double b;` の
+ *               隙間に `uint32_t c` を入れた等）。このとき listed なメンバから見える
+ *               情報は完全に同一になるので、`offsetof` / `sizeof` だけでは
+ *               原理的に区別できない。
+ */
+template <size_t N>
+constexpr bool
+layout_covers_type(uint64_t type_size, uint64_t type_align, const LayoutField (&fields)[N])
+{
+  if (fields[0].offset != 0)
+  {
+    return false;  // 先頭のメンバが書かれていない
+  }
+  for (size_t i = 1; i < N; ++i)
+  {
+    const uint64_t previous_end = fields[i - 1].offset + fields[i - 1].size;
+    if (fields[i].offset < previous_end)
+    {
+      return false;  // 宣言順がオフセット順と違う、または重なっている
+    }
+    const uint64_t member_align = (fields[i].align != 0) ? fields[i].align : 1;
+    if (fields[i].offset - previous_end >= member_align)
+    {
+      return false;  // 境界調整で説明できない隙間 = 書かれていないメンバがある
+    }
+  }
+  const uint64_t last_end = fields[N - 1].offset + fields[N - 1].size;
+  if (last_end > type_size)
+  {
+    return false;
+  }
+  const uint64_t tail_align = (type_align != 0) ? type_align : 1;
+  return (type_size - last_end) < tail_align;
+}
 
 //! @brief FNV-1a で 64bit 値を 1 つ畳み込む
 constexpr uint64_t
@@ -518,6 +569,7 @@ layout_hash(uint64_t type_size, uint64_t type_align, uint32_t revision, const La
   {
     hash = fold_layout_word(hash, fields[i].offset);
     hash = fold_layout_word(hash, fields[i].size);
+    hash = fold_layout_word(hash, fields[i].align);
   }
   const uint32_t folded = static_cast<uint32_t>(hash ^ (hash >> 32));
   // 0 は「未宣言」を表すので避ける
@@ -556,7 +608,8 @@ schema_is_declared()
 // ============================================================================
 
 //! 1 メンバぶんの記述
-#define SHM_LAYOUT_FIELD(T, m) ::irlab::shm::LayoutField{ offsetof(T, m), sizeof(T::m) }
+#define SHM_LAYOUT_FIELD(T, m)                                                                                         \
+  ::irlab::shm::LayoutField{ offsetof(T, m), sizeof(T::m), alignof(decltype(T::m)) }
 
 // メンバ列を LayoutField の並びへ展開する（最大 32 個）
 #define SHM_LF_1(T, a) SHM_LAYOUT_FIELD(T, a)
@@ -633,7 +686,11 @@ schema_is_declared()
   }                                                                                                                    \
   }                                                                                                                    \
   static_assert(std::is_standard_layout<T>::value,                                                                      \
-                "SHM_DECLARE_LAYOUT: offsetof() requires a standard-layout type")
+                "SHM_DECLARE_LAYOUT: offsetof() requires a standard-layout type");                                      \
+  static_assert(::irlab::shm::layout_covers_type(sizeof(T), alignof(T), { SHM_LF_LIST(T, __VA_ARGS__) }),                \
+                "SHM_DECLARE_LAYOUT: the listed members do not cover this type. Either a member is missing "             \
+                "from the list, or they are not listed in declaration order. List every member, in the order "           \
+                "they are declared.")
 
 /*!
  * \~japanese-en シリアライズ型の書式を宣言する．

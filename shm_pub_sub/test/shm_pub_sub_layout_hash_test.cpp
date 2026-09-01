@@ -157,3 +157,62 @@ TEST_F(SHMLayoutHashTest, UndeclaredTypesKeepWorking)
   EXPECT_EQ(reinterpret_cast<const ShmHeader *>(shm.getPtr())->schema_version, 0u)
       << "未宣言は 0 のままで、shm_tool doctor から見分けられること";
 }
+
+// -----------------------------------------------------------------------------
+// メンバの書き漏らし・並べ間違いはコンパイルエラーになる
+//
+// 書き漏らしても、書いた側から見える offsetof / sizeof は変わらないので、
+// ハッシュだけでは同じ値になってしまう。layout_covers_type() が
+// 「並べたメンバが型を隙間なく覆っているか」を検査することで、
+// 次の 4 つはコンパイル時に止まる（実際に落ちることは別途確認済み）。
+//
+//   - 先頭のメンバを書き漏らした
+//   - 途中のメンバを書き漏らした（パディングで説明できない隙間ができる）
+//   - 末尾のメンバを書き漏らした
+//   - 宣言順と違う順で並べた
+//
+// ここではその判定関数を直接検証する。マクロ自体は
+// 「落ちるべきものが落ちる」ことをコンパイルできない形では書けないため。
+// -----------------------------------------------------------------------------
+TEST_F(SHMLayoutHashTest, MissingOrMisorderedMembersAreRejected)
+{
+  using irlab::shm::LayoutField;
+  using irlab::shm::layout_covers_type;
+
+  // struct { uint32_t a; double b; }  sizeof 16 / alignof 8
+  constexpr LayoutField complete[] = { { 0, 4, 4 }, { 8, 8, 8 } };
+  static_assert(layout_covers_type(16, 8, complete), "正しい宣言は通ること");
+
+  // 先頭を書き漏らした（最初のオフセットが 0 でない）
+  constexpr LayoutField no_first[] = { { 8, 8, 8 } };
+  static_assert(!layout_covers_type(16, 8, no_first), "先頭の書き漏らしを検出できていない");
+
+  // 末尾を書き漏らした: struct { uint32_t a; double b; uint32_t c; } sizeof 24
+  constexpr LayoutField no_last[] = { { 0, 4, 4 }, { 8, 8, 8 } };
+  static_assert(!layout_covers_type(24, 8, no_last), "末尾の書き漏らしを検出できていない");
+
+  // 途中を書き漏らした: struct { uint32_t a; uint64_t hidden; uint32_t b; }
+  constexpr LayoutField no_middle[] = { { 0, 4, 4 }, { 16, 4, 4 } };
+  static_assert(!layout_covers_type(24, 8, no_middle), "途中の書き漏らしを検出できていない");
+
+  // 宣言順と違う順で並べた
+  constexpr LayoutField wrong_order[] = { { 8, 8, 8 }, { 0, 4, 4 } };
+  static_assert(!layout_covers_type(16, 8, wrong_order), "並べ間違いを検出できていない");
+
+  // 配列メンバと単一メンバも通ること
+  constexpr LayoutField with_array[] = { { 0, 4, 4 }, { 4, 4324, 4 } };
+  static_assert(layout_covers_type(4328, 4, with_array), "配列メンバを含む宣言が通らない");
+  constexpr LayoutField single[] = { { 0, 8, 8 } };
+  static_assert(layout_covers_type(8, 8, single), "単一メンバの宣言が通らない");
+
+  // 既知の限界: 書き漏らしたメンバが「どのみち必要なパディング」にちょうど
+  // 収まる場合は、listed なメンバから見える情報が完全に同一になるため
+  // offsetof / sizeof だけでは原理的に区別できない。
+  //   before: { uint32_t a;                 double b; }  a@0 b@8 sizeof 16
+  //   after : { uint32_t a; uint32_t hidden; double b; }  a@0 b@8 sizeof 16
+  constexpr LayoutField hidden_in_padding[] = { { 0, 4, 4 }, { 8, 8, 8 } };
+  static_assert(layout_covers_type(16, 8, hidden_in_padding),
+                "この形は検出できない（既知の限界）。検出できるようになったらこの記述を消すこと");
+
+  SUCCEED();
+}
