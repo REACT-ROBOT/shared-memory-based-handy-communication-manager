@@ -701,6 +701,17 @@ public:
   //! @brief スロットを確保する（robust mutex を取得し、内容を無効化する）
   //! @return bool 確保できたら真。他の生きた writer が使用中なら偽
   bool allocateBuffer(int buffer_num);
+  //! @brief 指定スロットを writer として確保する。timeout_us=0 なら待たない
+  bool acquireSlot(int buffer_num, uint64_t timeout_us);
+
+  /*!
+   * \~japanese-en 書き込めるスロットを 1 つ確保する（古い順に全スロットを試す）．
+   *
+   * \~japanese-en 1 つのスロットだけを狙うと、そこに reader が張り付いている間
+   *               他が空いていても publish が失敗する（R04-F08）。
+   * @return int 確保できたスロット番号。できなければ -1
+   */
+  int  acquireWritableSlot();
   //! @brief 書き込みを確定する（発行番号を採番し、スロットを手放す）
   //! @param [in] capture_monotonic_us 0 なら現在時刻を打つ
   void commitBuffer(int buffer_num, size_t payload_size, uint64_t capture_monotonic_us = 0);

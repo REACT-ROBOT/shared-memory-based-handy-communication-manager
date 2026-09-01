@@ -421,23 +421,28 @@ Publisher<T>::publishOnce(const T &data)
 
   // 確保できないままの書き込みは、他の writer が書き込み途中のバッファを
   // 破壊し購読可能にしてしまうため許されない。確保成功を必須とする。
-  int  oldest_buffer = -1;
-  bool allocated     = false;
-  for (size_t i = 0; i < 10; i++)
+  // 書き込めるスロットを探す。古い順に**全スロット**を試すので、
+  // どこか 1 つが reader に押さえられていても他が空いていれば通る（R04-F08）。
+  // 1 巡目は待たないため、空きがあれば即座に決まる。
+  // 全部塞がっていた場合だけ短く待ち、それでも駄目なら少し置いて数回だけ試す。
+  // 最悪でも数 ms で決着する（100Hz の制御ループを止めないため）。
+  constexpr int ALLOCATE_ATTEMPTS = 3;
+  int           oldest_buffer     = -1;
+  for (int attempt = 0; attempt < ALLOCATE_ATTEMPTS; ++attempt)
   {
-    oldest_buffer = ring_buffer->getOldestBufferNum();
-    if (ring_buffer->allocateBuffer(oldest_buffer))
+    oldest_buffer = ring_buffer->acquireWritableSlot();
+    if (oldest_buffer >= 0)
     {
-      allocated = true;
       break;
     }
     usleep(1000);  // Wait for 1ms
   }
+  const bool allocated = (oldest_buffer >= 0);
   if (!allocated)
   {
     throw std::runtime_error(
-        "shm::Publisher: Could not allocate a buffer (all buffers are in use). "
-        "buffer_num must be greater than the number of concurrent publishers on this topic.");
+        "shm::Publisher: could not acquire a writable slot; every slot stayed busy. "
+        "Increase buffer_num, or check for a subscriber that holds a sample for too long.");
   }
 
   // 書き込みは memcpy に統一する。

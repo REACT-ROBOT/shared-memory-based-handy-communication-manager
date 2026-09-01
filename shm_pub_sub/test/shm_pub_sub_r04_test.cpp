@@ -30,7 +30,8 @@ protected:
   void TearDown() override { cleanupAll(); }
   void cleanupAll()
   {
-    for (const char *t : { "r04_unlink_pub", "r04_unlink_sub", "r04_cap", "r04_deadreader", "r04_contend" })
+    for (const char *t : { "r04_unlink_pub", "r04_unlink_sub", "r04_cap", "r04_deadreader", "r04_contend",
+                           "r04_heldslot" })
     {
       try
       {
@@ -267,4 +268,70 @@ TEST_F(SHMR04Test, ContentionIsDistinguishedFromMissingDataOnLaterGenerations)
   EXPECT_EQ(status, SearchStatus::Contended)
       << "データで満杯のトピックに対して Empty(=" << static_cast<int>(SearchStatus::Empty)
       << ") を返した。実際の status=" << static_cast<int>(status);
+}
+
+// -----------------------------------------------------------------------------
+// R04-F08: 1 つのスロットが押さえられていても、空いているスロットがあれば
+//          publish は成功しなければならない
+//
+// R03-F04 で reader もスロットの robust mutex を取るようになったのに、
+// writer 側は getOldestBufferNum() が返す**同じ 1 つ**を 10 回試すだけだった。
+// そのため、時間検索型の Subscriber（最古スロットを読む）が張り付くと、
+// 他のスロットが空いていても publish が
+// 「Could not allocate a buffer (all buffers are in use)」で失敗した。
+// buffer_num を増やしても直らないうえ、メッセージも実態と食い違っていた。
+// -----------------------------------------------------------------------------
+TEST_F(SHMR04Test, PublishSucceedsWhileOneSlotIsHeldByAReader)
+{
+  const std::string topic = "r04_heldslot";
+  constexpr int     BUF   = 3;
+
+  Publisher<Msg> pub(topic, BUF);
+  pub.publish(Msg{ 1 });
+
+  SharedMemoryPosix shm(topic, O_RDWR, static_cast<PERM>(0));
+  ASSERT_TRUE(shm.connect());
+  unsigned char   *ptr    = shm.getPtr();
+  const ShmHeader *header = reinterpret_cast<const ShmHeader *>(ptr);
+  ASSERT_EQ(header->buf_num, static_cast<uint64_t>(BUF));
+
+  // 最古のスロット（次に writer が狙う先）を外から保持する
+  SlotRecord *slots  = reinterpret_cast<SlotRecord *>(ptr + header->slot_offset);
+  int         oldest = 0;
+  uint64_t    oldest_seq = UINT64_MAX;
+  for (int i = 0; i < BUF; ++i)
+  {
+    const uint64_t seq = slots[i].sequence.load();
+    if (seq < oldest_seq)
+    {
+      oldest_seq = seq;
+      oldest     = i;
+    }
+  }
+  ASSERT_EQ(pthread_mutex_lock(&slots[oldest].owner), 0);
+
+  // 残り 2 面が空いているのだから、publish は通らなければならない。
+  // また、100Hz の制御ループを止めないよう短時間で決着すること。
+  const auto started = std::chrono::steady_clock::now();
+  for (int i = 0; i < 20; ++i)
+  {
+    ASSERT_NO_THROW(pub.publish(Msg{ static_cast<uint32_t>(100 + i) }))
+        << "1 面が押さえられているだけで publish が失敗した（残り " << (BUF - 1) << " 面は空いている）";
+  }
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+
+  ASSERT_EQ(pthread_mutex_unlock(&slots[oldest].owner), 0);
+
+  EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 100)
+      << "空きスロットがあるのに待たされている";
+
+  Subscriber<Msg> sub(topic);
+  sub.setDataExpiryTime_us(0);
+  bool       ok = false;
+  const Msg &m  = sub.subscribe(&ok);
+  EXPECT_TRUE(ok);
+  if (ok)
+  {
+    EXPECT_EQ(m.v, 119u);
+  }
 }

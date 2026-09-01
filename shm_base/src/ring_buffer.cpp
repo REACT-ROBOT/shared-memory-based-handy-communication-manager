@@ -790,6 +790,10 @@ RingBuffer::initializeExclusiveAccess()
   // これが無いと「死んだのか、単に遅いだけなのか」を時刻で推測するしかなく、
   // 生きている writer からスロットを奪ってデータを壊す（R01-F04）。
   pthread_mutexattr_setrobust(&m_attr, PTHREAD_MUTEX_ROBUST);
+  // 優先度継承。SCHED_FIFO で走る制御ループが、低優先度のプロセスが握った
+  // スロットを待つときに優先度逆転を起こさないようにする（R04-F08）。
+  // 対応していない環境では失敗するが、その場合も通常の mutex として動く。
+  pthread_mutexattr_setprotocol(&m_attr, PTHREAD_PRIO_INHERIT);
 
   for (size_t i = 0; i < expected_buf_num; ++i)
   {
@@ -1226,13 +1230,21 @@ RingBuffer::getOldestBufferNum()
 bool
 RingBuffer::allocateBuffer(int buffer_num)
 {
+  return acquireSlot(buffer_num, SLOT_LOCK_TIMEOUT_US);
+}
+
+//! @brief 指定スロットを writer として確保する
+//! @param [in] timeout_us ロックを待つ上限。0 なら待たずに諦める
+bool
+RingBuffer::acquireSlot(int buffer_num, uint64_t timeout_us)
+{
   if (buffer_num < 0 || static_cast<size_t>(buffer_num) >= expected_buf_num)
   {
     return false;
   }
 
   SlotRecord *s = slot(buffer_num);
-  int         r = lockSlotWithin(&s->owner, SLOT_LOCK_TIMEOUT_US);
+  int         r = lockSlotWithin(&s->owner, timeout_us);
 
   if (r == EOWNERDEAD)
   {
@@ -1248,7 +1260,7 @@ RingBuffer::allocateBuffer(int buffer_num)
 
   if (r != 0)
   {
-    return false;  // EBUSY: 生きている writer が使用中
+    return false;  // EBUSY: 生きている writer か reader が使用中
   }
 
   // 書き込み中は「有効なデータが無い」状態にしておく。
@@ -1263,6 +1275,74 @@ RingBuffer::allocateBuffer(int buffer_num)
   setSlotOwned(buffer_num, true);
   std::atomic_thread_fence(std::memory_order_seq_cst);
   return true;
+}
+
+//! @brief 書き込めるスロットを 1 つ確保する
+//! @details **古い順に全スロットを試す**のが要点（R04-F08）。
+//!
+//!          以前は getOldestBufferNum() が返す 1 つだけを 10 回試していた。
+//!          R03-F04 で reader もスロットを排他するようになったため、
+//!          時間検索型の Subscriber（最古スロットを読む）が張り付くと、
+//!          他のスロットが空いていても publish が
+//!          「Could not allocate a buffer (all buffers are in use)」で
+//!          失敗するようになっていた。実測では buf_num=3 で reader が
+//!          1 スロット保持するだけで発行が例外になった。
+//!          メッセージも二重に誤りで、全バッファは使用中ではないし、
+//!          buffer_num を増やしても直らない。
+//!
+//!          1 巡目は**待たずに** trylock するので、空きがあれば即座に見つかる。
+//!          全部塞がっていたときだけ、最も古いものを短時間だけ待つ。
+//! @return int 確保できたスロット番号。できなければ -1
+int
+RingBuffer::acquireWritableSlot()
+{
+  const size_t n = expected_buf_num;
+  if (n == 0)
+  {
+    return -1;
+  }
+
+  // 試行済みの印。MAX_BUFFER_NUM は 1024 なのでスタックに収まる（ヒープ確保をしない）。
+  uint64_t   tried[(MAX_BUFFER_NUM + 63) / 64] = { 0 };
+  const auto mark     = [&](size_t i) { tried[i >> 6] |= (1ULL << (i & 63)); };
+  const auto is_tried = [&](size_t i) { return ((tried[i >> 6] >> (i & 63)) & 1ULL) != 0; };
+
+  for (size_t k = 0; k < n; ++k)
+  {
+    // 未試行のうち発行番号が最小のもの、すなわち最も古いもの
+    size_t   best     = n;
+    uint64_t best_seq = 0;
+    for (size_t i = 0; i < n; ++i)
+    {
+      if (is_tried(i))
+      {
+        continue;
+      }
+      const uint64_t seq = slot(static_cast<int>(i))->sequence.load(std::memory_order_acquire);
+      if (best == n || seq < best_seq)
+      {
+        best     = i;
+        best_seq = seq;
+      }
+    }
+    if (best == n)
+    {
+      break;
+    }
+    mark(best);
+    if (acquireSlot(static_cast<int>(best), 0))
+    {
+      return static_cast<int>(best);
+    }
+  }
+
+  // 全スロットが塞がっていた。最も古いものだけ、短時間待ってみる。
+  const int oldest = getOldestBufferNum();
+  if (acquireSlot(oldest, SLOT_LOCK_TIMEOUT_US))
+  {
+    return oldest;
+  }
+  return -1;
 }
 
 //! @brief 書き込みを確定してスロットを手放す
