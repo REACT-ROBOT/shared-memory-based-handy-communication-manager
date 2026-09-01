@@ -146,6 +146,11 @@ SharedMemoryPosix::~SharedMemoryPosix()
 bool
 SharedMemoryPosix::connect(size_t size)
 {
+  // 同じオブジェクトに対して connect() を続けて呼ぶと、以前は既存の
+  // マッピングと fd を閉じずに上書きしていた（アドレス空間と fd が漏れる）。
+  // 張り直しとして扱い、先に片付ける。
+  disconnect();
+
   const std::string str_buf = toShmPath(shm_name);
 
   shm_fd = shm_open(str_buf.c_str(), shm_oflag, static_cast<mode_t>(shm_perm));
@@ -272,7 +277,12 @@ SharedMemoryPosix::isDisconnected() const
     return true;
   }
 
-  fstat(shm_fd, &stat);
+  // fstat の失敗を無視すると未初期化の st_nlink を読むことになる。
+  // 判定できない場合は「切断されている」として扱う（安全側）。
+  if (fstat(shm_fd, &stat) != 0)
+  {
+    return true;
+  }
   if (stat.st_nlink <= 0)
   {
     return true;

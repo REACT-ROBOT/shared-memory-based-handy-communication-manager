@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(shm VERSION 3.0.0 LANGUAGES CXX)
+project(shm VERSION 4.0.0 LANGUAGES CXX)
 
 # ----------------------------------------------------------------------------
 # バージョン
@@ -39,6 +39,11 @@ project(shm VERSION 3.0.0 LANGUAGES CXX)
 #        再ビルドして同時に入れ替えること。入れ替え前に `shm_tool remove` で
 #        既存の /dev/shm/shm_* を消すこと。**
 #        新しいコードが v1 の領域を読んだ場合は magic 不一致として明確に失敗する。
+# 4.0.0: 再レビュー R02 の指摘に対応。共有メモリヘッダに topic contract
+#        （payload kind / element_size / schema_id）を追加したため ABI を 3 に上げた。
+#        **v3 以前のセグメントとは接続できない。入れ替え前に `shm_tool remove`。**
+#        既定権限を 0666 から 0660 に変更した（other を落とした）。別ユーザー間で
+#        共有する必要がある場合は同じグループにするか PERM_ALL を明示すること。
 # ----------------------------------------------------------------------------
 set(SHM_VERSION "${PROJECT_VERSION}" CACHE INTERNAL
     "Version of shared-memory-based-handy-communication-manager in this build tree")

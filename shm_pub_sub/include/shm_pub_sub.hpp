@@ -115,6 +115,23 @@ public:
   void publish(const T &data);
 
 private:
+  bool publishOnce(const T &data);
+
+public:
+
+private:
+  //! このトピックに何を入れるかの取り決め（R02-F01）。
+  //! 購読側が接続時にこれと照合し、食い違ったら payload に触れずに失敗する。
+  static RingBuffer::TopicContract contractOf()
+  {
+    RingBuffer::TopicContract c;
+    c.kind         = PayloadKind::Scalar;
+    c.element_size = sizeof(T);
+    c.schema_id    = type_schema_id<T>();
+    c.alignment    = alignof(T);
+    return c;
+  }
+
   std::string               shm_name;
   int                       shm_buf_num;
   PERM                      shm_perm;
@@ -238,6 +255,20 @@ public:
   }
 
 private:
+  //! 購読側が期待するトピックの取り決め（R02-F01）。
+  //! Publisher が記録したものと食い違ったら payload に一切触れずに失敗する。
+  static RingBuffer::TopicContract contractOf()
+  {
+    RingBuffer::TopicContract c;
+    c.kind         = PayloadKind::Scalar;
+    c.element_size = sizeof(T);
+    c.schema_id    = type_schema_id<T>();
+    c.alignment    = alignof(T);
+    return c;
+  }
+  //! 指定スロットを、payload と素性が同じサンプルであることを保証して読む
+  bool readSlotInto(RingBuffer *ring_buffer, int slot, SampleInfo *info);
+
   std::string               shm_name;
   std::unique_ptr<ShmTopic> topic;
   int                       current_reading_buffer;
@@ -330,7 +361,7 @@ Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm)
   try
   {
     topic = std::make_unique<ShmTopic>(shm_name, shm_perm, true);
-    if (!topic->ensureCapacity(sizeof(T), shm_buf_num, alignof(T)))
+    if (!topic->ensureCapacity(sizeof(T), shm_buf_num, alignof(T), contractOf()))
     {
       throw std::runtime_error(topic->lastError());
     }
@@ -359,11 +390,32 @@ Publisher<T>::publish(const T &data)
   // 検知と実データアクセスの間に必ず窓が空いた（R01-F01 の TOCTOU）。
   // 形式 v3 では稼働中のセグメントを作り直さず、新しい世代を別セグメントとして
   // 作るので、古い世代を掴んだままでも範囲外アクセスにはならない。
-  if (!topic->ensureCapacity(sizeof(T), shm_buf_num, alignof(T)))
+  // 世代切替と publish が競合した場合に備えて、コミット後に世代を確認し、
+  // 切り替わっていたら新しい世代へ発行し直す（R02-F05）。
+  // これをしないと、切替の隙間に旧世代へ commit したサンプルが
+  // 「成功したのに誰にも読まれない」ことになる。
+  constexpr int MAX_PUBLISH_ATTEMPTS = 4;
+  for (int attempt = 0; attempt < MAX_PUBLISH_ATTEMPTS; ++attempt)
+  {
+    if (publishOnce(data))
+    {
+      return;
+    }
+  }
+  throw std::runtime_error("shm::Publisher: the layout generation kept changing while publishing");
+}
+
+//! @brief 1 回分の publish。世代が切り替わっていたら false を返す（呼び出し側で再試行）
+template <typename T>
+bool
+Publisher<T>::publishOnce(const T &data)
+{
+  if (!topic->ensureCapacity(sizeof(T), shm_buf_num, alignof(T), contractOf()))
   {
     throw std::runtime_error("shm::Publisher: " + topic->lastError());
   }
   RingBuffer *ring_buffer = topic->ring();
+  const uint64_t generation_before = topic->generation();
 
   // 確保できないままの書き込みは、他の writer が書き込み途中のバッファを
   // 破壊し購読可能にしてしまうため許されない。確保成功を必須とする。
@@ -401,6 +453,10 @@ Publisher<T>::publish(const T &data)
   ring_buffer->commitBuffer(oldest_buffer, sizeof(T));
 
   ring_buffer->signal();
+
+  // コミットの間に世代が切り替わっていたら、このサンプルは新しい世代の
+  // 購読者には見えない。呼び出し側で発行し直す。
+  return topic->isGeneration(generation_before);
 }
 
 //! @brief \~english     Constructor
@@ -470,6 +526,55 @@ Subscriber<T>::Subscriber(std::string name)
   }
 }
 
+//! @brief 指定スロットを、payload と素性が同じサンプルであることを保証して読む
+//! @details 発行番号 → メタデータ → payload → 発行番号 の順に読み、前後が
+//!          一致した場合だけ成功とする。以前は成功判定の後に別操作として
+//!          getSampleInfo() を呼んでいたため、その間に publisher が同じスロットを
+//!          再確保でき、「payload は N、info は N+1」という組合せが返り得た
+//!          （1 スロットで 63 万回中 1,869 回再現）。時刻合わせでは別時刻の
+//!          センサ値を「整列済み」として返すことになり実害がある（R02-F03）。
+template <typename T>
+bool
+Subscriber<T>::readSlotInto(RingBuffer *ring_buffer, int slot, SampleInfo *info)
+{
+  const SampleInfo before = ring_buffer->getSampleInfo(slot);
+  if (before.sequence == 0)
+  {
+    return false;
+  }
+
+  // 実際に書かれた長さが自分の型と一致すること（R02-F01）。
+  // 一致しないまま memcpy すると容量を超えて読む。
+  if (before.payload_size != sizeof(T))
+  {
+    return false;
+  }
+
+  unsigned char *data_ptr      = ring_buffer->getDataList();
+  const size_t   buffer_offset = static_cast<size_t>(slot) * ring_buffer->getElementSize();
+
+  // 今返していない側へ読み込む。失敗しても直前に返した値は壊れない。
+  T &scratch = return_buffers_[1 - return_index_];
+  std::memcpy(&scratch, data_ptr + buffer_offset, sizeof(T));
+
+  // コピーの読み込みが完了してから発行番号を再読みする（load-load 順序の固定）
+  std::atomic_thread_fence(std::memory_order_acquire);
+
+  if (ring_buffer->getSequence(slot) != before.sequence)
+  {
+    return false;  // コピー中に上書きされた
+  }
+
+  if (info != nullptr)
+  {
+    *info = before;
+  }
+  current_reading_buffer = slot;
+  return_index_          = 1 - return_index_;
+  ring_buffer->markAsRead(before.sequence);
+  return true;
+}
+
 //! @brief \~english     Subscribe a topic
 //!        \~japanese-en トピックを読み込む
 //! @param None \~japanese-en なし
@@ -485,72 +590,7 @@ template <typename T>
 const T &
 Subscriber<T>::subscribe(bool *is_success)
 {
-  // 現在有効な世代へ追随する。世代が進んでいれば新しいセグメントへ張り直す。
-  // 古い世代を掴んだままでもマッピングは有効なので、範囲外アクセスにはならない。
-  if (!topic->follow())
-  {
-    *is_success = false;
-    return return_buffers_[return_index_];
-  }
-  RingBuffer *ring_buffer = topic->ring();
-  ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
-
-  // seqlock 方式の読み出し: バッファ選択 → コピー → 発行番号の再確認。
-  // コピー中に publisher がリングを一周して同じバッファを再確保・上書きすると
-  // 発行番号が変化するため、変化を検出したら選択からやり直す。
-  // これを行わないと新旧データの混ざった値 (torn read) を返すことがある。
-  constexpr int MAX_READ_RETRY = 5;
-  bool          no_data        = false;
-  for (int attempt = 0; attempt < MAX_READ_RETRY; ++attempt)
-  {
-    int newest_buffer = ring_buffer->getNewestBufferNum();
-    if (newest_buffer < 0)
-    {
-      no_data = true;
-      break;
-    }
-
-  // 整合性の検証には時刻ではなく発行番号を使う。発行番号は単一の atomic から
-    // fetch_add で採番され再利用されないので、同一 microsecond の publish で
-    // 前後の値が一致してしまう ABA が原理的に起きない（R01-F05）。
-    uint64_t sequence_before = ring_buffer->getSequence(newest_buffer);
-    if (sequence_before == 0)
-    {
-      // 選択直後に書き換えが始まった（または初期化された）
-      ++contention_retry_count_;
-      continue;
-    }
-
-    unsigned char *data_ptr      = ring_buffer->getDataList();
-    size_t         buffer_offset = static_cast<size_t>(newest_buffer) * ring_buffer->getElementSize();
-
-    // 今返していない側へ読み込む。失敗しても直前に返した値は壊れない。
-    T &scratch = return_buffers_[1 - return_index_];
-    std::memcpy(&scratch, data_ptr + buffer_offset, sizeof(T));
-
-    // コピーの読み込みが完了してから発行番号を再読みする（load-load 順序の固定）
-    std::atomic_thread_fence(std::memory_order_acquire);
-
-    if (ring_buffer->getSequence(newest_buffer) == sequence_before)
-    {
-      *is_success            = true;
-      current_reading_buffer = newest_buffer;
-      return_index_          = 1 - return_index_;
-      ring_buffer->markAsRead(sequence_before);
-      return return_buffers_[return_index_];
-    }
-    // コピー中に上書きされた → やり直し
-    ++contention_retry_count_;
-  }
-
-  // 一貫したスナップショットを取得できなかった。返るのは直前に成功した値
-  // （一度も成功していなければ T の既定値）なので、is_success を必ず確認すること。
-  if (!no_data)
-  {
-    ++contention_failure_count_;
-  }
-  *is_success = false;
-  return return_buffers_[return_index_];
+  return subscribe(is_success, nullptr);
 }
 
 //! @brief 最新のデータを読み、素性も受け取る
@@ -558,16 +598,52 @@ template <typename T>
 const T &
 Subscriber<T>::subscribe(bool *state, SampleInfo *info)
 {
-  const T &value = subscribe(state);
+  // legacy の subscribe(bool*) は null を渡せない契約なので、ここで明示する。
+  if (state == nullptr)
+  {
+    throw std::invalid_argument("shm::Subscriber::subscribe(): 'state' must not be null");
+  }
+  *state = false;
   if (info != nullptr)
   {
     *info = SampleInfo{};
-    if (*state && topic->ring() != nullptr)
-    {
-      *info = topic->ring()->getSampleInfo(current_reading_buffer);
-    }
   }
-  return value;
+
+  RingBuffer::TopicContract contract = contractOf();
+  // 現在有効な世代へ追随する。世代が進んでいれば新しいセグメントへ張り直す。
+  // 型が食い違っていればここで失敗し、payload には一切触れない。
+  if (!topic->follow(&contract))
+  {
+    return return_buffers_[return_index_];
+  }
+  RingBuffer *ring_buffer = topic->ring();
+  ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
+
+  constexpr int MAX_READ_RETRY = 5;
+  bool          no_data        = false;
+  for (int attempt = 0; attempt < MAX_READ_RETRY; ++attempt)
+  {
+    const int newest_buffer = ring_buffer->getNewestBufferNum();
+    if (newest_buffer < 0)
+    {
+      no_data = true;
+      break;
+    }
+    if (readSlotInto(ring_buffer, newest_buffer, info))
+    {
+      *state = true;
+      return return_buffers_[return_index_];
+    }
+    ++contention_retry_count_;
+  }
+
+  // 一貫したスナップショットを取得できなかった。返るのは直前に成功した値
+  // （一度も成功していなければ T の既定値）なので、state を必ず確認すること。
+  if (!no_data)
+  {
+    ++contention_failure_count_;
+  }
+  return return_buffers_[return_index_];
 }
 
 //! @brief 別トピックのサンプルに時刻を合わせて読む
@@ -615,6 +691,7 @@ template <typename T>
 const T &
 Subscriber<T>::subscribeAt(const TimeQuery &query, SearchStatus *status, SampleInfo *info)
 {
+  RingBuffer::TopicContract contract = contractOf();
   auto set_status = [status](SearchStatus value) {
     if (status != nullptr)
     {
@@ -622,7 +699,7 @@ Subscriber<T>::subscribeAt(const TimeQuery &query, SearchStatus *status, SampleI
     }
   };
 
-  if (!topic->follow())
+  if (!topic->follow(&contract))
   {
     set_status(SearchStatus::NotConnected);
     return return_buffers_[return_index_];
@@ -646,30 +723,9 @@ Subscriber<T>::subscribeAt(const TimeQuery &query, SearchStatus *status, SampleI
       return return_buffers_[return_index_];
     }
 
-    const uint64_t sequence_before = ring_buffer->getSequence(found);
-    if (sequence_before == 0)
+    // payload と素性を一体で読む（R02-F03）
+    if (readSlotInto(ring_buffer, found, info))
     {
-      ++contention_retry_count_;
-      continue;
-    }
-
-    unsigned char *data_ptr      = ring_buffer->getDataList();
-    size_t         buffer_offset = static_cast<size_t>(found) * ring_buffer->getElementSize();
-
-    // 今返していない側へ読み込む。失敗しても直前に返した値は壊れない。
-    T &scratch = return_buffers_[1 - return_index_];
-    std::memcpy(&scratch, data_ptr + buffer_offset, sizeof(T));
-
-    std::atomic_thread_fence(std::memory_order_acquire);
-
-    if (ring_buffer->getSequence(found) == sequence_before)
-    {
-      if (info != nullptr)
-      {
-        *info = ring_buffer->getSampleInfo(found);
-      }
-      current_reading_buffer = found;
-      return_index_          = 1 - return_index_;
       set_status(SearchStatus::Success);
       return return_buffers_[return_index_];
     }
@@ -688,7 +744,8 @@ template <typename T>
 RetentionWindow
 Subscriber<T>::getRetentionWindow()
 {
-  if (!topic->follow())
+  RingBuffer::TopicContract contract = contractOf();
+  if (!topic->follow(&contract))
   {
     return RetentionWindow{};
   }
@@ -699,7 +756,8 @@ template <typename T>
 bool
 Subscriber<T>::waitFor(uint64_t timeout_usec)
 {
-  if (!topic->follow())
+  RingBuffer::TopicContract contract = contractOf();
+  if (!topic->follow(&contract))
   {
     return false;
   }
@@ -724,7 +782,8 @@ bool
 Subscriber<T>::existsPublisherMemory()
 {
   // 共有メモリが存在し、有効な世代が公開されているかを確認する
-  return topic != nullptr && topic->follow();
+  RingBuffer::TopicContract contract = contractOf();
+  return topic != nullptr && topic->follow(&contract);
 }
 
 }  // namespace shm

@@ -258,6 +258,19 @@ if(BUILD_TESTS)
   # ハングを FAIL にする（ctest の --timeout に依存させない）
   set_tests_properties(${shm_pub_sub_format_v2_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT})
 
+    # 再レビュー R02 の指摘に対する回帰テスト
+    add_executable(shm_pub_sub_contract_test
+        test/shm_pub_sub_contract_test.cpp
+      )
+    target_link_libraries(shm_pub_sub_contract_test
+        PRIVATE
+        shm_pub_sub
+        ${GTEST_LDFLAGS}
+      )
+    gtest_add_tests(TARGET shm_pub_sub_contract_test TEST_LIST shm_pub_sub_contract_test_cases)
+  # ハングを FAIL にする（ctest の --timeout に依存させない）
+  set_tests_properties(${shm_pub_sub_contract_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT})
+
     # 時刻指定読み出し（タイムマシン）の回帰テスト
     add_executable(shm_pub_sub_timemachine_test
         test/shm_pub_sub_timemachine_test.cpp

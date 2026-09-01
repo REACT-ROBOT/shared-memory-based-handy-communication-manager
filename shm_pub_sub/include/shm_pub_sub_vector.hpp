@@ -45,6 +45,11 @@ namespace shm
 template <class T>
 class Publisher<std::vector<T>>
 {
+  // 汎用テンプレートの static_assert は特殊化には適用されないため、
+  // ここでも同じ制約を課す（R02-F01）。要素型が trivially copyable でないと、
+  // 共有メモリへのバイトコピーで意味が壊れる。
+  SHM_ASSERT_SHAREABLE(T, "shm::Publisher<std::vector<T>>");
+
 public:
   Publisher(std::string name = "", int buffer_num = 3, PERM perm = DEFAULT_PERM);
   ~Publisher() = default;
@@ -53,6 +58,17 @@ public:
   void _publish(const std::vector<T> data);
 
 private:
+  //! このトピックに何を入れるかの取り決め（R02-F01）
+  static RingBuffer::TopicContract contractOf()
+  {
+    RingBuffer::TopicContract c;
+    c.kind         = PayloadKind::Vector;
+    c.element_size = sizeof(T);
+    c.schema_id    = type_schema_id<T>();
+    c.alignment    = alignof(T);
+    return c;
+  }
+
   std::string               shm_name;
   int                       shm_buf_num;
   PERM                      shm_perm;
@@ -69,6 +85,11 @@ private:
 template <typename T>
 class Subscriber<std::vector<T>>
 {
+  // 汎用テンプレートの static_assert は特殊化には適用されないため、
+  // ここでも同じ制約を課す（R02-F01）。要素型が trivially copyable でないと、
+  // 共有メモリへのバイトコピーで意味が壊れる。
+  SHM_ASSERT_SHAREABLE(T, "shm::Subscriber<std::vector<T>>");
+
 public:
   Subscriber(std::string name = "");
   ~Subscriber() = default;
@@ -98,6 +119,20 @@ public:
   }
 
 private:
+  //! このトピックに何を入れるかの取り決め（R02-F01）
+  static RingBuffer::TopicContract contractOf()
+  {
+    RingBuffer::TopicContract c;
+    c.kind         = PayloadKind::Vector;
+    c.element_size = sizeof(T);
+    c.schema_id    = type_schema_id<T>();
+    c.alignment    = alignof(T);
+    return c;
+  }
+
+  //! 指定スロットを、payload と素性が同じサンプルであることを保証して読む
+  bool readSlotInto(RingBuffer *ring_buffer, int slot, SampleInfo *info);
+
   std::string               shm_name;
   std::unique_ptr<ShmTopic> topic;
   int                       current_reading_buffer;
@@ -160,7 +195,7 @@ Publisher<std::vector<T>>::Publisher(std::string name, int buffer_num, PERM perm
 
   topic = std::make_unique<ShmTopic>(shm_name, shm_perm, true);
   // 長さは最初の publish で決まる。ここでは容量 0 で世代を用意しておく。
-  if (!topic->ensureCapacity(0, shm_buf_num, alignof(T)))
+  if (!topic->ensureCapacity(0, shm_buf_num, alignof(T), contractOf()))
   {
     throw std::runtime_error("shm::Publisher: " + topic->lastError());
   }
@@ -181,7 +216,7 @@ Publisher<std::vector<T>>::publish(const std::vector<T> &data)
   // 以前はベクタ長が変わるたびに稼働中のセグメントを作り直しており、
   // それが R01-F01 の TOCTOU の原因だった。
   vector_size = data.size();
-  if (!topic->ensureCapacity(sizeof(T) * vector_size, shm_buf_num, alignof(T)))
+  if (!topic->ensureCapacity(sizeof(T) * vector_size, shm_buf_num, alignof(T), contractOf()))
   {
     throw std::runtime_error("shm::Publisher: " + topic->lastError());
   }
@@ -275,11 +310,66 @@ Subscriber<std::vector<T>>::Subscriber(std::string name)
 //! @return const T& 読み込んだトピックへのconst参照
 //! @details タイムスタンプが最も新しいトピックを読み込む．
 //! 後々可変長なクラスに拡張できるように、メモリへの直接的な参照を返すので、コピーコンストラクタや代入によってデータを複製することを推奨する．
+//! @brief 指定スロットを、payload と素性が同じサンプルであることを保証して読む
+//! @details 理由はスカラ版の同名関数のコメントを参照（R02-F03）。
+//!          長さは容量ではなくスロットの payload_size から求めるが、その値が
+//!          容量に収まり、かつ要素サイズで割り切れることを同じスナップショット内で
+//!          確認する。確認しないと、メタデータの破損や別の要素型の Publisher に
+//!          よって過大確保や範囲外読み出しになる（R02-F01）。
+template <typename T>
+bool
+Subscriber<std::vector<T>>::readSlotInto(RingBuffer *ring_buffer, int slot, SampleInfo *info)
+{
+  const SampleInfo before = ring_buffer->getSampleInfo(slot);
+  if (before.sequence == 0)
+  {
+    return false;
+  }
+
+  const size_t capacity      = ring_buffer->getElementSize();
+  const size_t payload_bytes = static_cast<size_t>(before.payload_size);
+  if (payload_bytes > capacity || (payload_bytes % sizeof(T)) != 0)
+  {
+    return false;
+  }
+  vector_size = payload_bytes / sizeof(T);
+
+  unsigned char *data_ptr      = ring_buffer->getDataList();
+  const size_t   buffer_offset = static_cast<size_t>(slot) * capacity;
+
+  // 今返していない側へ読み込む。失敗しても直前に返した値は壊れない。
+  std::vector<T> &scratch = return_buffers_[1 - return_index_];
+  scratch.resize(vector_size);
+  // 空の vector では data() が nullptr。長さ 0 の memcpy でもヌルは未定義動作
+  if (vector_size > 0)
+  {
+    std::memcpy(scratch.data(), data_ptr + buffer_offset, payload_bytes);
+  }
+
+  // コピーの読み込みが完了してから発行番号を再読みする（load-load 順序の固定）
+  std::atomic_thread_fence(std::memory_order_acquire);
+
+  if (ring_buffer->getSequence(slot) != before.sequence)
+  {
+    return false;
+  }
+
+  if (info != nullptr)
+  {
+    *info = before;
+  }
+  current_reading_buffer = slot;
+  return_index_          = 1 - return_index_;
+  ring_buffer->markAsRead(before.sequence);
+  return true;
+}
+
 template <typename T>
 const std::vector<T> &
 Subscriber<std::vector<T>>::subscribe(bool *is_success)
 {
-  if (!topic->follow())
+  RingBuffer::TopicContract contract = contractOf();
+  if (!topic->follow(&contract))
   {
     *is_success = false;
     return return_buffers_[return_index_];
@@ -401,6 +491,7 @@ template <typename T>
 const std::vector<T> &
 Subscriber<std::vector<T>>::subscribeAt(const TimeQuery &query, SearchStatus *status, SampleInfo *info)
 {
+  RingBuffer::TopicContract contract = contractOf();
   auto set_status = [status](SearchStatus value) {
     if (status != nullptr)
     {
@@ -408,7 +499,7 @@ Subscriber<std::vector<T>>::subscribeAt(const TimeQuery &query, SearchStatus *st
     }
   };
 
-  if (!topic->follow())
+  if (!topic->follow(&contract))
   {
     set_status(SearchStatus::NotConnected);
     return return_buffers_[return_index_];
@@ -432,37 +523,10 @@ Subscriber<std::vector<T>>::subscribeAt(const TimeQuery &query, SearchStatus *st
       return return_buffers_[return_index_];
     }
 
-    const uint64_t sequence_before = ring_buffer->getSequence(found);
-    if (sequence_before == 0)
+    // payload と素性を一体で読む（R02-F03）。
+    // 長さの境界検証も同じスナップショット内で行う（R02-F01）。
+    if (readSlotInto(ring_buffer, found, info))
     {
-      ++contention_retry_count_;
-      continue;
-    }
-
-    // 要素数は容量ではなくスロットの payload_size から求める
-    const size_t payload_bytes = static_cast<size_t>(ring_buffer->getPayloadSize(found));
-    vector_size                = payload_bytes / sizeof(T);
-
-    unsigned char *data_ptr      = ring_buffer->getDataList();
-    size_t         buffer_offset = static_cast<size_t>(found) * ring_buffer->getElementSize();
-
-    std::vector<T> &scratch = return_buffers_[1 - return_index_];
-    scratch.resize(vector_size);
-    if (vector_size > 0)
-    {
-      std::memcpy(scratch.data(), data_ptr + buffer_offset, sizeof(T) * vector_size);
-    }
-
-    std::atomic_thread_fence(std::memory_order_acquire);
-
-    if (ring_buffer->getSequence(found) == sequence_before)
-    {
-      if (info != nullptr)
-      {
-        *info = ring_buffer->getSampleInfo(found);
-      }
-      current_reading_buffer = found;
-      return_index_          = 1 - return_index_;
       set_status(SearchStatus::Success);
       return return_buffers_[return_index_];
     }
@@ -478,7 +542,8 @@ template <typename T>
 RetentionWindow
 Subscriber<std::vector<T>>::getRetentionWindow()
 {
-  if (!topic->follow())
+  RingBuffer::TopicContract contract = contractOf();
+  if (!topic->follow(&contract))
   {
     return RetentionWindow{};
   }
@@ -489,7 +554,8 @@ template <typename T>
 bool
 Subscriber<std::vector<T>>::waitFor(uint64_t timeout_usec)
 {
-  if (!topic->follow())
+  RingBuffer::TopicContract contract = contractOf();
+  if (!topic->follow(&contract))
   {
     return false;
   }

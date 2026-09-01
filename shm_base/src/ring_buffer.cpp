@@ -146,6 +146,55 @@ computeLayout(size_t element_capacity, size_t buf_num, size_t payload_alignment,
   return total_size >= data_offset;
 }
 
+//! @brief トピックの取り決めが一致するか
+//! @details 一致しない接続を許すと、長さの解釈が食い違って範囲外アクセスになる。
+//!          実測では Publisher<uint8_t> のトピックへ 1 MiB の型で接続すると
+//!          SIGSEGV していた（R02-F01）。
+bool
+RingBuffer::TopicContract::matches(const TopicContract &other, std::string *reason) const
+{
+  auto fail = [reason](const std::string &msg) {
+    if (reason != nullptr)
+    {
+      *reason = msg;
+    }
+    return false;
+  };
+
+  auto kind_name = [](PayloadKind k) -> const char * {
+    switch (k)
+    {
+      case PayloadKind::Scalar:     return "scalar";
+      case PayloadKind::Vector:     return "vector";
+      case PayloadKind::Serialized: return "serialized";
+      default:                      return "unknown";
+    }
+  };
+
+  if (kind != other.kind)
+  {
+    return fail(std::string("payload kind mismatch (segment is ") + kind_name(other.kind) + ", this process expects " +
+                kind_name(kind) + ")");
+  }
+  if (element_size != other.element_size)
+  {
+    return fail("element size mismatch (segment " + std::to_string(other.element_size) + " bytes, this process expects " +
+                std::to_string(element_size) + " bytes)");
+  }
+  // schema_id は同じツールチェインでしか一致しないため、どちらかが 0 の場合は照合しない
+  if (schema_id != 0 && other.schema_id != 0 && schema_id != other.schema_id)
+  {
+    return fail("payload type mismatch: the segment holds a different type of the same size. "
+                "Remove it with 'shm_tool remove <topic>' or use a different topic name");
+  }
+  if (alignment != 0 && other.alignment != 0 && (other.alignment % alignment) != 0)
+  {
+    return fail("payload alignment mismatch (segment " + std::to_string(other.alignment) + ", this process needs " +
+                std::to_string(alignment) + ")");
+  }
+  return true;
+}
+
 size_t
 RingBuffer::getSize(size_t element_size, int buffer_num, size_t payload_alignment)
 {
@@ -223,7 +272,8 @@ RingBuffer::waitForInitialization(unsigned char *first_ptr, uint64_t timeout_use
 //!          組み立てる前に、magic・ABI 版・各サイズ・全オフセットが実マッピング長に
 //!          収まることを溢れ検査付きで確認する（R01-F06）。
 bool
-RingBuffer::validateLayout(const unsigned char *first_ptr, size_t mapping_size, std::string *reason)
+RingBuffer::validateLayout(const unsigned char *first_ptr, size_t mapping_size, std::string *reason,
+                           const TopicContract *expected, uint64_t expected_generation)
 {
   auto fail = [reason](const std::string &msg) {
     if (reason != nullptr)
@@ -271,10 +321,41 @@ RingBuffer::validateLayout(const unsigned char *first_ptr, size_t mapping_size, 
                 std::to_string(sizeof(SlotRecord)) + ")");
   }
 
+  // 初期化が完了していないセグメントに接続してはならない（R02-F02）。
+  // 途中の状態では pthread mutex がまだ初期化されていないか、初期化の最中である。
+  // 以前は state を見ていなかったため、INITIALIZING のまま success を返していた。
+  const uint32_t state = h->state.load(std::memory_order_acquire);
+  if (state != INITIALIZED)
+  {
+    return fail(state == INITIALIZING ? "the segment is still being initialized"
+                                      : "the segment is not initialized");
+  }
+
   const uint64_t boot = getBootIdHash();
   if (boot != 0 && h->boot_id_hash != 0 && h->boot_id_hash != boot)
   {
     return fail("the segment was created before the last reboot; its monotonic timestamps are meaningless");
+  }
+
+  // セグメント名の世代とヘッダの世代が食い違っていないか（R02-F06）
+  if (expected_generation != 0 && h->generation != expected_generation)
+  {
+    return fail("generation mismatch (segment says " + std::to_string(h->generation) + ", expected " +
+                std::to_string(expected_generation) + ")");
+  }
+
+  // トピックの取り決めの照合（R02-F01）。payload に触れる前に行う。
+  if (expected != nullptr)
+  {
+    TopicContract actual;
+    actual.kind         = static_cast<PayloadKind>(h->payload_kind);
+    actual.element_size = h->element_size;
+    actual.schema_id    = h->schema_id;
+    actual.alignment    = h->payload_alignment;
+    if (!expected->matches(actual, reason))
+    {
+      return false;
+    }
   }
 
   // element_capacity == 0 は異常ではない。空の vector を publish したトピックや、
@@ -311,6 +392,12 @@ RingBuffer::validateLayout(const unsigned char *first_ptr, size_t mapping_size, 
                 std::to_string(total_size) + "); the shared memory is truncated");
   }
 
+  // 検証している最中に他プロセスが作り直していないことを確認する（R02-F02）
+  if (h->state.load(std::memory_order_acquire) != INITIALIZED)
+  {
+    return fail("the segment was re-initialized while it was being validated");
+  }
+
   return true;
 }
 
@@ -319,7 +406,8 @@ RingBuffer::validateLayout(const unsigned char *first_ptr, size_t mapping_size, 
 //! @param [in] size              要素サイズ。0 かつ buffer_num が 0 なら接続のみ
 //! @param [in] buffer_num        バッファ数。0 なら既存レイアウトへの接続のみ
 //! @param [in] payload_alignment ペイロードに要求する境界
-RingBuffer::RingBuffer(unsigned char *first_ptr, size_t size, int buffer_num, size_t payload_alignment)
+RingBuffer::RingBuffer(unsigned char *first_ptr, size_t size, int buffer_num, size_t payload_alignment,
+                       const TopicContract *contract, uint64_t own_generation)
   : memory_ptr(first_ptr)
   , header(nullptr)
   , slot_base(nullptr)
@@ -371,7 +459,7 @@ RingBuffer::RingBuffer(unsigned char *first_ptr, size_t size, int buffer_num, si
                                   " must be a multiple of payload_alignment " + std::to_string(alignment));
     }
 
-    initializeOrAttach(size, buffer_num, alignment);
+    initializeOrAttach(size, buffer_num, alignment, contract, own_generation);
   }
   else
   {
@@ -386,6 +474,12 @@ RingBuffer::RingBuffer(unsigned char *first_ptr, size_t size, int buffer_num, si
     {
       throw std::runtime_error("shm::RingBuffer: ABI major version mismatch (segment " +
                                std::to_string(header->abi_major) + ", this build " + std::to_string(ABI_MAJOR) + ")");
+    }
+    // 初期化が完了していないセグメントに接続してはならない（R02-F02）。
+    // pthread mutex が未初期化・初期化途中の可能性がある。
+    if (header->state.load(std::memory_order_acquire) != INITIALIZED)
+    {
+      throw std::runtime_error("shm::RingBuffer: the segment is not fully initialized");
     }
     if (header->element_capacity > MAX_ELEMENT_SIZE)
     {
@@ -455,55 +549,74 @@ RingBuffer::setSlotOwned(int i, bool owned)
 //!          接続のみに留めることで既存の値と発行番号を保存する。
 //!          （後発 Publisher がタイムスタンプを消す問題への対応）
 void
-RingBuffer::initializeOrAttach(size_t element_size_arg, int buffer_num, size_t payload_alignment)
+RingBuffer::initializeOrAttach(size_t element_size_arg, int buffer_num, size_t payload_alignment,
+                               const TopicContract *contract, uint64_t own_generation)
 {
-  if (hasCompatibleLayout(element_size_arg, buffer_num, payload_alignment))
-  {
+  auto adopt = [&]() {
     expected_element_size      = element_size_arg;
     expected_buf_num           = static_cast<size_t>(buffer_num);
     expected_payload_alignment = payload_alignment;
     expected_generation        = header->generation;
     bindPointers();
+  };
+
+  if (hasCompatibleLayout(element_size_arg, buffer_num, payload_alignment, contract))
+  {
+    adopt();
     return;
   }
 
-  // 初期化権を CAS で獲得する。複数の writer がほぼ同時に起動した場合でも
-  // 実際に初期化するのは一者だけになる。
+  // ------------------------------------------------------------------------
+  // 初期化権の獲得（R02-F02）
+  //
+  // 初期化してよいのは「NOT_INITIALIZED からの CAS に成功した一者だけ」に限る。
+  // 以前は magic が無い領域では CAS せずに INITIALIZING を store していたため、
+  // 同時に新規と判断した複数の Publisher が同じ pthread_mutex_t を並行して
+  // pthread_mutex_init() し得た。また待ち時間切れでも各自が INITIALIZING を
+  // store して全員が再初期化へ進めた。
+  //
+  // 新規セグメントは ftruncate でゼロ埋めされるので state は NOT_INITIALIZED に
+  // なる。したがって特別扱いは不要で、常に CAS で判定できる。
+  // ------------------------------------------------------------------------
   uint32_t expected = NOT_INITIALIZED;
-  const bool fresh  = (header->magic != SHM_MAGIC);
-  if (fresh)
+  if (header->state.compare_exchange_strong(expected, INITIALIZING, std::memory_order_acq_rel,
+                                            std::memory_order_acquire))
   {
-    // magic が無い＝新規（または別形式）。state は信用できないので直接進める。
-    header->state.store(INITIALIZING, std::memory_order_release);
-  }
-  else if (!header->state.compare_exchange_strong(expected, INITIALIZING, std::memory_order_acq_rel,
-                                                  std::memory_order_acquire))
-  {
-    if (expected == INITIALIZING)
-    {
-      // 他プロセスが初期化中 → 完了を待ち、レイアウトが合えば接続のみで済ませる
-      if (waitForInitialization(memory_ptr, INIT_WAIT_TIMEOUT_US) &&
-          hasCompatibleLayout(element_size_arg, buffer_num, payload_alignment))
-      {
-        expected_element_size      = element_size_arg;
-        expected_buf_num           = static_cast<size_t>(buffer_num);
-        expected_payload_alignment = payload_alignment;
-        expected_generation        = header->generation;
-        bindPointers();
-        return;
-      }
-    }
-    // レイアウト不一致、または初期化中に落ちた残骸 → 作り直す。
-    // 初期化中であることを購読側に見せるため、一旦 INITIALIZING に落とす。
-    header->state.store(INITIALIZING, std::memory_order_release);
+    initializeContents(element_size_arg, buffer_num, payload_alignment, contract, own_generation);
+    return;
   }
 
-  initializeContents(element_size_arg, buffer_num, payload_alignment);
+  if (expected == INITIALIZING)
+  {
+    // 他プロセスが初期化中。完了を待ってから、あらためて判定する。
+    if (waitForInitialization(memory_ptr, INIT_WAIT_TIMEOUT_US))
+    {
+      if (hasCompatibleLayout(element_size_arg, buffer_num, payload_alignment, contract))
+      {
+        adopt();
+        return;
+      }
+      throw std::runtime_error("shm::RingBuffer: the segment was initialized with a different layout");
+    }
+    // 待ちきれなかった。**ここで奪って作り直してはならない。**
+    // 初期化中に落ちた残骸なのか、単に遅いだけなのかを時刻から区別できない。
+    // 奪えば、生きている相手が初期化中の pthread object を壊すことになる。
+    // 安全に自動回収する手段が無いので、明示的に失敗させて人の判断を仰ぐ。
+    throw std::runtime_error(
+        "shm::RingBuffer: another process has been initializing this segment for too long. "
+        "It may have died during initialization. Remove the segment with 'shm_tool remove <topic>' and retry");
+  }
+
+  // 既に初期化済みだがレイアウトが合わない。
+  // 破壊的に作り直すと、稼働中の参加者のオフセットが無効になる（R01-F01）。
+  // レイアウトを変えたいときは新しい世代を作ること（ShmTopic の役目）。
+  throw std::runtime_error("shm::RingBuffer: the segment is already initialized with a different layout");
 }
 
 //! @brief 共有メモリ上のレイアウトが要求と一致するか確認する
 bool
-RingBuffer::hasCompatibleLayout(size_t element_size_arg, int buffer_num, size_t payload_alignment) const
+RingBuffer::hasCompatibleLayout(size_t element_size_arg, int buffer_num, size_t payload_alignment,
+                                const TopicContract *contract) const
 {
   if (header->magic != SHM_MAGIC || header->abi_major != ABI_MAJOR)
   {
@@ -513,14 +626,28 @@ RingBuffer::hasCompatibleLayout(size_t element_size_arg, int buffer_num, size_t 
   {
     return false;
   }
-  return (header->element_capacity == element_size_arg) && (header->buf_num == static_cast<size_t>(buffer_num)) &&
-         (header->payload_alignment == payload_alignment);
+  if (!((header->element_capacity == element_size_arg) && (header->buf_num == static_cast<size_t>(buffer_num)) &&
+        (header->payload_alignment == payload_alignment)))
+  {
+    return false;
+  }
+  // トピックの取り決めも一致していること（R02-F01）
+  if (contract != nullptr)
+  {
+    TopicContract actual = getContract();
+    if (!contract->matches(actual, nullptr))
+    {
+      return false;
+    }
+  }
+  return true;
 }
 
 //! @brief リングバッファの実体を初期化する
 //! @details 呼び出し側で state を INITIALIZING にしてから呼ぶこと。
 void
-RingBuffer::initializeContents(size_t element_size_arg, int buffer_num, size_t payload_alignment)
+RingBuffer::initializeContents(size_t element_size_arg, int buffer_num, size_t payload_alignment,
+                               const TopicContract *contract, uint64_t own_generation)
 {
   size_t slot_offset = 0, data_offset = 0, total_size = 0;
   if (!computeLayout(element_size_arg, static_cast<size_t>(buffer_num), payload_alignment, slot_offset, data_offset,
@@ -529,9 +656,10 @@ RingBuffer::initializeContents(size_t element_size_arg, int buffer_num, size_t p
     throw std::invalid_argument("shm::RingBuffer: layout computation overflowed");
   }
 
-  // 世代は作り直しのたびに進める。旧レイアウトのオフセットを持ったままの
-  // インスタンスは isLayoutChanged() でこれに気付いて張り直す。
-  const uint64_t next_generation = header->generation + 1;
+  // 自分の世代番号は呼び出し側が決める（R02-F06）。
+  // 以前は「今の値 + 1」にしていたが、新しいセグメントはゼロ埋めなので
+  // #2 でも #3 でも常に 1 になり、セグメント名の N と照合できなかった。
+  const uint64_t generation = (own_generation != 0) ? own_generation : 1;
 
   header->magic             = SHM_MAGIC;
   header->abi_major         = ABI_MAJOR;
@@ -545,14 +673,19 @@ RingBuffer::initializeContents(size_t element_size_arg, int buffer_num, size_t p
   header->slot_size         = sizeof(SlotRecord);
   header->data_offset       = data_offset;
   header->boot_id_hash      = getBootIdHash();
-  header->generation = next_generation;
+  header->generation        = generation;
   header->sequence.store(0, std::memory_order_relaxed);
-  std::memset(header->reserved, 0, sizeof(header->reserved));
+  header->reserved          = 0;
+
+  // トピックの取り決め（R02-F01）
+  header->payload_kind = static_cast<uint32_t>(contract != nullptr ? contract->kind : PayloadKind::Unknown);
+  header->element_size = (contract != nullptr) ? contract->element_size : 0;
+  header->schema_id    = (contract != nullptr) ? contract->schema_id : 0;
 
   expected_element_size      = element_size_arg;
   expected_buf_num           = static_cast<size_t>(buffer_num);
   expected_payload_alignment = payload_alignment;
-  expected_generation        = next_generation;
+  expected_generation        = generation;
   bindPointers();
 
   initializeExclusiveAccess();
@@ -589,22 +722,38 @@ RingBuffer::initializeExclusiveAccess()
   pthread_mutexattr_destroy(&m_attr);
 }
 
+//! @brief 共有メモリに記録されている topic contract
+RingBuffer::TopicContract
+RingBuffer::getContract() const
+{
+  TopicContract c;
+  c.kind         = static_cast<PayloadKind>(header->payload_kind);
+  c.element_size = header->element_size;
+  c.schema_id    = header->schema_id;
+  c.alignment    = header->payload_alignment;
+  return c;
+}
+
+//! @brief 1 スロットの確保量
+//! @details 接続時に検証したスナップショットを返す。共有ヘッダの live 値を
+//!          読むと、接続後に他プロセスがヘッダを書き換えた場合に
+//!          「検証済み」という前提が崩れる（R02-F07）。
 size_t
 RingBuffer::getElementSize() const
 {
-  return header->element_capacity;
+  return expected_element_size;
 }
 
 size_t
 RingBuffer::getBufferNum() const
 {
-  return header->buf_num;
+  return expected_buf_num;
 }
 
 size_t
 RingBuffer::getPayloadAlignment() const
 {
-  return header->payload_alignment;
+  return expected_payload_alignment;
 }
 
 unsigned char *
@@ -616,7 +765,7 @@ RingBuffer::getDataList()
 uint64_t
 RingBuffer::getGeneration() const
 {
-  return header->generation;
+  return expected_generation;
 }
 
 uint64_t
@@ -1044,6 +1193,27 @@ RingBuffer::commitBuffer(int buffer_num, size_t payload_size, uint64_t capture_m
   }
 }
 
+uint64_t
+RingBuffer::getSequenceCounter() const
+{
+  return header->sequence.load(std::memory_order_acquire);
+}
+
+//! @brief 発行番号カウンタを最低でも floor まで進める
+//! @details 世代を切り替えたとき、新しいセグメントのカウンタは 0 から始まる。
+//!          旧世代で使った番号を再利用すると「発行番号はトピック内で一意」という
+//!          契約が壊れ、seqlock の検証やタイムマシンの順序付けが崩れる（R02-F05）。
+void
+RingBuffer::adoptSequenceFloor(uint64_t floor)
+{
+  uint64_t current = header->sequence.load(std::memory_order_acquire);
+  while (current < floor &&
+         !header->sequence.compare_exchange_weak(current, floor, std::memory_order_acq_rel,
+                                                 std::memory_order_acquire))
+  {
+  }
+}
+
 //! @brief 別のリングから取り出したサンプルを素性ごと取り込む
 //! @details 世代を切り替えるときに履歴を引き継ぐために使う。
 //!          発行番号を維持するのが要点で、これを新しく採番し直すと
@@ -1052,7 +1222,7 @@ RingBuffer::commitBuffer(int buffer_num, size_t payload_size, uint64_t capture_m
 bool
 RingBuffer::adoptSample(const SampleInfo &info, const void *payload, size_t bytes)
 {
-  if (info.sequence == 0 || bytes > header->element_capacity)
+  if (info.sequence == 0 || bytes > expected_element_size)
   {
     return false;
   }
@@ -1078,7 +1248,7 @@ RingBuffer::adoptSample(const SampleInfo &info, const void *payload, size_t byte
   SlotRecord *s = slot(target);
   if (bytes > 0 && payload != nullptr)
   {
-    std::memcpy(data_list + static_cast<size_t>(target) * header->element_capacity, payload, bytes);
+    std::memcpy(data_list + static_cast<size_t>(target) * expected_element_size, payload, bytes);
   }
   s->payload_size         = bytes;
   s->capture_monotonic_us = info.capture_monotonic_us;
@@ -1113,7 +1283,7 @@ RingBuffer::releaseBuffer(int buffer_num)
 void
 RingBuffer::setTimestamp_us(uint64_t input_time_us, int buffer_num)
 {
-  commitBuffer(buffer_num, header->element_capacity, input_time_us);
+  commitBuffer(buffer_num, expected_element_size, input_time_us);
 }
 
 void
@@ -1222,7 +1392,8 @@ RingBuffer::isLayoutChanged() const
 //! @brief 検証つきで既存の共有メモリへ接続する
 //! @details 宣言側のコメントを参照（R01-F06）
 std::unique_ptr<RingBuffer>
-attachRingBuffer(SharedMemory &memory, std::string *reason)
+attachRingBuffer(SharedMemory &memory, std::string *reason, const RingBuffer::TopicContract *expected,
+                 uint64_t expected_generation)
 {
   unsigned char *ptr = memory.getPtr();
   if (ptr == nullptr)
@@ -1234,7 +1405,7 @@ attachRingBuffer(SharedMemory &memory, std::string *reason)
     return nullptr;
   }
 
-  if (!RingBuffer::validateLayout(ptr, memory.getSize(), reason))
+  if (!RingBuffer::validateLayout(ptr, memory.getSize(), reason, expected, expected_generation))
   {
     return nullptr;
   }

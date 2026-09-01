@@ -202,8 +202,19 @@ enum PERM : mode_t
                                * \~japanese-en その他の書き込み許可
                                */
 };
-const PERM DEFAULT_PERM = static_cast<PERM>(PERM_USER_READ | PERM_USER_WRITE | PERM_GROUP_READ | PERM_GROUP_WRITE |
-                                            PERM_OTHER_READ | PERM_OTHER_WRITE);
+//! \~japanese-en 既定の権限（0660: 所有者とグループのみ読み書き）．
+//! \~japanese-en 以前は other にも読み書きを許す 0666 だった。共有メモリは
+//!               ネットワーク越しには届かないが、同じホストの別ユーザーや、
+//!               トピック名を取り違えた別プロセスがヘッダやペイロードを
+//!               書き換えられる状態だった。other を落として最小限にする。
+//!               別ユーザー間で共有する必要がある場合は、同じグループに
+//!               所属させるか、`PERM_ALL` を明示的に渡すこと。
+const PERM DEFAULT_PERM = static_cast<PERM>(PERM_USER_READ | PERM_USER_WRITE | PERM_GROUP_READ | PERM_GROUP_WRITE);
+
+//! \~japanese-en 全ユーザーに読み書きを許す権限（従来の既定）．
+//! \~japanese-en 信頼境界を広げるので、必要な場合だけ明示的に指定すること。
+const PERM PERM_ALL = static_cast<PERM>(PERM_USER_READ | PERM_USER_WRITE | PERM_GROUP_READ | PERM_GROUP_WRITE |
+                                        PERM_OTHER_READ | PERM_OTHER_WRITE);
 
 // ****************************************************************************
 // Function Declarations
@@ -393,6 +404,54 @@ struct TimeQuery
 
 //! @brief 共有メモリ先頭に置く固定長ヘッダ（128 バイト）
 //! @details element_capacity / buf_num に依存しない固定長。
+/*!
+ * \~japanese-en ペイロードの持ち方．
+ * \~japanese-en 同じトピックに別の持ち方で接続すると、長さの解釈が食い違って
+ *               範囲外アクセスになる。ヘッダに記録して接続時に照合する。
+ */
+enum class PayloadKind : uint32_t
+{
+  Unknown    = 0,
+  //! 固定長の 1 要素（Publisher<T> / Subscriber<T>）
+  Scalar     = 1,
+  //! 同じ要素型の可変長配列（Publisher<std::vector<T>>）
+  Vector     = 2,
+  //! 利用者がシリアライズしたバイト列（cv::Mat / Lidar2dScanData などの特殊化）
+  Serialized = 3,
+};
+
+/*!
+ * \~japanese-en 型を識別する ID を、型名の文字列から求める．
+ *
+ * \~japanese-en 同じサイズの別の型を取り違えると、落ちはしないが誤った値を
+ *               success として返す。それを検出するために型名を畳み込んだ値を
+ *               ヘッダへ記録する。
+ * \~japanese-en `typeid().hash_code()` は同一プログラム内でしか意味を持たないと
+ *               規定されているため使わない。ここではコンパイラが埋め込む
+ *               関数シグネチャ（型名を含む）を畳み込む。
+ * \~japanese-en **同じツールチェインでビルドされたプロセス間でのみ一致する。**
+ *               共有メモリは同一マシン内の通信なので実用上これで足りるが、
+ *               別のコンパイラでビルドしたプロセスと接続する運用は想定しない。
+ */
+template <typename T>
+constexpr uint64_t
+type_schema_id()
+{
+#if defined(__GNUC__) || defined(__clang__)
+  const char *name = __PRETTY_FUNCTION__;
+#else
+  const char *name = "unsupported-compiler";
+#endif
+  uint64_t hash = 1469598103934665603ULL;  // FNV-1a offset basis
+  for (const char *p = name; *p != '\0'; ++p)
+  {
+    hash ^= static_cast<uint64_t>(static_cast<unsigned char>(*p));
+    hash *= 1099511628211ULL;
+  }
+  // 0 は「未設定」を表すので避ける
+  return hash == 0 ? 1ULL : hash;
+}
+
 //!          レイアウトを読む前にこのヘッダだけで妥当性を判定できる。
 struct ShmHeader
 {
@@ -415,7 +474,19 @@ struct ShmHeader
   //! 世代を進める側が CAS で更新する。参加者はこれを見て現世代へ追随する。
   //! 世代 1 のセグメントは「データ本体」と「ディレクトリ」を兼ねる。
   std::atomic<uint64_t> latest_generation;
-  uint64_t              reserved[3];
+
+  // ------------------------------------------------------------------------
+  // topic contract（R02-F01）
+  //
+  // 「このトピックには何が入っているか」を記録する。購読側は接続時にこれを
+  // 自分の期待と照合し、食い違ったら payload に一切触れずに失敗する。
+  // これが無いと、たとえば Publisher<uint8_t> のトピックへ 1 MiB の型で
+  // 接続した購読側が容量を超えて memcpy し、SIGSEGV する。
+  // ------------------------------------------------------------------------
+  uint64_t element_size;    //!< 要素 1 個のバイト数（Vector なら要素型のサイズ）
+  uint64_t schema_id;       //!< type_schema_id<T>()。0 は未設定
+  uint32_t payload_kind;    //!< PayloadKind
+  uint32_t reserved;
 };
 
 //! @brief スロット1つ分のメタデータ
@@ -428,7 +499,9 @@ struct alignas(64) SlotRecord
   std::atomic<uint64_t> sequence;
   uint64_t              payload_size;           //!< 実際に書かれた長さ
   uint64_t              capture_monotonic_us;   //!< CLOCK_MONOTONIC_RAW。期限判定用
-  uint64_t              capture_realtime_us;    //!< CLOCK_REALTIME。日時指定の検索用
+  //! CLOCK_REALTIME。**記録専用で、検索には使わない**。
+  //! NTP 同期で前後に飛ぶため検索の基準にできない（SearchPolicy のコメント参照）。
+  uint64_t              capture_realtime_us;
   //! スロットの所有権。PTHREAD_PROCESS_SHARED かつ PTHREAD_MUTEX_ROBUST。
   //! trylock が EBUSY なら「生きている writer が使用中」なので絶対に奪わない。
   //! EOWNERDEAD（カーネルが所有者の死を確定）のときだけ回収する。
@@ -446,7 +519,7 @@ public:
   //! 'SHM2'。v1 の先頭 4 バイトは初期化フラグ (0/1/2) なので、
   //! 新しいコードが v1 の領域を読んでも必ず不一致になる。
   static constexpr uint32_t SHM_MAGIC = 0x324D4853;
-  static constexpr uint16_t ABI_MAJOR = 2;
+  static constexpr uint16_t ABI_MAJOR = 3;
   static constexpr uint16_t ABI_MINOR = 0;
 
   // ------------------------------------------------------------------------
@@ -463,6 +536,21 @@ public:
   //! ページ境界を超えるアライメント要求は共有メモリでは満たせない
   static constexpr size_t MAX_PAYLOAD_ALIGNMENT = 4096;
 
+  /*!
+   * \~japanese-en トピックに何が入っているかの取り決め（R02-F01）．
+   * \~japanese-en Publisher が記録し、Subscriber が接続時に照合する。
+   *               食い違ったら payload に一切触れずに失敗する。
+   */
+  struct TopicContract
+  {
+    PayloadKind kind         = PayloadKind::Unknown;
+    uint64_t    element_size = 0;  //!< 要素 1 個のバイト数
+    uint64_t    schema_id    = 0;  //!< type_schema_id<T>()。0 は照合しない
+    size_t      alignment    = DEFAULT_PAYLOAD_ALIGNMENT;
+
+    bool matches(const TopicContract &other, std::string *reason = nullptr) const;
+  };
+
   static size_t getSize(size_t element_size, int buffer_num,
                         size_t payload_alignment = DEFAULT_PAYLOAD_ALIGNMENT);
   static bool   checkInitialized(unsigned char *first_ptr);
@@ -476,10 +564,12 @@ public:
    * @param [out] reason       失敗理由（不要なら nullptr）
    * @return bool 接続してよければ真
    */
-  static bool validateLayout(const unsigned char *first_ptr, size_t mapping_size, std::string *reason = nullptr);
+  static bool validateLayout(const unsigned char *first_ptr, size_t mapping_size, std::string *reason = nullptr,
+                             const TopicContract *expected = nullptr, uint64_t expected_generation = 0);
 
   RingBuffer(unsigned char *first_ptr, size_t size = 0, int buffer_num = 0,
-             size_t payload_alignment = DEFAULT_PAYLOAD_ALIGNMENT);
+             size_t payload_alignment = DEFAULT_PAYLOAD_ALIGNMENT, const TopicContract *contract = nullptr,
+             uint64_t own_generation = 1);
   ~RingBuffer();
 
   // --- 読み出し ---
@@ -504,6 +594,8 @@ public:
    */
   int findBufferNum(const TimeQuery &query, SearchStatus *status = nullptr) const;
   uint64_t getGeneration() const;
+  //! @brief 共有メモリに記録されている topic contract
+  TopicContract getContract() const;
   //! @brief トピック全体で現在有効な世代（世代 1 のセグメントのものが正本）
   uint64_t getLatestGeneration() const;
   void     setLatestGeneration(uint64_t generation);
@@ -545,15 +637,24 @@ public:
    */
   bool adoptSample(const SampleInfo &info, const void *payload, size_t bytes);
 
+  //! @brief 発行番号カウンタの現在値
+  uint64_t getSequenceCounter() const;
+  //! @brief 発行番号カウンタを最低でも floor まで進める
+  //! @details 世代をまたいで発行番号を一意に保つために使う（R02-F05）
+  void     adoptSequenceFloor(uint64_t floor);
+
   //! @deprecated commitBuffer() を使うこと。
   //!             互換のため残している。input_time_us は capture 時刻として記録する。
   void setTimestamp_us(uint64_t input_time_us, int buffer_num);
 
 private:
   void        initializeExclusiveAccess();
-  void        initializeOrAttach(size_t element_size, int buffer_num, size_t payload_alignment);
-  bool        hasCompatibleLayout(size_t element_size, int buffer_num, size_t payload_alignment) const;
-  void        initializeContents(size_t element_size, int buffer_num, size_t payload_alignment);
+  void        initializeOrAttach(size_t element_size, int buffer_num, size_t payload_alignment,
+                                 const TopicContract *contract, uint64_t own_generation);
+  bool        hasCompatibleLayout(size_t element_size, int buffer_num, size_t payload_alignment,
+                                  const TopicContract *contract) const;
+  void        initializeContents(size_t element_size, int buffer_num, size_t payload_alignment,
+                                 const TopicContract *contract, uint64_t own_generation);
   void        bindPointers();
   SlotRecord *slot(int i) const;
   bool        ownsSlot(int i) const;
@@ -581,6 +682,9 @@ private:
   // データ位置の計算に使ったレイアウト。共有メモリ上の値がこれと食い違ったら、
   // 別のプロセスが異なるレイアウトで初期化し直したということなので、
   // このインスタンスが持つオフセットは使えない（isLayoutChanged() 参照）。
+  // 検証済みのレイアウト。**接続後はここだけを使う**（R02-F07）。
+  // 共有ヘッダの live 値からポインタや長さを再計算すると、接続後に他プロセスが
+  // ヘッダを書き換えた場合に「検証済み」という前提が崩れる。
   size_t   expected_element_size;
   size_t   expected_buf_num;
   size_t   expected_payload_alignment;
@@ -614,7 +718,9 @@ private:
  * @param [out] reason 失敗理由（不要なら nullptr）
  * @return std::unique_ptr<RingBuffer> 失敗時は nullptr
  */
-std::unique_ptr<RingBuffer> attachRingBuffer(SharedMemory &memory, std::string *reason = nullptr);
+std::unique_ptr<RingBuffer> attachRingBuffer(SharedMemory &memory, std::string *reason = nullptr,
+                                            const RingBuffer::TopicContract *expected = nullptr,
+                                            uint64_t expected_generation = 0);
 
 // ****************************************************************************
 //! @class ShmTopic
@@ -646,6 +752,9 @@ class ShmTopic
 public:
   //! 世代の取り違えが無限に続かないための上限
   static constexpr int MAX_GENERATION_ATTEMPTS = 8;
+  //! 世代セグメントの作成者が初期化を終えるのを待つ上限[usec]。
+  //! これを超えても未初期化なら、作成途中で死んだ残骸とみなして回収する。
+  static constexpr uint64_t ORPHAN_WAIT_TIMEOUT_US = 1000000;  // 1s
 
   ShmTopic(std::string name, PERM perm, bool create);
   ~ShmTopic();
@@ -661,18 +770,21 @@ public:
    * @param [in] payload_alignment  ペイロードに要求する境界
    * @return bool 使える状態になったら真
    */
-  bool ensureCapacity(size_t required_capacity, int buf_num, size_t payload_alignment);
+  bool ensureCapacity(size_t required_capacity, int buf_num, size_t payload_alignment,
+                      const RingBuffer::TopicContract &contract);
 
   /*!
    * \~japanese-en 現在有効な世代へ追随する（Subscriber 用）．新しい世代は作らない．
    * @return bool 接続できたら真
    */
-  bool follow();
+  bool follow(const RingBuffer::TopicContract *expected = nullptr);
 
   //! @brief 現世代のリングバッファ。未接続なら nullptr
   RingBuffer *ring() const { return ring_.get(); }
   //! @brief 現在接続している世代
   uint64_t generation() const { return current_generation_; }
+  //! @brief 接続世代がまだ有効か（root の latest_generation と一致するか）
+  bool     isGeneration(uint64_t generation) const;
   //! @brief 直近の失敗理由
   const std::string &lastError() const { return last_error_; }
   //! @brief 全世代のセグメントを削除する
@@ -681,9 +793,15 @@ public:
   static std::string generationName(const std::string &name, uint64_t generation);
 
 private:
-  bool openRoot(bool create, size_t initial_capacity, int buf_num, size_t payload_alignment);
-  bool attachGeneration(uint64_t generation);
-  bool createNextGeneration(uint64_t from_generation, size_t capacity, int buf_num, size_t payload_alignment);
+  bool openRoot(bool create, size_t initial_capacity, int buf_num, size_t payload_alignment,
+                const RingBuffer::TopicContract *contract);
+  bool attachGeneration(uint64_t generation, const RingBuffer::TopicContract *expected);
+  bool createNextGeneration(uint64_t from_generation, size_t capacity, int buf_num, size_t payload_alignment,
+                            const RingBuffer::TopicContract &contract);
+  //! 初期化されないまま残った世代セグメントを回収する（作成者が途中で死んだ場合）
+  bool reclaimOrphanGeneration(uint64_t generation, uint64_t from_generation);
+  //! 世代を進めた後、不要になった旧世代セグメントを削除する
+  void unlinkSuperseded(uint64_t generation);
   //! 旧世代の有効なサンプルを新世代へ引き継ぐ（履歴を切らさないため）
   void migrateHistory(RingBuffer &destination);
   //! 世代の作り直しを繰り返さないよう、容量は増やすだけにし余裕を持たせる

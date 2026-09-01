@@ -5,6 +5,7 @@
 
 #include <shm_base.hpp>
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cstring>
 #include <vector>
@@ -143,7 +144,8 @@ ShmTopic::growCapacity(size_t current, size_t required, size_t alignment)
 //!          TOCTOU がそのまま復活する。レイアウトを変えたいときは
 //!          必ず新しい世代を作ること。
 bool
-ShmTopic::openRoot(bool create, size_t initial_capacity, int buf_num, size_t payload_alignment)
+ShmTopic::openRoot(bool create, size_t initial_capacity, int buf_num, size_t payload_alignment,
+                   const RingBuffer::TopicContract *contract)
 {
   if (root_ != nullptr && root_ring_ != nullptr && !root_->isDisconnected())
   {
@@ -151,41 +153,46 @@ ShmTopic::openRoot(bool create, size_t initial_capacity, int buf_num, size_t pay
   }
   root_ring_.reset();
 
-  // まず既存のセグメントに接続してみる（作成はしない）
-  auto existing = std::make_unique<SharedMemoryPosix>(name_, O_RDWR, static_cast<PERM>(0));
-  if (existing->connect())
-  {
-    std::string reason;
-    if (RingBuffer::validateLayout(existing->getPtr(), existing->getSize(), &reason))
+  auto attach_existing = [&]() -> bool {
+    auto existing = std::make_unique<SharedMemoryPosix>(name_, O_RDWR, static_cast<PERM>(0));
+    if (!existing->connect())
     {
-      root_ = std::move(existing);
-      try
-      {
-        root_ring_ = std::make_unique<RingBuffer>(root_->getPtr());
-      }
-      catch (const std::exception &e)
-      {
-        last_error_ = std::string("cannot attach the root segment: ") + e.what();
-        root_.reset();
-        return false;
-      }
-      return true;
+      return false;
     }
-    if (!create)
+    std::string reason;
+    // 世代 1 なので expected_generation は 1。contract も照合する（R02-F01/F06）。
+    if (!RingBuffer::validateLayout(existing->getPtr(), existing->getSize(), &reason, contract, 1))
     {
       last_error_ = "root segment is not usable: " + reason;
       return false;
     }
-    // 壊れている／未初期化 → 下で作り直す
-    existing.reset();
-  }
-  else if (!create)
+    try
+    {
+      root_ring_ = std::make_unique<RingBuffer>(existing->getPtr());
+    }
+    catch (const std::exception &e)
+    {
+      last_error_ = std::string("cannot attach the root segment: ") + e.what();
+      return false;
+    }
+    root_ = std::move(existing);
+    return true;
+  };
+
+  if (attach_existing())
   {
-    last_error_ = "the topic does not exist yet";
+    return true;
+  }
+  if (!create)
+  {
+    if (last_error_.empty())
+    {
+      last_error_ = "the topic does not exist yet";
+    }
     return false;
   }
 
-  // --- ここから世代 1 の新規作成 ---
+  // --- 世代 1 の新規作成 ---
   size_t capacity = initial_capacity;
   if (payload_alignment > 1 && (capacity % payload_alignment) != 0)
   {
@@ -194,58 +201,59 @@ ShmTopic::openRoot(bool create, size_t initial_capacity, int buf_num, size_t pay
   const int    slots = (buf_num > 0) ? buf_num : 1;
   const size_t size  = RingBuffer::getSize(capacity, slots, payload_alignment);
 
-  root_ = std::make_unique<SharedMemoryPosix>(name_, O_RDWR | O_CREAT, perm_);
-  if (!root_->connect(size))
+  // 作成者を一者に絞る（R02-F02）。
+  // O_CREAT だけだと、同時に「無い」と判断した複数の Publisher がそれぞれ
+  // 初期化へ進み、同じ pthread_mutex_t を並行して初期化し得た。
+  // O_EXCL に成功した一者だけが初期化し、負けた側は完成を待って接続する。
   {
-    last_error_ = "cannot create the root segment";
-    root_.reset();
-    return false;
+    SharedMemoryPosix creator(name_, O_RDWR | O_CREAT | O_EXCL, perm_);
+    if (creator.connect(size))
+    {
+      try
+      {
+        RingBuffer initializer(creator.getPtr(), capacity, slots, payload_alignment, contract, 1);
+        initializer.tryAdvanceLatestGeneration(0, 1);
+      }
+      catch (const std::exception &e)
+      {
+        last_error_ = std::string("cannot initialize the root segment: ") + e.what();
+        creator.disconnectAndUnlink();
+        return false;
+      }
+    }
   }
 
-  try
+  // 自分が作った場合も、負けた場合も、ここで改めて接続する。
+  // 負けた場合は相手の初期化完了を待つ。
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
+  while (true)
   {
-    // 未初期化なら世代 1 を作る。既に他プロセスが作り終えていれば
-    // initializeOrAttach() が接続のみで済ませる。
-    RingBuffer initializer(root_->getPtr(), capacity, slots, payload_alignment);
-    // latest_generation は世代 1 のセグメントだけが持つ正本。
-    // 未設定（0）のときだけ 1 にする。既に進んでいたら触らない。
-    initializer.tryAdvanceLatestGeneration(0, 1);
+    if (attach_existing())
+    {
+      return true;
+    }
+    if (std::chrono::steady_clock::now() >= deadline)
+    {
+      if (last_error_.empty())
+      {
+        last_error_ = "cannot open the root segment";
+      }
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
-  catch (const std::exception &e)
-  {
-    last_error_ = std::string("cannot initialize the root segment: ") + e.what();
-    root_.reset();
-    return false;
-  }
-
-  try
-  {
-    root_ring_ = std::make_unique<RingBuffer>(root_->getPtr());
-  }
-  catch (const std::exception &e)
-  {
-    last_error_ = std::string("cannot attach the root segment: ") + e.what();
-    root_.reset();
-    return false;
-  }
-  return true;
 }
 
 //! @brief 指定世代のセグメントへ接続する
 bool
-ShmTopic::attachGeneration(uint64_t generation)
+ShmTopic::attachGeneration(uint64_t generation, const RingBuffer::TopicContract *expected)
 {
   if (generation <= 1)
   {
     // 世代 1 は root_ そのもの
     data_.reset();
     std::string reason;
-    if (!RingBuffer::validateLayout(root_->getPtr(), root_->getSize(), &reason))
-    {
-      last_error_ = "generation 1 is not usable: " + reason;
-      return false;
-    }
-    ring_ = attachRingBuffer(*root_, &reason);
+    ring_ = attachRingBuffer(*root_, &reason, expected, 1);
     if (ring_ == nullptr)
     {
       last_error_ = "cannot attach generation 1: " + reason;
@@ -270,7 +278,8 @@ ShmTopic::attachGeneration(uint64_t generation)
   }
 
   std::string reason;
-  auto        rb = attachRingBuffer(*seg, &reason);
+  // セグメント名の N とヘッダの generation が一致することも確認する（R02-F06）
+  auto rb = attachRingBuffer(*seg, &reason, expected, generation);
   if (rb == nullptr)
   {
     last_error_ = "cannot attach generation " + std::to_string(generation) + ": " + reason;
@@ -283,44 +292,124 @@ ShmTopic::attachGeneration(uint64_t generation)
   return true;
 }
 
+//! @brief 初期化されないまま残った世代セグメントを回収する
+//! @details 世代セグメントを作った直後、初期化を終える前に作成者が死ぬと、
+//!          中身が空のセグメントが名前だけ残る。以後 O_EXCL は必ず失敗するので、
+//!          放置すると容量拡張が二度とできなくなる（R02-F04）。
+//!          誤って生きている作成者のセグメントを消さないよう、
+//!          「初期化完了を十分待った」かつ「root がまだ切り替わっていない」
+//!          ことを確認してから unlink する。
+bool
+ShmTopic::reclaimOrphanGeneration(uint64_t generation, uint64_t from_generation)
+{
+  const std::string seg_name = generationName(name_, generation);
+
+  SharedMemoryPosix seg(seg_name, O_RDWR, static_cast<PERM>(0));
+  if (!seg.connect())
+  {
+    // 既に誰かが片付けた
+    return true;
+  }
+
+  // 作成者が生きていれば、この間に初期化を終えるはず
+  if (RingBuffer::waitForInitialization(seg.getPtr(), ORPHAN_WAIT_TIMEOUT_US))
+  {
+    return false;  // 孤児ではなかった
+  }
+
+  // root がまだ切り替わっていないことを再確認してから消す。
+  // 既に切り替わっていれば、このセグメントは現役なので触らない。
+  if (root_ring_ == nullptr || root_ring_->getLatestGeneration() != from_generation)
+  {
+    return false;
+  }
+
+  seg.disconnectAndUnlink();
+  last_error_ = "reclaimed an orphaned generation " + std::to_string(generation) +
+                " (its creator died before finishing initialization)";
+  return true;
+}
+
+//! @brief 世代を進めた後、不要になった旧世代セグメントを削除する
+//! @details 名前を消してもマッピングは生き続けるので、旧世代を掴んだままの
+//!          参加者は安全に読み書きを続けられる。放置すると段階的な容量拡張で
+//!          /dev/shm を食い潰すため、切り替え時に前の世代を片付ける（R02-F06）。
+//!          世代 1 は root（ディレクトリ兼用）なので決して消さない。
+void
+ShmTopic::unlinkSuperseded(uint64_t generation)
+{
+  if (generation <= 1)
+  {
+    return;
+  }
+  try
+  {
+    disconnectMemory(generationName(name_, generation));
+  }
+  catch (const std::exception &)
+  {
+    // 消せなくても致命的ではない
+  }
+}
+
 //! @brief 次の世代のセグメントを作って公開する
 //! @details O_CREAT | O_EXCL で作成者を一者に絞る。負けた側は勝者のセグメントに
 //!          合流し、それでも容量が足りなければ更に次の世代へ挑戦する。
 bool
-ShmTopic::createNextGeneration(uint64_t from_generation, size_t capacity, int buf_num, size_t payload_alignment)
+ShmTopic::createNextGeneration(uint64_t from_generation, size_t capacity, int buf_num, size_t payload_alignment,
+                               const RingBuffer::TopicContract &contract)
 {
-  const uint64_t next = from_generation + 1;
+  const uint64_t    next      = from_generation + 1;
   const std::string next_name = generationName(name_, next);
 
   // capacity は payload_alignment の倍数でなければならない。
-  // 呼び出し側でアライメントを引き上げた場合に備えてここでも整える。
   if (payload_alignment > 1 && (capacity % payload_alignment) != 0)
   {
     capacity += payload_alignment - (capacity % payload_alignment);
   }
+  const size_t size = RingBuffer::getSize(capacity, buf_num, payload_alignment);
 
   SharedMemoryPosix probe(next_name, O_RDWR | O_CREAT | O_EXCL, perm_);
-  const size_t      size = RingBuffer::getSize(capacity, buf_num, payload_alignment);
-
   if (!probe.connect(size))
   {
-    // 既に他プロセスが作っている（EEXIST）か、作成に失敗した。
-    // 勝者のセグメントへ合流する。
-    last_error_ = "generation " + std::to_string(next) + " is being created by another process";
+    // 作成できなかった。理由を切り分ける（R02-F04）。
+    // 以前は一律「他プロセスが作成中」とみなして何もしなかったため、
+    // 初期化前に死んだ作成者の残骸があると、以後の容量拡張が
+    // 永久に回復できなくなっていた。
+    if (errno == EEXIST)
+    {
+      if (reclaimOrphanGeneration(next, from_generation))
+      {
+        last_error_ = "generation " + std::to_string(next) + " was an orphan and has been reclaimed; retrying";
+      }
+      else
+      {
+        last_error_ = "generation " + std::to_string(next) + " is being created by another process";
+      }
+    }
+    else
+    {
+      last_error_ = "cannot create generation " + std::to_string(next) + ": " + std::strerror(errno);
+    }
     return false;
   }
 
   try
   {
-    RingBuffer initializer(probe.getPtr(), capacity, buf_num, payload_alignment);
-    // 作ったセグメント自身の世代番号を next に合わせる。
-    // （RingBuffer は自分の generation を 1 から数えるため）
-    initializer.setLatestGeneration(next);
+    // 自分の世代番号を明示して初期化する（R02-F06）
+    RingBuffer initializer(probe.getPtr(), capacity, buf_num, payload_alignment, &contract, next);
+
+    // 発行番号は世代をまたいで一意でなければならない（R02-F05）。
+    // 旧世代のカウンタ以上から始めれば、旧世代で使った番号を
+    // 新世代が再利用することはない。移行が一部失敗しても、
+    // 切り替え直後に旧世代で commit が走っても、重複しない。
+    if (ring_ != nullptr)
+    {
+      initializer.adoptSequenceFloor(ring_->getSequenceCounter());
+    }
 
     // 旧世代の履歴を引き継ぐ。
     // 引き継がないと、レイアウトが変わった瞬間に過去のデータが全部消える。
-    // 「最新値が読めればよい」使い方なら数ミリ秒の空白で済むが、
-    // 時刻を指定して過去を引く使い方では履歴が飛ぶのは受け入れられない。
     // まだ公開していないセグメントなので、ここで書いても他プロセスには見えない。
     migrateHistory(initializer);
   }
@@ -342,7 +431,13 @@ ShmTopic::createNextGeneration(uint64_t from_generation, size_t capacity, int bu
   }
 
   probe.disconnect();
-  return attachGeneration(next);
+  if (!attachGeneration(next, &contract))
+  {
+    return false;
+  }
+  // 切り替えが済んだので、もう誰も新規に接続しない旧世代を片付ける（R02-F06）
+  unlinkSuperseded(from_generation);
+  return true;
 }
 
 //! @brief 旧世代の有効なサンプルを新世代へ引き継ぐ
@@ -411,10 +506,23 @@ ShmTopic::migrateHistory(RingBuffer &destination)
   }
 }
 
+//! @brief 接続世代がまだ有効か
+//! @details publish のコミット後に世代が切り替わっていないかを確認するために使う（R02-F05）
 bool
-ShmTopic::follow()
+ShmTopic::isGeneration(uint64_t generation) const
 {
-  if (!openRoot(false, 0, 0, 1))
+  if (root_ring_ == nullptr)
+  {
+    return false;
+  }
+  const uint64_t latest = std::max<uint64_t>(root_ring_->getLatestGeneration(), 1);
+  return latest == generation && current_generation_ == generation;
+}
+
+bool
+ShmTopic::follow(const RingBuffer::TopicContract *expected)
+{
+  if (!openRoot(false, 0, 0, 1, expected))
   {
     return false;
   }
@@ -430,11 +538,12 @@ ShmTopic::follow()
   {
     return true;
   }
-  return attachGeneration(latest);
+  return attachGeneration(latest, expected);
 }
 
 bool
-ShmTopic::ensureCapacity(size_t required_capacity, int buf_num, size_t payload_alignment)
+ShmTopic::ensureCapacity(size_t required_capacity, int buf_num, size_t payload_alignment,
+                         const RingBuffer::TopicContract &contract)
 {
   const size_t alignment = payload_alignment;
   size_t       want      = required_capacity;
@@ -443,7 +552,7 @@ ShmTopic::ensureCapacity(size_t required_capacity, int buf_num, size_t payload_a
     want += alignment - (want % alignment);
   }
 
-  if (!openRoot(true, want, buf_num, alignment))
+  if (!openRoot(true, want, buf_num, alignment, &contract))
   {
     return false;
   }
@@ -454,7 +563,7 @@ ShmTopic::ensureCapacity(size_t required_capacity, int buf_num, size_t payload_a
 
     if (ring_ == nullptr || current_generation_ != latest || ring_->isLayoutChanged())
     {
-      if (!attachGeneration(latest))
+      if (!attachGeneration(latest, &contract))
       {
         // 作成中でまだ読めない場合がある。少し待って見直す。
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -480,7 +589,7 @@ ShmTopic::ensureCapacity(size_t required_capacity, int buf_num, size_t payload_a
     const size_t new_capacity  = growCapacity(ring_->getElementSize(), want, alignment);
     const int    new_buf_num   = static_cast<int>(std::max(ring_->getBufferNum(), static_cast<size_t>(buf_num)));
     const size_t new_alignment = std::max(ring_->getPayloadAlignment(), alignment);
-    if (!createNextGeneration(latest, new_capacity, new_buf_num, new_alignment))
+    if (!createNextGeneration(latest, new_capacity, new_buf_num, new_alignment, contract))
     {
       // 競合に負けた／作成中だった。勝者の世代を見に行く。
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
