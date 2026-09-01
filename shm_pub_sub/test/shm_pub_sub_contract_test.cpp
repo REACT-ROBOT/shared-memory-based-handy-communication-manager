@@ -5,7 +5,7 @@
 //!   F01: 型不一致で SIGSEGV / 誤データ
 //!   F02: 初期化途中のセグメントに接続できてしまう
 //!   F03: payload と SampleInfo が別サンプルになる
-//!   F04: 未初期化の次世代セグメントが残ると容量拡張が回復しない
+//!   F04: 未初期化の次世代セグメントが残ると容量拡張が回復しない（R03-F03 で方式変更）
 //!   F05: 世代をまたいで発行番号が重複する
 //!   F06: 旧世代セグメントが溜まり続ける
 
@@ -247,36 +247,22 @@ TEST_F(SHMContractTest, PayloadAndSampleInfoAlwaysDescribeTheSameSample)
 // R02-F04: 孤児セグメントからの回復
 // ---------------------------------------------------------------------------
 
-TEST_F(SHMContractTest, OrphanedNextGenerationIsReclaimed)
-{
-  // 世代セグメントを作った直後、初期化前に作成者が死ぬと名前だけが残る。
-  // 放置すると O_EXCL が必ず失敗し、容量拡張が二度とできなくなっていた。
-  Publisher<std::vector<uint32_t>> pub("c_orphan", 3);
-  pub.publish(std::vector<uint32_t>(4, 1));
+// R02-F04 で入れた「時間切れで孤児を回収する」テストは R03-F03 により廃止した。
+// 時間で他プロセスのセグメントの生死を判定する方式そのものを取り除き、
+// 世代セグメント名にノンスを含める方式へ変えたため、孤児が名前を占有すること自体が
+// 起きなくなっている。置き換えの検証は shm_pub_sub_r03_test.cpp にある
+// OrphanedGenerationDoesNotBlockGrowthAndIsNotWaitedFor /
+// SegmentOfAFutureGenerationIsNeverUnlinked を参照。
 
-  const uint64_t    current = latestGeneration("c_orphan");
-  ASSERT_GT(current, 0u);
-  const std::string orphan = "/shm_c_orphan#" + std::to_string(current + 1);
-  const int         fd     = ::shm_open(orphan.c_str(), O_RDWR | O_CREAT | O_EXCL, 0660);
-  ASSERT_GE(fd, 0);
-  ASSERT_EQ(::ftruncate(fd, 1), 0);
-  ::close(fd);
-
-  // 容量を大きく超える長さ → 新世代が必要。孤児を回収して進めること。
-  ASSERT_NO_THROW(pub.publish(std::vector<uint32_t>(40000, 2)));
-
-  Subscriber<std::vector<uint32_t>> sub("c_orphan");
-  bool                              ok = false;
-  const std::vector<uint32_t>      &v  = sub.subscribe(&ok);
-  ASSERT_TRUE(ok);
-  EXPECT_EQ(v.size(), 40000u);
-  EXPECT_EQ(v[0], 2u);
-}
 
 // ---------------------------------------------------------------------------
 // R02-F05 / F06: 世代をまたぐ発行番号の一意性と、旧世代の回収
 // ---------------------------------------------------------------------------
 
+// NOTE: これは「単一 Publisher が順に grow/publish しても番号が重複しない」ことしか
+//       見ておらず、切替直後に旧世代へ commit が滑り込む競合は起こしていない
+//       （R03 の軽微所見）。その決定的な検証は shm_pub_sub_r03_test.cpp の
+//       OldGenerationCommitCannotReuseANewGenerationSequence にある。
 TEST_F(SHMContractTest, SequenceStaysUniqueAcrossGenerations)
 {
   Publisher<std::vector<uint32_t>>  pub("c_seq", 6);

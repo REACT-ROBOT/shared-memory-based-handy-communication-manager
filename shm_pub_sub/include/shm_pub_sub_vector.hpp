@@ -58,14 +58,21 @@ public:
   void _publish(const std::vector<T> data);
 
 private:
+  //! 1 回分の publish。世代が切り替わっていたら false（publish 側で再試行）
+  bool publishOnce(const std::vector<T> &data);
+
+public:
+
+private:
   //! このトピックに何を入れるかの取り決め（R02-F01）
   static RingBuffer::TopicContract contractOf()
   {
     RingBuffer::TopicContract c;
     c.kind         = PayloadKind::Vector;
     c.element_size = sizeof(T);
-    c.schema_id    = type_schema_id<T>();
-    c.alignment    = alignof(T);
+    c.schema_id      = type_schema_id<T>();
+    c.schema_version = schema_version_of<T>();
+    c.alignment      = alignof(T);
     return c;
   }
 
@@ -125,8 +132,9 @@ private:
     RingBuffer::TopicContract c;
     c.kind         = PayloadKind::Vector;
     c.element_size = sizeof(T);
-    c.schema_id    = type_schema_id<T>();
-    c.alignment    = alignof(T);
+    c.schema_id      = type_schema_id<T>();
+    c.schema_version = schema_version_of<T>();
+    c.alignment      = alignof(T);
     return c;
   }
 
@@ -211,6 +219,26 @@ template <typename T>
 void
 Publisher<std::vector<T>>::publish(const std::vector<T> &data)
 {
+  // 世代切替と publish が競合した場合に備えて、コミット後に世代を確認し、
+  // 切り替わっていたら新しい世代へ発行し直す。スカラ版には R02-F05 で入れたが
+  // vector 版に入れ忘れており、切替の隙間に旧世代へ commit したサンプルが
+  // 「成功したのに誰にも読まれない」ままになっていた（R03-F01）。
+  constexpr int MAX_PUBLISH_ATTEMPTS = 4;
+  for (int attempt = 0; attempt < MAX_PUBLISH_ATTEMPTS; ++attempt)
+  {
+    if (publishOnce(data))
+    {
+      return;
+    }
+  }
+  throw std::runtime_error("shm::Publisher: the layout generation kept changing while publishing");
+}
+
+//! @brief 1 回分の publish。世代が切り替わっていたら false を返す（呼び出し側で再試行）
+template <typename T>
+bool
+Publisher<std::vector<T>>::publishOnce(const std::vector<T> &data)
+{
   // 長さが変わっても、容量に収まる限り世代は作り直さない。
   // 収まらないときだけ ShmTopic が新しい世代を作る（容量は増やすだけ）。
   // 以前はベクタ長が変わるたびに稼働中のセグメントを作り直しており、
@@ -221,6 +249,9 @@ Publisher<std::vector<T>>::publish(const std::vector<T> &data)
     throw std::runtime_error("shm::Publisher: " + topic->lastError());
   }
   RingBuffer *ring_buffer = topic->ring();
+
+  // コミット後にこの世代がまだ有効かを確かめるため、書く前に控えておく。
+  const uint64_t generation_before = topic->generationTag();
 
   // 確保できないままの書き込みは、他の writer が書き込み途中のバッファを
   // 破壊し購読可能にしてしまうため許されない。確保成功を必須とする。
@@ -258,6 +289,10 @@ Publisher<std::vector<T>>::publish(const std::vector<T> &data)
   ring_buffer->commitBuffer(oldest_buffer, sizeof(T) * vector_size);
 
   ring_buffer->signal();
+
+  // コミットの間に世代が切り替わっていたら、このサンプルは新しい世代の
+  // 購読者には見えない。呼び出し側で発行し直す（R03-F01）。
+  return topic->isGeneration(generation_before);
 }
 
 //! @brief トピックの書き込み（値渡し）
@@ -320,47 +355,42 @@ template <typename T>
 bool
 Subscriber<std::vector<T>>::readSlotInto(RingBuffer *ring_buffer, int slot, SampleInfo *info)
 {
-  const SampleInfo before = ring_buffer->getSampleInfo(slot);
-  if (before.sequence == 0)
+  const size_t capacity = ring_buffer->getElementSize();
+
+  // 受け皿の大きさを決めるために、まず長さの目安を読む。
+  // この値はロック外で読むので当てにはならないが、ロック内の実長と
+  // 食い違えば下で弾かれるので、誤った長さを返すことはない。
+  const size_t hint = static_cast<size_t>(ring_buffer->getPayloadSize(slot));
+  if (hint > capacity || (hint % sizeof(T)) != 0)
   {
     return false;
   }
-
-  const size_t capacity      = ring_buffer->getElementSize();
-  const size_t payload_bytes = static_cast<size_t>(before.payload_size);
-  if (payload_bytes > capacity || (payload_bytes % sizeof(T)) != 0)
-  {
-    return false;
-  }
-  vector_size = payload_bytes / sizeof(T);
-
-  unsigned char *data_ptr      = ring_buffer->getDataList();
-  const size_t   buffer_offset = static_cast<size_t>(slot) * capacity;
 
   // 今返していない側へ読み込む。失敗しても直前に返した値は壊れない。
   std::vector<T> &scratch = return_buffers_[1 - return_index_];
-  scratch.resize(vector_size);
-  // 空の vector では data() が nullptr。長さ 0 の memcpy でもヌルは未定義動作
-  if (vector_size > 0)
-  {
-    std::memcpy(scratch.data(), data_ptr + buffer_offset, payload_bytes);
-  }
+  scratch.resize(hint / sizeof(T));
 
-  // コピーの読み込みが完了してから発行番号を再読みする（load-load 順序の固定）
-  std::atomic_thread_fence(std::memory_order_acquire);
-
-  if (ring_buffer->getSequence(slot) != before.sequence)
+  // スロットを排他して payload と素性を 1 つのスナップショットとして読む
+  //（R02-F03 / R03-F04）。長さが hint を超えていれば readSample が失敗する。
+  SampleInfo sample;
+  if (!ring_buffer->readSample(slot, scratch.empty() ? nullptr : scratch.data(), hint, &sample))
   {
     return false;
   }
+  if (sample.payload_size != hint)
+  {
+    // ロックを取るまでの間に別のサンプルへ置き換わり、長さが変わっていた。
+    // 短い場合は scratch の後ろが前のサンプルのままなので、必ず捨てる。
+    return false;
+  }
 
+  vector_size = hint / sizeof(T);
   if (info != nullptr)
   {
-    *info = before;
+    *info = sample;
   }
   current_reading_buffer = slot;
   return_index_          = 1 - return_index_;
-  ring_buffer->markAsRead(before.sequence);
   return true;
 }
 
@@ -368,62 +398,52 @@ template <typename T>
 const std::vector<T> &
 Subscriber<std::vector<T>>::subscribe(bool *is_success)
 {
+  return subscribe(is_success, nullptr);
+}
+
+template <typename T>
+const std::vector<T> &
+Subscriber<std::vector<T>>::subscribe(bool *is_success, SampleInfo *info)
+{
+  // legacy の subscribe(bool*) は null を渡せない契約なので、ここで明示する。
+  if (is_success == nullptr)
+  {
+    throw std::invalid_argument("shm::Subscriber::subscribe(): 'is_success' must not be null");
+  }
+  *is_success = false;
+  if (info != nullptr)
+  {
+    *info = SampleInfo{};
+  }
+
   RingBuffer::TopicContract contract = contractOf();
+  // 現在有効な世代へ追随する。世代が進んでいれば新しいセグメントへ張り直す。
+  // 型が食い違っていればここで失敗し、payload には一切触れない。
   if (!topic->follow(&contract))
   {
-    *is_success = false;
     return return_buffers_[return_index_];
   }
   RingBuffer *ring_buffer = topic->ring();
   ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
 
-  // seqlock 方式の読み出し: バッファ選択 → コピー → 発行番号の再確認。
+  // 読み出しは readSlotInto() に一本化する。以前はここに seqlock を直書きしており、
+  // info を取るために subscribe() の**後で** getSampleInfo() を呼び直していたため、
+  // 「payload は N、info は N+1」という組合せが返り得た（R02-F03 と同じ窓）。
+  // スカラ版と同じ経路を通ることで、この窓も retry/failure の計上漏れも無くなる
+  //（R03-F02）。
   constexpr int MAX_READ_RETRY = 5;
   bool          no_data        = false;
   for (int attempt = 0; attempt < MAX_READ_RETRY; ++attempt)
   {
-    int newest_buffer = ring_buffer->getNewestBufferNum();
+    const int newest_buffer = ring_buffer->getNewestBufferNum();
     if (newest_buffer < 0)
     {
       no_data = true;
       break;
     }
-
-    // 整合性の検証は時刻ではなく発行番号で行う（理由はスカラ版のコメント参照）
-    uint64_t sequence_before = ring_buffer->getSequence(newest_buffer);
-    if (sequence_before == 0)
+    if (readSlotInto(ring_buffer, newest_buffer, info))
     {
-      ++contention_retry_count_;
-      continue;
-    }
-
-    // 要素数は容量ではなくスロットの payload_size から求める。
-    // 容量は「増やすだけ」で運用するため、実際の長さより大きいことがある。
-    const size_t payload_bytes = static_cast<size_t>(ring_buffer->getPayloadSize(newest_buffer));
-    vector_size                = payload_bytes / sizeof(T);
-
-    unsigned char *data_ptr      = ring_buffer->getDataList();
-    size_t         buffer_offset = static_cast<size_t>(newest_buffer) * ring_buffer->getElementSize();
-
-    // 今返していない側へ読み込む。失敗しても直前に返した値は壊れない。
-    std::vector<T> &scratch = return_buffers_[1 - return_index_];
-    scratch.resize(vector_size);
-
-    // 空の vector では data() が nullptr。長さ 0 の memcpy でもヌルは未定義動作
-    if (vector_size > 0)
-    {
-      std::memcpy(scratch.data(), data_ptr + buffer_offset, sizeof(T) * vector_size);
-    }
-
-    // コピーの読み込みが完了してから発行番号を再読みする（load-load 順序の固定）
-    std::atomic_thread_fence(std::memory_order_acquire);
-
-    if (ring_buffer->getSequence(newest_buffer) == sequence_before)
-    {
-      *is_success            = true;
-      current_reading_buffer = newest_buffer;
-      return_index_          = 1 - return_index_;
-      ring_buffer->markAsRead(sequence_before);
+      *is_success = true;
       return return_buffers_[return_index_];
     }
     ++contention_retry_count_;
@@ -435,24 +455,7 @@ Subscriber<std::vector<T>>::subscribe(bool *is_success)
   {
     ++contention_failure_count_;
   }
-  *is_success = false;
   return return_buffers_[return_index_];
-}
-
-template <typename T>
-const std::vector<T> &
-Subscriber<std::vector<T>>::subscribe(bool *is_success, SampleInfo *info)
-{
-  const std::vector<T> &value = subscribe(is_success);
-  if (info != nullptr)
-  {
-    *info = SampleInfo{};
-    if (*is_success && topic->ring() != nullptr)
-    {
-      *info = topic->ring()->getSampleInfo(current_reading_buffer);
-    }
-  }
-  return value;
 }
 
 template <typename T>

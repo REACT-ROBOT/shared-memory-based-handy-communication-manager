@@ -1,4 +1,5 @@
 #include <shm_base.hpp>
+#include <sched.h>
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -19,7 +20,7 @@ namespace shm
 // ShmHeader は共有メモリの先頭に生で置くため、サイズとオフセットが
 // ビルドごとにずれてはならない。ずれたら即座にコンパイルを止める。
 // ============================================================================
-static_assert(sizeof(ShmHeader) == 128, "ShmHeader must stay 128 bytes");
+static_assert(sizeof(ShmHeader) == 192, "ShmHeader must stay 192 bytes");
 static_assert(alignof(ShmHeader) <= 64, "ShmHeader alignment is unexpectedly large");
 static_assert(std::atomic<uint32_t>::is_always_lock_free, "atomic<uint32_t> must be lock-free in shared memory");
 static_assert(std::atomic<uint64_t>::is_always_lock_free, "atomic<uint64_t> must be lock-free in shared memory");
@@ -32,6 +33,34 @@ getCurrentTimeUSec()
   struct timespec t;
   clock_gettime(CLOCK_MONOTONIC_RAW, &t);
   return ((uint64_t)t.tv_sec * 1000000L) + ((uint64_t)t.tv_nsec / 1000L);
+}
+
+//! @brief スロットの robust mutex を、単調時計で区切った上限まで待って取る
+//! @details reader も payload コピーの間はスロットを排他するようになったため
+//!          （R03-F04）、trylock 一発で諦めると次のような取りこぼしが起きる:
+//!            - buf_num=1 で reader が全力で回ると writer が確保できず publish が失敗
+//!            - 同じスロットを狙う reader 同士が互いに弾き合う
+//!          スロットの臨界区間は memcpy 1 回ぶんしかないので、短い上限まで
+//!          待てば十分に解消する。CLOCK_REALTIME を使う pthread_mutex_timedlock は
+//!          NTP の時刻補正で待ち時間が伸縮するため、単調時計での自前待ちにする。
+//! @return 0 なら取得（EOWNERDEAD なら consistent 宣言が必要）、EBUSY なら時間切れ
+static int
+lockSlotWithin(pthread_mutex_t *mutex, uint64_t timeout_us)
+{
+  const uint64_t deadline = getCurrentTimeUSec() + timeout_us;
+  for (;;)
+  {
+    const int r = pthread_mutex_trylock(mutex);
+    if (r != EBUSY)
+    {
+      return r;
+    }
+    if (getCurrentTimeUSec() >= deadline)
+    {
+      return EBUSY;
+    }
+    sched_yield();
+  }
 }
 
 //! @brief 壁時計の時刻[usec]
@@ -181,8 +210,19 @@ RingBuffer::TopicContract::matches(const TopicContract &other, std::string *reas
     return fail("element size mismatch (segment " + std::to_string(other.element_size) + " bytes, this process expects " +
                 std::to_string(element_size) + " bytes)");
   }
-  // schema_id は同じツールチェインでしか一致しないため、どちらかが 0 の場合は照合しない
-  if (schema_id != 0 && other.schema_id != 0 && schema_id != other.schema_id)
+  // 利用者が shm_schema<T> で指定した版。**移植性のある**識別子なので、
+  // 両者が指定していれば必ず一致しなければならない（R03-F05）。
+  if (schema_version != 0 && other.schema_version != 0 && schema_version != other.schema_version)
+  {
+    return fail("schema version mismatch (segment v" + std::to_string(other.schema_version) +
+                ", this process expects v" + std::to_string(schema_version) +
+                "). Remove it with 'shm_tool remove <topic>' or use a different topic name");
+  }
+  // schema_id は __PRETTY_FUNCTION__ のハッシュなので、**同じツールチェインでしか
+  // 一致しない**。異なるコンパイラ／言語バインディング間では別の値になり得るため、
+  // どちらかが 0 の場合や版が明示されている場合は照合しない（R03-F05）。
+  const bool version_is_authoritative = (schema_version != 0 && other.schema_version != 0);
+  if (!version_is_authoritative && schema_id != 0 && other.schema_id != 0 && schema_id != other.schema_id)
   {
     return fail("payload type mismatch: the segment holds a different type of the same size. "
                 "Remove it with 'shm_tool remove <topic>' or use a different topic name");
@@ -350,8 +390,9 @@ RingBuffer::validateLayout(const unsigned char *first_ptr, size_t mapping_size, 
     TopicContract actual;
     actual.kind         = static_cast<PayloadKind>(h->payload_kind);
     actual.element_size = h->element_size;
-    actual.schema_id    = h->schema_id;
-    actual.alignment    = h->payload_alignment;
+    actual.schema_id      = h->schema_id;
+    actual.schema_version = h->schema_version;
+    actual.alignment      = h->payload_alignment;
     if (!expected->matches(actual, reason))
     {
       return false;
@@ -407,7 +448,7 @@ RingBuffer::validateLayout(const unsigned char *first_ptr, size_t mapping_size, 
 //! @param [in] buffer_num        バッファ数。0 なら既存レイアウトへの接続のみ
 //! @param [in] payload_alignment ペイロードに要求する境界
 RingBuffer::RingBuffer(unsigned char *first_ptr, size_t size, int buffer_num, size_t payload_alignment,
-                       const TopicContract *contract, uint64_t own_generation)
+                       const TopicContract *contract, uint64_t own_generation, uint64_t own_nonce)
   : memory_ptr(first_ptr)
   , header(nullptr)
   , slot_base(nullptr)
@@ -459,7 +500,7 @@ RingBuffer::RingBuffer(unsigned char *first_ptr, size_t size, int buffer_num, si
                                   " must be a multiple of payload_alignment " + std::to_string(alignment));
     }
 
-    initializeOrAttach(size, buffer_num, alignment, contract, own_generation);
+    initializeOrAttach(size, buffer_num, alignment, contract, own_generation, own_nonce);
   }
   else
   {
@@ -550,7 +591,7 @@ RingBuffer::setSlotOwned(int i, bool owned)
 //!          （後発 Publisher がタイムスタンプを消す問題への対応）
 void
 RingBuffer::initializeOrAttach(size_t element_size_arg, int buffer_num, size_t payload_alignment,
-                               const TopicContract *contract, uint64_t own_generation)
+                               const TopicContract *contract, uint64_t own_generation, uint64_t own_nonce)
 {
   auto adopt = [&]() {
     expected_element_size      = element_size_arg;
@@ -582,7 +623,7 @@ RingBuffer::initializeOrAttach(size_t element_size_arg, int buffer_num, size_t p
   if (header->state.compare_exchange_strong(expected, INITIALIZING, std::memory_order_acq_rel,
                                             std::memory_order_acquire))
   {
-    initializeContents(element_size_arg, buffer_num, payload_alignment, contract, own_generation);
+    initializeContents(element_size_arg, buffer_num, payload_alignment, contract, own_generation, own_nonce);
     return;
   }
 
@@ -647,7 +688,7 @@ RingBuffer::hasCompatibleLayout(size_t element_size_arg, int buffer_num, size_t 
 //! @details 呼び出し側で state を INITIALIZING にしてから呼ぶこと。
 void
 RingBuffer::initializeContents(size_t element_size_arg, int buffer_num, size_t payload_alignment,
-                               const TopicContract *contract, uint64_t own_generation)
+                               const TopicContract *contract, uint64_t own_generation, uint64_t own_nonce)
 {
   size_t slot_offset = 0, data_offset = 0, total_size = 0;
   if (!computeLayout(element_size_arg, static_cast<size_t>(buffer_num), payload_alignment, slot_offset, data_offset,
@@ -674,13 +715,15 @@ RingBuffer::initializeContents(size_t element_size_arg, int buffer_num, size_t p
   header->data_offset       = data_offset;
   header->boot_id_hash      = getBootIdHash();
   header->generation        = generation;
+  header->segment_nonce     = own_nonce;
   header->sequence.store(0, std::memory_order_relaxed);
-  header->reserved          = 0;
+  std::memset(header->reserved, 0, sizeof(header->reserved));
 
   // トピックの取り決め（R02-F01）
   header->payload_kind = static_cast<uint32_t>(contract != nullptr ? contract->kind : PayloadKind::Unknown);
   header->element_size = (contract != nullptr) ? contract->element_size : 0;
-  header->schema_id    = (contract != nullptr) ? contract->schema_id : 0;
+  header->schema_id      = (contract != nullptr) ? contract->schema_id : 0;
+  header->schema_version = (contract != nullptr) ? contract->schema_version : 0;
 
   expected_element_size      = element_size_arg;
   expected_buf_num           = static_cast<size_t>(buffer_num);
@@ -713,9 +756,9 @@ RingBuffer::initializeExclusiveAccess()
   {
     SlotRecord *s = slot(static_cast<int>(i));
     pthread_mutex_init(&s->owner, &m_attr);
-    s->payload_size         = 0;
-    s->capture_monotonic_us = 0;
-    s->capture_realtime_us  = 0;
+    s->payload_size.store(0, std::memory_order_relaxed);
+    s->capture_monotonic_us.store(0, std::memory_order_relaxed);
+    s->capture_realtime_us.store(0, std::memory_order_relaxed);
     s->sequence.store(0, std::memory_order_relaxed);
   }
 
@@ -729,8 +772,9 @@ RingBuffer::getContract() const
   TopicContract c;
   c.kind         = static_cast<PayloadKind>(header->payload_kind);
   c.element_size = header->element_size;
-  c.schema_id    = header->schema_id;
-  c.alignment    = header->payload_alignment;
+  c.schema_id      = header->schema_id;
+  c.schema_version = header->schema_version;
+  c.alignment      = header->payload_alignment;
   return c;
 }
 
@@ -768,23 +812,39 @@ RingBuffer::getGeneration() const
   return expected_generation;
 }
 
+//! @brief 現在有効な世代とノンスを詰めたタグ
 uint64_t
-RingBuffer::getLatestGeneration() const
+RingBuffer::getGenerationTag() const
 {
   return header->latest_generation.load(std::memory_order_acquire);
 }
 
-void
-RingBuffer::setLatestGeneration(uint64_t generation)
+uint64_t
+RingBuffer::getLatestGeneration() const
 {
-  header->latest_generation.store(generation, std::memory_order_release);
+  return unpackGeneration(getGenerationTag());
 }
 
-bool
-RingBuffer::tryAdvanceLatestGeneration(uint64_t expected, uint64_t desired)
+void
+RingBuffer::setGenerationTag(uint64_t tag)
 {
-  return header->latest_generation.compare_exchange_strong(expected, desired, std::memory_order_acq_rel,
+  header->latest_generation.store(tag, std::memory_order_release);
+}
+
+//! @brief 世代タグを 1 回の CAS で進める
+//! @details 世代とノンスを不可分に公開するための唯一の切り替え点。
+bool
+RingBuffer::tryAdvanceGenerationTag(uint64_t expected_tag, uint64_t desired_tag)
+{
+  return header->latest_generation.compare_exchange_strong(expected_tag, desired_tag, std::memory_order_acq_rel,
                                                            std::memory_order_acquire);
+}
+
+//! @brief このセグメント自身のノンス
+uint64_t
+RingBuffer::getSegmentNonce() const
+{
+  return header->segment_nonce;
 }
 
 //! @brief 直近で選んだスロットの capture 時刻[usec]
@@ -809,7 +869,7 @@ RingBuffer::getTimestamp_us(int buffer_num) const
   {
     return WRITING_FLAG;
   }
-  return s->capture_monotonic_us;
+  return s->capture_monotonic_us.load(std::memory_order_relaxed);
 }
 
 uint64_t
@@ -829,7 +889,7 @@ RingBuffer::getPayloadSize(int buffer_num) const
   {
     return 0;
   }
-  return slot(buffer_num)->payload_size;
+  return slot(buffer_num)->payload_size.load(std::memory_order_relaxed);
 }
 
 uint64_t
@@ -839,7 +899,7 @@ RingBuffer::getCaptureRealtime_us(int buffer_num) const
   {
     return 0;
   }
-  return slot(buffer_num)->capture_realtime_us;
+  return slot(buffer_num)->capture_realtime_us.load(std::memory_order_relaxed);
 }
 
 //! @brief スロットの素性をまとめて取得する
@@ -860,9 +920,9 @@ RingBuffer::getSampleInfo(int buffer_num) const
   {
     return info;
   }
-  info.capture_monotonic_us = s->capture_monotonic_us;
-  info.capture_realtime_us  = s->capture_realtime_us;
-  info.payload_size         = s->payload_size;
+  info.capture_monotonic_us = s->capture_monotonic_us.load(std::memory_order_relaxed);
+  info.capture_realtime_us  = s->capture_realtime_us.load(std::memory_order_relaxed);
+  info.payload_size         = s->payload_size.load(std::memory_order_relaxed);
   std::atomic_thread_fence(std::memory_order_acquire);
   if (s->sequence.load(std::memory_order_acquire) != before)
   {
@@ -1069,7 +1129,7 @@ RingBuffer::getNewestBufferNum()
     }
   }
 
-  const uint64_t stable_capture = slot(newest)->capture_monotonic_us;
+  const uint64_t stable_capture = slot(newest)->capture_monotonic_us.load(std::memory_order_relaxed);
   timestamp_us.store(stable_capture, std::memory_order_relaxed);
   // 「ここまで読んだ」を記録する。v1 では timestamp_us の更新がこの役目を
   // 兼ねており、getNewestBufferNum() の後は isUpdated() が偽になっていた。
@@ -1130,7 +1190,7 @@ RingBuffer::allocateBuffer(int buffer_num)
   }
 
   SlotRecord *s = slot(buffer_num);
-  int         r = pthread_mutex_trylock(&s->owner);
+  int         r = lockSlotWithin(&s->owner, SLOT_LOCK_TIMEOUT_US);
 
   if (r == EOWNERDEAD)
   {
@@ -1177,11 +1237,13 @@ RingBuffer::commitBuffer(int buffer_num, size_t payload_size, uint64_t capture_m
   }
   SlotRecord *s = slot(buffer_num);
 
-  s->payload_size         = payload_size;
-  s->capture_realtime_us  = getCurrentRealtimeUSec();
-  s->capture_monotonic_us = (capture_monotonic_us != 0) ? capture_monotonic_us : getCurrentTimeUSec();
+  s->payload_size.store(payload_size, std::memory_order_relaxed);
+  s->capture_realtime_us.store(getCurrentRealtimeUSec(), std::memory_order_relaxed);
+  s->capture_monotonic_us.store((capture_monotonic_us != 0) ? capture_monotonic_us : getCurrentTimeUSec(),
+                                std::memory_order_relaxed);
 
-  const uint64_t seq = header->sequence.fetch_add(1, std::memory_order_acq_rel) + 1;
+  std::atomic<uint64_t> *counter = (sequence_source != nullptr) ? sequence_source : &header->sequence;
+  const uint64_t         seq     = counter->fetch_add(1, std::memory_order_acq_rel) + 1;
   s->sequence.store(seq, std::memory_order_release);
 
   // allocateBuffer() を通さずに呼ばれた場合、この mutex は保持していない。
@@ -1199,19 +1261,80 @@ RingBuffer::getSequenceCounter() const
   return header->sequence.load(std::memory_order_acquire);
 }
 
-//! @brief 発行番号カウンタを最低でも floor まで進める
-//! @details 世代を切り替えたとき、新しいセグメントのカウンタは 0 から始まる。
-//!          旧世代で使った番号を再利用すると「発行番号はトピック内で一意」という
-//!          契約が壊れ、seqlock の検証やタイムマシンの順序付けが崩れる（R02-F05）。
+//! @brief 発行番号の採番元を差し替える
 void
-RingBuffer::adoptSequenceFloor(uint64_t floor)
+RingBuffer::setSequenceSource(std::atomic<uint64_t> *source)
 {
-  uint64_t current = header->sequence.load(std::memory_order_acquire);
-  while (current < floor &&
-         !header->sequence.compare_exchange_weak(current, floor, std::memory_order_acq_rel,
-                                                 std::memory_order_acquire))
+  sequence_source = source;
+}
+
+//! @brief このリングのヘッダにある発行番号カウンタ
+std::atomic<uint64_t> *
+RingBuffer::sequenceCounter()
+{
+  return &header->sequence;
+}
+
+//! @brief スロットを排他して、payload と素性を 1 つのスナップショットとして読む
+//! @details 宣言側のコメントを参照（R03-F03/F04）。
+bool
+RingBuffer::readSample(int buffer_num, void *dst, size_t dst_size, SampleInfo *info)
+{
+  if (buffer_num < 0 || static_cast<size_t>(buffer_num) >= expected_buf_num)
   {
+    return false;
   }
+  SlotRecord *s = slot(buffer_num);
+
+  // スロットを排他してから読む。writer の memcpy と競合しなくなる。
+  int r = lockSlotWithin(&s->owner, SLOT_LOCK_TIMEOUT_US);
+  if (r == EOWNERDEAD)
+  {
+    // writer が書き込み中に死んだ。中身は壊れている前提なので無効化する。
+    pthread_mutex_consistent(&s->owner);
+    s->sequence.store(0, std::memory_order_release);
+    pthread_mutex_unlock(&s->owner);
+    return false;
+  }
+  if (r != 0)
+  {
+    return false;  // 書き込み中。呼び出し側が再試行する
+  }
+
+  // ロックを保持している間はスロットが書き換わらないので、
+  // 発行番号の前後比較は不要になる。
+  const uint64_t sequence = s->sequence.load(std::memory_order_acquire);
+  if (sequence == 0)
+  {
+    pthread_mutex_unlock(&s->owner);
+    return false;  // 有効なデータが無い
+  }
+
+  const size_t payload_size = static_cast<size_t>(s->payload_size.load(std::memory_order_relaxed));
+  if (payload_size > expected_element_size || payload_size > dst_size)
+  {
+    // メタデータの破損か、読み手の受け皿が足りない。
+    // このまま memcpy すると範囲外アクセスになる。
+    pthread_mutex_unlock(&s->owner);
+    return false;
+  }
+
+  if (payload_size > 0 && dst != nullptr)
+  {
+    std::memcpy(dst, data_list + static_cast<size_t>(buffer_num) * expected_element_size, payload_size);
+  }
+
+  if (info != nullptr)
+  {
+    info->sequence             = sequence;
+    info->capture_monotonic_us = s->capture_monotonic_us.load(std::memory_order_relaxed);
+    info->capture_realtime_us  = s->capture_realtime_us.load(std::memory_order_relaxed);
+    info->payload_size         = payload_size;
+  }
+
+  pthread_mutex_unlock(&s->owner);
+  markAsRead(sequence);
+  return true;
 }
 
 //! @brief 別のリングから取り出したサンプルを素性ごと取り込む
@@ -1250,15 +1373,17 @@ RingBuffer::adoptSample(const SampleInfo &info, const void *payload, size_t byte
   {
     std::memcpy(data_list + static_cast<size_t>(target) * expected_element_size, payload, bytes);
   }
-  s->payload_size         = bytes;
-  s->capture_monotonic_us = info.capture_monotonic_us;
-  s->capture_realtime_us  = info.capture_realtime_us;
+  s->payload_size.store(bytes, std::memory_order_relaxed);
+  s->capture_monotonic_us.store(info.capture_monotonic_us, std::memory_order_relaxed);
+  s->capture_realtime_us.store(info.capture_realtime_us, std::memory_order_relaxed);
 
-  // 以後の publish が引き継いだ番号を再利用しないよう、カウンタを進める
-  uint64_t current = header->sequence.load(std::memory_order_acquire);
+  // 採番元は root と共有しているので、引き継いだ番号がそのまま一意である。
+  // 念のためカウンタが取り込んだ番号より小さければ進めておく。
+  std::atomic<uint64_t> *counter = (sequence_source != nullptr) ? sequence_source : &header->sequence;
+  uint64_t               current = counter->load(std::memory_order_acquire);
   while (current < info.sequence &&
-         !header->sequence.compare_exchange_weak(current, info.sequence, std::memory_order_acq_rel,
-                                                 std::memory_order_acquire))
+         !counter->compare_exchange_weak(current, info.sequence, std::memory_order_acq_rel,
+                                         std::memory_order_acquire))
   {
   }
 

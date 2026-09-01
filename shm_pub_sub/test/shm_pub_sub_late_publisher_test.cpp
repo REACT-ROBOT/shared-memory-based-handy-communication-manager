@@ -119,7 +119,7 @@ RawRingState peekRawRing(const std::string& topic, int buffer_num) {
     const uint64_t seq = slot->sequence.load(std::memory_order_acquire);
     state.sequences.push_back(seq);
     // 無効なスロットは 0 として扱う（v1 のタイムスタンプ 0 と同じ意味）
-    state.timestamps.push_back(seq == 0 ? 0 : slot->capture_monotonic_us);
+    state.timestamps.push_back(seq == 0 ? 0ULL : slot->capture_monotonic_us.load(std::memory_order_relaxed));
     Msg m;
     std::memcpy(&m, ptr + header->data_offset + i * sizeof(Msg), sizeof(Msg));
     state.data.push_back(m);

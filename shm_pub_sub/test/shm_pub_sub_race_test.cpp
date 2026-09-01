@@ -331,10 +331,16 @@ TEST_F(SHMPubSubRaceTest, ContentionCountersDetectWriterOutpacingReader) {
     std::cout << "overload: reads=" << reads
               << " retry=" << sub.getContentionRetryCount()
               << " failure=" << sub.getContentionFailureCount() << std::endl;
-    EXPECT_GT(sub.getContentionRetryCount(), 0u)
-        << "過負荷条件で競合が一度も観測されなかった（カウンタが機能していない）";
+    // reader は payload コピーの間スロットを排他するようになったので（R03-F04）、
+    // writer と読み合っても「負けて捨てる」ことが無くなった。retry が積み上がるのは
+    // スロットが SLOT_LOCK_TIMEOUT_US を超えて塞がったときだけで、過負荷でも
+    // 通常は 0 のままである。したがって retry>0 は要求できない。
+    // ここで確かめるべきは「過負荷でも読み続けられ、失敗が出ないこと」。
+    ASSERT_GT(reads, 0u) << "過負荷条件で一度も読めていない";
+    EXPECT_EQ(sub.getContentionFailureCount(), 0u)
+        << "スロットの排他が想定より長く滞留している";
 
-    // reset の確認
+    // reset の確認（カウンタ自体は診断用に残してある）
     sub.resetContentionCounts();
     EXPECT_EQ(sub.getContentionRetryCount(), 0u);
     EXPECT_EQ(sub.getContentionFailureCount(), 0u);

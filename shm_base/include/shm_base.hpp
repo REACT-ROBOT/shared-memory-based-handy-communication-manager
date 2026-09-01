@@ -452,6 +452,41 @@ type_schema_id()
   return hash == 0 ? 1ULL : hash;
 }
 
+/*!
+ * \~japanese-en トピックのペイロード書式の版を、利用者が明示するためのトレイト．
+ *
+ * \~japanese-en type_schema_id<T>() は `__PRETTY_FUNCTION__` の hash なので、
+ *               **同じツールチェインでしか一致しない**。コンパイラや標準ライブラリ、
+ *               言語バインディングが違えば同じ型でも別の値になり得るし、逆に
+ *               「型名は同じだがメンバを足した」という**互換性を壊す変更**は
+ *               検出できない（R03-F05）。
+ *
+ * \~japanese-en 別ビルドのプロセスと通信する構造体には、この版を明示すること。
+ *               版は両者が 0 以外を指定したときだけ照合され、食い違えば接続を拒む。
+ *               メンバの追加・削除・並べ替え・型変更のたびに増やす。
+ *
+ * @code
+ * struct ScanHeader { uint32_t count; float angle_min; };
+ * namespace irlab { namespace shm {
+ * template <> struct shm_schema<ScanHeader> { static constexpr uint32_t version = 3; };
+ * }}
+ * @endcode
+ */
+template <typename T>
+struct shm_schema
+{
+  //! 0 は「未指定」。その場合は type_schema_id<T>() だけで照合する。
+  static constexpr uint32_t version = 0;
+};
+
+//! @brief shm_schema<T>::version を取り出す
+template <typename T>
+constexpr uint32_t
+schema_version_of()
+{
+  return shm_schema<T>::version;
+}
+
 //!          レイアウトを読む前にこのヘッダだけで妥当性を判定できる。
 struct ShmHeader
 {
@@ -470,9 +505,13 @@ struct ShmHeader
   uint64_t              generation;         //!< このセグメント自身の世代（不変）
   std::atomic<uint64_t> sequence;           //!< 発行順の正本。単調増加
   uint64_t              boot_id_hash;       //!< 再起動をまたいだ残骸の検出
-  //! トピック全体で現在有効な世代。**世代 1 のセグメントのものだけが正本**で、
-  //! 世代を進める側が CAS で更新する。参加者はこれを見て現世代へ追随する。
-  //! 世代 1 のセグメントは「データ本体」と「ディレクトリ」を兼ねる。
+  //! トピック全体で現在有効な世代とノンスを 1 語に詰めたもの。
+  //! **世代 1 のセグメントのものだけが正本**で、世代を進める側が CAS で更新する。
+  //! 上位 16 bit が世代番号、下位 48 bit がその世代のノンス。
+  //!
+  //! 1 語にまとめてあるのは、世代とノンスを **不可分に** 公開するためである。
+  //! 別々のフィールドにすると「新しい世代番号と古いノンス」の組を読み得る。
+  //! packGeneration() / unpackGeneration() / unpackNonce() を使うこと。
   std::atomic<uint64_t> latest_generation;
 
   // ------------------------------------------------------------------------
@@ -484,10 +523,36 @@ struct ShmHeader
   // 接続した購読側が容量を超えて memcpy し、SIGSEGV する。
   // ------------------------------------------------------------------------
   uint64_t element_size;    //!< 要素 1 個のバイト数（Vector なら要素型のサイズ）
-  uint64_t schema_id;       //!< type_schema_id<T>()。0 は未設定
+  uint64_t schema_id;       //!< 型を識別する ID。0 は未設定
   uint32_t payload_kind;    //!< PayloadKind
-  uint32_t reserved;
+  uint32_t schema_version;  //!< 利用者が指定した schema の版。0 は未設定
+
+  //! このセグメント自身のノンス。名前に含まれる値と一致することを接続時に確認する。
+  //! 世代 1（root）は 0。
+  uint64_t segment_nonce;
+  uint64_t reserved[7];
 };
+
+//! @brief 世代番号とノンスを 1 語に詰める
+//! @details 上位 16 bit が世代、下位 48 bit がノンス。
+//!          不可分に公開するために 1 語へまとめる。
+constexpr uint64_t
+packGeneration(uint64_t generation, uint64_t nonce)
+{
+  return (generation << 48) | (nonce & 0x0000FFFFFFFFFFFFULL);
+}
+constexpr uint64_t
+unpackGeneration(uint64_t packed)
+{
+  return packed >> 48;
+}
+constexpr uint64_t
+unpackNonce(uint64_t packed)
+{
+  return packed & 0x0000FFFFFFFFFFFFULL;
+}
+//! 世代番号の上限（16 bit）。容量は増やすだけなので実運用では到達しない。
+constexpr uint64_t MAX_GENERATION = 0xFFFFULL;
 
 //! @brief スロット1つ分のメタデータ
 //! @details 1スロット = 1キャッシュラインに載せ、Publisher 同士の false sharing を避ける。
@@ -497,11 +562,15 @@ struct alignas(64) SlotRecord
   //! 書き込み開始時に 0 へ落とし、完了時に header.sequence から採番した値を
   //! release store する。途中で writer が死んでも 0 のままなので読み手には見えない。
   std::atomic<uint64_t> sequence;
-  uint64_t              payload_size;           //!< 実際に書かれた長さ
-  uint64_t              capture_monotonic_us;   //!< CLOCK_MONOTONIC_RAW。期限判定用
+  //! 以下 3 つは、スロットの排他を取らずに読む経路がある（読むスロットの選択や
+  //! 時刻検索）。plain な整数だと writer の書き込みと同時アクセスになり、
+  //! C++ のメモリモデル上 data race（未定義動作）なので atomic にしてある
+  //! （R03-F04）。値の整合性はロックを取る readSample() で保証する。
+  std::atomic<uint64_t> payload_size;          //!< 実際に書かれた長さ
+  std::atomic<uint64_t> capture_monotonic_us;  //!< CLOCK_MONOTONIC_RAW。期限判定用
   //! CLOCK_REALTIME。**記録専用で、検索には使わない**。
   //! NTP 同期で前後に飛ぶため検索の基準にできない（SearchPolicy のコメント参照）。
-  uint64_t              capture_realtime_us;
+  std::atomic<uint64_t> capture_realtime_us;
   //! スロットの所有権。PTHREAD_PROCESS_SHARED かつ PTHREAD_MUTEX_ROBUST。
   //! trylock が EBUSY なら「生きている writer が使用中」なので絶対に奪わない。
   //! EOWNERDEAD（カーネルが所有者の死を確定）のときだけ回収する。
@@ -519,7 +588,7 @@ public:
   //! 'SHM2'。v1 の先頭 4 バイトは初期化フラグ (0/1/2) なので、
   //! 新しいコードが v1 の領域を読んでも必ず不一致になる。
   static constexpr uint32_t SHM_MAGIC = 0x324D4853;
-  static constexpr uint16_t ABI_MAJOR = 3;
+  static constexpr uint16_t ABI_MAJOR = 4;
   static constexpr uint16_t ABI_MINOR = 0;
 
   // ------------------------------------------------------------------------
@@ -534,6 +603,9 @@ public:
   //! element_size が payload_alignment の倍数である限り全スロットが整列する。
   static constexpr size_t DEFAULT_PAYLOAD_ALIGNMENT = 1;
   //! ページ境界を超えるアライメント要求は共有メモリでは満たせない
+  //! スロットの robust mutex を待つ上限[usec]。
+  //! 臨界区間は memcpy 1 回ぶんなので、これを超えるのは異常事態。
+  static constexpr uint64_t SLOT_LOCK_TIMEOUT_US = 2000;
   static constexpr size_t MAX_PAYLOAD_ALIGNMENT = 4096;
 
   /*!
@@ -545,7 +617,8 @@ public:
   {
     PayloadKind kind         = PayloadKind::Unknown;
     uint64_t    element_size = 0;  //!< 要素 1 個のバイト数
-    uint64_t    schema_id    = 0;  //!< type_schema_id<T>()。0 は照合しない
+    uint64_t    schema_id    = 0;
+    uint32_t    schema_version = 0;  //!< shm_schema<T>::version。0 は照合しない
     size_t      alignment    = DEFAULT_PAYLOAD_ALIGNMENT;
 
     bool matches(const TopicContract &other, std::string *reason = nullptr) const;
@@ -569,7 +642,7 @@ public:
 
   RingBuffer(unsigned char *first_ptr, size_t size = 0, int buffer_num = 0,
              size_t payload_alignment = DEFAULT_PAYLOAD_ALIGNMENT, const TopicContract *contract = nullptr,
-             uint64_t own_generation = 1);
+             uint64_t own_generation = 1, uint64_t own_nonce = 0);
   ~RingBuffer();
 
   // --- 読み出し ---
@@ -597,10 +670,15 @@ public:
   //! @brief 共有メモリに記録されている topic contract
   TopicContract getContract() const;
   //! @brief トピック全体で現在有効な世代（世代 1 のセグメントのものが正本）
+  //! @brief 現在有効な世代とノンスを詰めたタグ（root セグメントのものが正本）
+  uint64_t getGenerationTag() const;
+  //! @brief 現在有効な世代番号
   uint64_t getLatestGeneration() const;
-  void     setLatestGeneration(uint64_t generation);
+  //! @brief このセグメント自身のノンス
+  uint64_t getSegmentNonce() const;
+  void     setGenerationTag(uint64_t tag);
   //! @brief 現在有効な世代を CAS で進める。成功したら真
-  bool     tryAdvanceLatestGeneration(uint64_t expected, uint64_t desired);
+  bool     tryAdvanceGenerationTag(uint64_t expected_tag, uint64_t desired_tag);
   //! @deprecated getTimestamp_us(int) が「無効」を表す値を返したかの判定。
   //!             v2 では sequence が 0 のスロットに対してこの値が返る。
   static bool    isBeingWritten(uint64_t timestamp);
@@ -639,9 +717,38 @@ public:
 
   //! @brief 発行番号カウンタの現在値
   uint64_t getSequenceCounter() const;
-  //! @brief 発行番号カウンタを最低でも floor まで進める
-  //! @details 世代をまたいで発行番号を一意に保つために使う（R02-F05）
-  void     adoptSequenceFloor(uint64_t floor);
+
+  /*!
+   * \~japanese-en 発行番号の採番元を外部（root セグメント）に差し替える．
+   *
+   * \~japanese-en 発行番号は**トピック内で一意**でなければならない。世代ごとに
+   *               カウンタを持つと、旧世代の in-flight commit と新世代の最初の
+   *               commit が同じ番号を採り得る（R03-F01）。
+   *               全世代が root の 1 つのカウンタを共有すればこれが起きない。
+   * @param [in] source 採番に使う atomic。nullptr で自前のカウンタに戻る
+   */
+  void setSequenceSource(std::atomic<uint64_t> *source);
+  //! @brief このリングのヘッダにある発行番号カウンタ（root の正本を取り出す用）
+  std::atomic<uint64_t> *sequenceCounter();
+
+  /*!
+   * \~japanese-en スロットを排他して、payload と素性を 1 つのスナップショットとして読む．
+   *
+   * \~japanese-en 発行番号の前後比較だけでは、writer と reader が同じ通常メモリへ
+   *               同時に memcpy する可能性が残る。片方が書き込みで、atomic でも
+   *               mutex でも同期されていないため、C++ のメモリモデル上これは
+   *               data race であり未定義動作である（R03-F04）。
+   *               スロットの robust mutex を取って読むことで、writer との
+   *               相互排他と happens-before が成立する。
+   * \~japanese-en writer 側は trylock で空いているスロットを選ぶので、
+   *               読み手がスロットを保持していても writer が待たされることはない。
+   *
+   * @param [out] dst      payload の書き込み先
+   * @param [in]  dst_size dst の容量。payload_size がこれを超えたら失敗する
+   * @param [out] info     取得したサンプルの素性（不要なら nullptr）
+   * @return bool 読めたら真。書き込み中・空・容量不足なら偽
+   */
+  bool readSample(int buffer_num, void *dst, size_t dst_size, SampleInfo *info);
 
   //! @deprecated commitBuffer() を使うこと。
   //!             互換のため残している。input_time_us は capture 時刻として記録する。
@@ -650,11 +757,11 @@ public:
 private:
   void        initializeExclusiveAccess();
   void        initializeOrAttach(size_t element_size, int buffer_num, size_t payload_alignment,
-                                 const TopicContract *contract, uint64_t own_generation);
+                                 const TopicContract *contract, uint64_t own_generation, uint64_t own_nonce);
   bool        hasCompatibleLayout(size_t element_size, int buffer_num, size_t payload_alignment,
                                   const TopicContract *contract) const;
   void        initializeContents(size_t element_size, int buffer_num, size_t payload_alignment,
-                                 const TopicContract *contract, uint64_t own_generation);
+                                 const TopicContract *contract, uint64_t own_generation, uint64_t own_nonce);
   void        bindPointers();
   SlotRecord *slot(int i) const;
   bool        ownsSlot(int i) const;
@@ -662,6 +769,10 @@ private:
 
   unsigned char *memory_ptr;
   ShmHeader     *header;
+
+  //! 発行番号の採番元。nullptr なら自分のヘッダのカウンタを使う。
+  //! 世代をまたいで一意にするため、通常は root のカウンタを指す（R03-F01）。
+  std::atomic<uint64_t> *sequence_source = nullptr;
 
   //! このインスタンスが robust mutex を保持しているスロット。
   //! allocateBuffer() を通さずに commitBuffer() / setTimestamp_us() を呼ぶ
@@ -695,8 +806,13 @@ private:
   // 初期化を実行中であることを示す中間状態。NOT_INITIALIZED からの CAS で
   // 一つの writer だけがこの状態に遷移でき、他は初期化の完了を待つ。
   static constexpr uint32_t INITIALIZING = 2;
-  // 他プロセスによる初期化の完了を待つ上限。待ちきれなかった場合は
-  // 初期化中に落ちたプロセスの残骸とみなして自分で初期化し直す。
+  // 他プロセスによる初期化の完了を待つ上限。
+  //
+  // **待ちきれなくても takeover はしない**。時間の経過は相手の死の証明にならず、
+  // 単に遅い／SIGSTOP で止まっているだけのプロセスが初期化している最中の
+  // セグメントを奪うと、そのプロセスが書きかけの mutex やレイアウトを
+  // 壊すことになる。待ち切れなかった場合は例外を投げて呼び出し側に返す。
+  // （このコメントは実装と食い違っていた。将来 takeover を復活させないこと）
   static constexpr uint64_t INIT_WAIT_TIMEOUT_US = 500000;  // 500ms
 
   // getTimestamp_us(int) が「有効なデータが無い」ことを表すために返す値。
@@ -753,8 +869,10 @@ public:
   //! 世代の取り違えが無限に続かないための上限
   static constexpr int MAX_GENERATION_ATTEMPTS = 8;
   //! 世代セグメントの作成者が初期化を終えるのを待つ上限[usec]。
-  //! これを超えても未初期化なら、作成途中で死んだ残骸とみなして回収する。
-  static constexpr uint64_t ORPHAN_WAIT_TIMEOUT_US = 1000000;  // 1s
+  //! ここで待ち切れなくても回収はしない（時間で生死を判定しない：R03-F03）。
+  static constexpr uint64_t INIT_WAIT_TIMEOUT_US = 500000;  // 0.5s
+  //! 切り替え直後に旧世代へ滑り込んだサンプルを拾い直す回数（R03-F01）
+  static constexpr int MAX_DRAIN_ROUNDS = 4;
 
   ShmTopic(std::string name, PERM perm, bool create);
   ~ShmTopic();
@@ -782,28 +900,32 @@ public:
   //! @brief 現世代のリングバッファ。未接続なら nullptr
   RingBuffer *ring() const { return ring_.get(); }
   //! @brief 現在接続している世代
-  uint64_t generation() const { return current_generation_; }
-  //! @brief 接続世代がまだ有効か（root の latest_generation と一致するか）
-  bool     isGeneration(uint64_t generation) const;
+  uint64_t generation() const { return unpackGeneration(current_tag_); }
+  //! @brief 現在接続している世代タグ（世代 + ノンス）
+  uint64_t generationTag() const { return current_tag_; }
+  //! @brief 接続世代がまだ有効か（root の世代タグと一致するか）
+  bool     isGeneration(uint64_t tag) const;
   //! @brief 直近の失敗理由
   const std::string &lastError() const { return last_error_; }
   //! @brief 全世代のセグメントを削除する
   static int  removeAllGenerations(const std::string &name);
-  //! @brief 世代 N のセグメント名を返す
-  static std::string generationName(const std::string &name, uint64_t generation);
+  //! @brief 世代タグに対応するセグメント名を返す
+  //! @details 世代 1 はトピック名そのもの。世代 N>=2 は "<topic>#<N>-<nonce16進>"。
+  //!          ノンスを名前に入れることで、同じ世代番号でも作成者ごとに
+  //!          別の名前になり、固定名 "#N" の取り合いが起きない（R03-F03）。
+  static std::string generationName(const std::string &name, uint64_t tag);
 
 private:
   bool openRoot(bool create, size_t initial_capacity, int buf_num, size_t payload_alignment,
                 const RingBuffer::TopicContract *contract);
-  bool attachGeneration(uint64_t generation, const RingBuffer::TopicContract *expected);
-  bool createNextGeneration(uint64_t from_generation, size_t capacity, int buf_num, size_t payload_alignment,
+  bool attachGeneration(uint64_t tag, const RingBuffer::TopicContract *expected);
+  bool createNextGeneration(uint64_t from_tag, size_t capacity, int buf_num, size_t payload_alignment,
                             const RingBuffer::TopicContract &contract);
-  //! 初期化されないまま残った世代セグメントを回収する（作成者が途中で死んだ場合）
-  bool reclaimOrphanGeneration(uint64_t generation, uint64_t from_generation);
-  //! 世代を進めた後、不要になった旧世代セグメントを削除する
-  void unlinkSuperseded(uint64_t generation);
+  //! 現役でないと**確実に言える**世代セグメントだけを削除する（R03-F03）
+  void unlinkStaleGenerations(uint64_t live_tag);
   //! 旧世代の有効なサンプルを新世代へ引き継ぐ（履歴を切らさないため）
-  void migrateHistory(RingBuffer &destination);
+  //! @return 引き継いだ中で最大の発行番号
+  uint64_t migrateHistory(RingBuffer &source, RingBuffer &destination, uint64_t after_sequence);
   //! 世代の作り直しを繰り返さないよう、容量は増やすだけにし余裕を持たせる
   static size_t growCapacity(size_t current, size_t required, size_t alignment);
 
@@ -815,7 +937,7 @@ private:
   std::unique_ptr<RingBuffer>        root_ring_;
   std::unique_ptr<SharedMemoryPosix> data_;  //!< 現世代（世代 1 のときは nullptr）
   std::unique_ptr<RingBuffer>        ring_;
-  uint64_t                           current_generation_;
+  uint64_t                           current_tag_;  //!< 現在接続している世代タグ
   std::string                        last_error_;
 };
 

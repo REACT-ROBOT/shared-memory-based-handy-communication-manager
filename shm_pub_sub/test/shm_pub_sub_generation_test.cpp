@@ -10,6 +10,7 @@
 //!   - 要求が食い違う複数 Publisher が有限回で収束すること
 
 #include <gtest/gtest.h>
+#include <dirent.h>
 #include <atomic>
 #include <chrono>
 #include <cstring>
@@ -42,13 +43,36 @@ Msg makeMsg(uint32_t v)
   return m;
 }
 
+//! "shm_<prefix>..." に前方一致する /dev/shm のエントリ数
+size_t countSegmentsWithPrefix(const std::string &prefix)
+{
+  const std::string full  = "shm_" + prefix;
+  size_t            count = 0;
+  DIR              *dir   = opendir("/dev/shm");
+  if (dir == nullptr)
+  {
+    return 0;
+  }
+  struct dirent *entry = nullptr;
+  while ((entry = readdir(dir)) != nullptr)
+  {
+    if (std::string(entry->d_name).compare(0, full.size(), full) == 0)
+    {
+      ++count;
+    }
+  }
+  closedir(dir);
+  return count;
+}
+
 bool segmentExists(const std::string &shm_name)
 {
   struct stat st;
   return ::stat(("/dev/shm/shm_" + shm_name).c_str(), &st) == 0;
 }
 
-uint64_t latestGeneration(const std::string &topic)
+//! root の世代タグ（世代 + ノンス）
+uint64_t latestGenerationTag(const std::string &topic)
 {
   SharedMemoryPosix shm(topic, O_RDWR, DEFAULT_PERM);
   if (!shm.connect())
@@ -57,6 +81,18 @@ uint64_t latestGeneration(const std::string &topic)
   }
   const ShmHeader *h = reinterpret_cast<const ShmHeader *>(shm.getPtr());
   return h->latest_generation.load();
+}
+
+uint64_t latestGeneration(const std::string &topic)
+{
+  return unpackGeneration(latestGenerationTag(topic));
+}
+
+//! 世代セグメントの名前はノンスを含むので、名前を組み立てるのではなく
+//! root のタグから引く（R03-F03）
+std::string generationSegmentName(const std::string &topic)
+{
+  return ShmTopic::generationName(topic, latestGenerationTag(topic));
 }
 }  // namespace
 
@@ -99,7 +135,7 @@ TEST_F(SHMGenerationTest, ScalarTopicNeverCreatesASecondGeneration)
     EXPECT_EQ(m.value, i);
   }
   EXPECT_EQ(latestGeneration("gen_keep"), 1u);
-  EXPECT_FALSE(segmentExists("gen_keep#2")) << "固定長トピックで世代が増えた";
+  EXPECT_EQ(countSegmentsWithPrefix("gen_keep#"), 0u) << "固定長トピックで世代が増えた";
 }
 
 TEST_F(SHMGenerationTest, GrowingVectorCreatesANewGenerationWithoutTouchingTheOldOne)
@@ -138,19 +174,27 @@ TEST_F(SHMGenerationTest, GrowingVectorCreatesANewGenerationWithoutTouchingTheOl
 
   const uint64_t gen_after = latestGeneration("gen_grow");
   EXPECT_GT(gen_after, gen_before) << "レイアウトが変わったのに世代が進んでいない";
-  EXPECT_TRUE(segmentExists("gen_grow#" + std::to_string(gen_after)));
+  EXPECT_TRUE(segmentExists(generationSegmentName("gen_grow")));
 
   // 世代 1 のセグメントは、latest_generation 以外は書き換わっていないこと。
   // これが F01 の要点: 稼働中のセグメントを破壊的に作り直さない。
   EXPECT_EQ(root_header->element_capacity, root_capacity_before)
       << "既存セグメントのレイアウトが書き換えられた（破壊的な再レイアウト）";
 
+  // 進んでよいのは次の 2 つだけ:
+  //   latest_generation … 世代タグ（世代 + ノンス）の公開
+  //   sequence          … 発行番号はトピック全体で root のカウンタから採る（R03-F01）
   const size_t latest_gen_offset = offsetof(ShmHeader, latest_generation);
+  const size_t sequence_offset   = offsetof(ShmHeader, sequence);
   for (size_t i = 0; i < sizeof(ShmHeader); ++i)
   {
     if (i >= latest_gen_offset && i < latest_gen_offset + sizeof(uint64_t))
     {
-      continue;  // latest_generation だけは進むのが正しい
+      continue;
+    }
+    if (i >= sequence_offset && i < sequence_offset + sizeof(uint64_t))
+    {
+      continue;
     }
     ASSERT_EQ(root.getPtr()[i], before[i]) << "世代 1 のヘッダのオフセット " << i << " が書き換えられた";
   }
@@ -257,13 +301,13 @@ TEST_F(SHMGenerationTest, DisconnectTopicRemovesEveryGeneration)
   const uint64_t gen = latestGeneration("gen_remove");
   ASSERT_GT(gen, 1u) << "この検証には世代が 2 以上必要";
   ASSERT_TRUE(segmentExists("gen_remove"));
-  ASSERT_TRUE(segmentExists("gen_remove#" + std::to_string(gen)));
+  const std::string live_segment = generationSegmentName("gen_remove");
+  ASSERT_TRUE(segmentExists(live_segment));
 
   disconnectTopic("gen_remove");
 
   EXPECT_FALSE(segmentExists("gen_remove"));
-  for (uint64_t g = 2; g <= gen; ++g)
-  {
-    EXPECT_FALSE(segmentExists("gen_remove#" + std::to_string(g))) << "世代 " << g << " が残っている";
-  }
+  EXPECT_FALSE(segmentExists(live_segment)) << live_segment << " が残っている";
+  // 名前にノンスが入るので、接頭辞で /dev/shm を走査して取り残しを見る
+  EXPECT_EQ(countSegmentsWithPrefix("gen_remove#"), 0u) << "世代セグメントが残っている";
 }

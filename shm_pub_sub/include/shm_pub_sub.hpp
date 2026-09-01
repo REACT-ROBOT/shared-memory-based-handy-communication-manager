@@ -127,8 +127,9 @@ private:
     RingBuffer::TopicContract c;
     c.kind         = PayloadKind::Scalar;
     c.element_size = sizeof(T);
-    c.schema_id    = type_schema_id<T>();
-    c.alignment    = alignof(T);
+    c.schema_id      = type_schema_id<T>();
+    c.schema_version = schema_version_of<T>();
+    c.alignment      = alignof(T);
     return c;
   }
 
@@ -262,8 +263,9 @@ private:
     RingBuffer::TopicContract c;
     c.kind         = PayloadKind::Scalar;
     c.element_size = sizeof(T);
-    c.schema_id    = type_schema_id<T>();
-    c.alignment    = alignof(T);
+    c.schema_id      = type_schema_id<T>();
+    c.schema_version = schema_version_of<T>();
+    c.alignment      = alignof(T);
     return c;
   }
   //! 指定スロットを、payload と素性が同じサンプルであることを保証して読む
@@ -415,7 +417,7 @@ Publisher<T>::publishOnce(const T &data)
     throw std::runtime_error("shm::Publisher: " + topic->lastError());
   }
   RingBuffer *ring_buffer = topic->ring();
-  const uint64_t generation_before = topic->generation();
+  const uint64_t generation_before = topic->generationTag();
 
   // 確保できないままの書き込みは、他の writer が書き込み途中のバッファを
   // 破壊し購読可能にしてしまうため許されない。確保成功を必須とする。
@@ -527,51 +529,42 @@ Subscriber<T>::Subscriber(std::string name)
 }
 
 //! @brief 指定スロットを、payload と素性が同じサンプルであることを保証して読む
-//! @details 発行番号 → メタデータ → payload → 発行番号 の順に読み、前後が
-//!          一致した場合だけ成功とする。以前は成功判定の後に別操作として
-//!          getSampleInfo() を呼んでいたため、その間に publisher が同じスロットを
-//!          再確保でき、「payload は N、info は N+1」という組合せが返り得た
-//!          （1 スロットで 63 万回中 1,869 回再現）。時刻合わせでは別時刻の
-//!          センサ値を「整列済み」として返すことになり実害がある（R02-F03）。
+//! @details 以前は成功判定の後に別操作として getSampleInfo() を呼んでいたため、
+//!          その間に publisher が同じスロットを再確保でき、「payload は N、
+//!          info は N+1」という組合せが返り得た（1 スロットで 63 万回中 1,869 回
+//!          再現）。時刻合わせでは別時刻のセンサ値を「整列済み」として返すことに
+//!          なり実害がある（R02-F03）。
+//!
+//!          さらに、発行番号の前後比較だけでは publisher の memcpy と reader の
+//!          memcpy が同じ通常メモリへ同時に走る可能性が残り、C++ のメモリモデル上
+//!          これは data race（未定義動作）だった。RingBuffer::readSample() は
+//!          スロットの robust mutex を取って読むので、この競合自体が起きない
+//!          （R03-F04）。
 template <typename T>
 bool
 Subscriber<T>::readSlotInto(RingBuffer *ring_buffer, int slot, SampleInfo *info)
 {
-  const SampleInfo before = ring_buffer->getSampleInfo(slot);
-  if (before.sequence == 0)
-  {
-    return false;
-  }
-
-  // 実際に書かれた長さが自分の型と一致すること（R02-F01）。
-  // 一致しないまま memcpy すると容量を超えて読む。
-  if (before.payload_size != sizeof(T))
-  {
-    return false;
-  }
-
-  unsigned char *data_ptr      = ring_buffer->getDataList();
-  const size_t   buffer_offset = static_cast<size_t>(slot) * ring_buffer->getElementSize();
-
   // 今返していない側へ読み込む。失敗しても直前に返した値は壊れない。
   T &scratch = return_buffers_[1 - return_index_];
-  std::memcpy(&scratch, data_ptr + buffer_offset, sizeof(T));
 
-  // コピーの読み込みが完了してから発行番号を再読みする（load-load 順序の固定）
-  std::atomic_thread_fence(std::memory_order_acquire);
-
-  if (ring_buffer->getSequence(slot) != before.sequence)
+  SampleInfo sample;
+  if (!ring_buffer->readSample(slot, &scratch, sizeof(T), &sample))
   {
-    return false;  // コピー中に上書きされた
+    return false;
+  }
+
+  // 実際に書かれた長さが自分の型と一致すること（R02-F01）
+  if (sample.payload_size != sizeof(T))
+  {
+    return false;
   }
 
   if (info != nullptr)
   {
-    *info = before;
+    *info = sample;
   }
   current_reading_buffer = slot;
   return_index_          = 1 - return_index_;
-  ring_buffer->markAsRead(before.sequence);
   return true;
 }
 
