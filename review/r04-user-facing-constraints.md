@@ -134,27 +134,45 @@ LiDAR が 10Hz、`buf_num = 3` なら履歴は **300ms** しかない。
 ### 利用者コード
 
 ```cpp
-// topics/lidar_scan_topic.hpp — publisher も subscriber も同じヘッダを include する
-#include <shm_topic_def.hpp>
+// msgs/lidar_scan.hpp — 型と、その「バイト表現の版」を宣言する
+#include <shm_base.hpp>
 
 struct LidarScan { uint32_t count; float ranges[1081]; };
+
+// 版は**型に属する**（制約 A）。メンバを足す・消す・並べ替える・型を変える、
+// あるいは意味を変えた（単位を m から mm にした等）ときに増やす。
+namespace irlab { namespace shm {
+template <> struct shm_schema<LidarScan> { static constexpr uint32_t version = 3; };
+}}
+```
+
+```cpp
+// topics/lidar_scan_topic.hpp — publisher も subscriber も同じヘッダを include する
+#include <shm_topic_def.hpp>
+#include "msgs/lidar_scan.hpp"
 
 SHM_DEFINE_TOPIC(LidarScanTopic,
   /* topic name */ "lidar_scan",
   /* payload    */ LidarScan,
-  /* schema ver */ 3,
   /* 発行レート */ shm::hz(10),
   /* 必要な履歴 */ shm::millis(1500));   // 1Hz の消費者が 1s 前まで遡れるように
 ```
+
+> **版をトピック定義に書かないのは意図的である。**
+> 版は型のバイト表現に属するものであって、トピックに属するものではない。
+> `SHM_DEFINE_TOPIC` の引数にすると、同じ型を 2 つのトピックで使ったときに
+> `shm_schema<T>` が二重に定義されてコンパイルエラーになるし、
+> 片方だけ版を書き換えるという矛盾も作れてしまう。
+> 型の定義の隣に 1 回だけ書き、トピック定義は型を参照するだけにする。
 
 展開されるもの:
 
 ```cpp
 struct LidarScanTopic {
   using payload = LidarScan;
-  static constexpr const char *name           = "lidar_scan";
-  static constexpr uint32_t    schema_version = 3;
-  static constexpr double      publish_hz     = 10.0;
+  static constexpr const char *name       = "lidar_scan";
+  static constexpr double      publish_hz = 10.0;
+  // 版は shm_schema<payload>::version から取る（トピック定義には持たせない）
   static constexpr uint64_t    history_us     = 1500000;
 
   // 履歴長から必要なスロット数を出す。
