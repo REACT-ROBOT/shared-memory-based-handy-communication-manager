@@ -16,7 +16,9 @@
 //!   **publish が例外を投げずに戻ったなら、そのサンプルは購読者から見えること。**
 
 #include <gtest/gtest.h>
+#include <chrono>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "shm_pub_sub.hpp"
@@ -205,4 +207,86 @@ TEST_F(SHMCutoverTest, SequenceNumbersStayUniqueAcrossACutoverThatHappensDuringP
   sub.subscribe(&ok, &after);
   ASSERT_TRUE(ok);
   EXPECT_GT(after.sequence, before.sequence) << "切替を跨いで発行番号が巻き戻った";
+}
+
+// -----------------------------------------------------------------------------
+// R04-F12: 切替を跨いで発行し直しても、同じ測定が別時刻に見えてはならない
+//
+// 再発行のたびに capture 時刻を採り直すと、履歴とタイムマシンから見て
+// 「同じ測定が別時刻に 2 回起きた」ように見える。時刻を合わせる用途
+// （オドメトリの更新に最も近いスキャンを取る）では実害になる。
+// -----------------------------------------------------------------------------
+TEST_F(SHMCutoverTest, RepublishingAcrossACutoverKeepsTheOriginalCaptureTime)
+{
+  const std::string topic = "cut_vector";
+
+  Publisher<std::vector<uint32_t>>  pub(topic, 8);
+  Subscriber<std::vector<uint32_t>> sub(topic);
+  sub.setDataExpiryTime_us(0);
+
+  pub.publish(std::vector<uint32_t>(4, 1));
+
+  bool cutover_done = false;
+  test_hooks::before_commit = [&] {
+    if (cutover_done)
+    {
+      return;
+    }
+    cutover_done = true;
+    // 世代を進める前に十分な時間差を作る。時刻を採り直していれば、
+    // 元の時刻との差がこの待ち時間ぶん開く。
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    Publisher<std::vector<uint32_t>> grower(topic, 8);
+    grower.publish(std::vector<uint32_t>(40000, 9));
+  };
+
+  const uint64_t before_publish = getCurrentTimeUSec();
+  ASSERT_NO_THROW(pub.publish(std::vector<uint32_t>(4, 7)));
+  test_hooks::before_commit = nullptr;
+  ASSERT_TRUE(cutover_done) << "前提: 切替が起きていない";
+
+  bool       ok = false;
+  SampleInfo info{};
+  sub.subscribe(&ok, &info);
+  ASSERT_TRUE(ok);
+
+  // publish を呼んだ時点の時刻が記録されていること。
+  // 再発行で採り直していると、フックの待ち時間（20ms）ぶん後ろにずれる。
+  ASSERT_GE(info.capture_monotonic_us, before_publish) << "publish 前の時刻が記録されている";
+  EXPECT_LT(info.capture_monotonic_us - before_publish, 10000u)
+      << "capture 時刻が再発行時に採り直されている（元の測定時刻から "
+      << (info.capture_monotonic_us - before_publish) / 1000 << " ms ずれた）";
+}
+
+// -----------------------------------------------------------------------------
+// 世代を移した履歴も、元の発行番号と capture 時刻を保つ
+// -----------------------------------------------------------------------------
+TEST_F(SHMCutoverTest, MigratedHistoryKeepsItsOriginalSequenceAndTime)
+{
+  const std::string topic = "cut_vector";
+
+  Publisher<std::vector<uint32_t>>  pub(topic, 8);
+  Subscriber<std::vector<uint32_t>> sub(topic);
+  sub.setDataExpiryTime_us(0);
+
+  pub.publish(std::vector<uint32_t>(4, 3));
+  bool       ok = false;
+  SampleInfo before{};
+  sub.subscribe(&ok, &before);
+  ASSERT_TRUE(ok);
+  ASSERT_NE(before.sequence, 0u);
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+  // 世代を進める。ここで履歴が新世代へ移される。
+  pub.publish(std::vector<uint32_t>(40000, 9));
+
+  // 移された古いサンプルを時刻で引き当てる
+  SearchStatus status = SearchStatus::Empty;
+  SampleInfo   found{};
+  sub.subscribeAt(TimeQuery{ before.capture_monotonic_us, SearchPolicy::AtOrBefore }, &status, &found);
+
+  ASSERT_EQ(status, SearchStatus::Success) << "移した履歴が引けない";
+  EXPECT_EQ(found.sequence, before.sequence) << "発行番号が採り直されている";
+  EXPECT_EQ(found.capture_monotonic_us, before.capture_monotonic_us) << "capture 時刻が採り直されている";
 }

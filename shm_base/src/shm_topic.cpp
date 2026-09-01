@@ -515,7 +515,6 @@ ShmTopic::createNextGeneration(uint64_t from_tag, size_t capacity, int buf_num, 
     return false;
   }
 
-  uint64_t migrated_up_to = 0;
   try
   {
     // 自分の世代番号とノンスを刻んで初期化する（R02-F06 / R03-F03）
@@ -532,7 +531,7 @@ ShmTopic::createNextGeneration(uint64_t from_tag, size_t capacity, int buf_num, 
     // まだ公開していないセグメントなので、ここで書いても他プロセスには見えない。
     if (ring_ != nullptr)
     {
-      migrated_up_to = migrateHistory(*ring_, initializer, 0);
+      migrateHistory(*ring_, initializer);
     }
     // probe を切る前に、initializer が握ったままのスロットを解放する（R04）
     initializer.releaseOwnedSlots();
@@ -556,7 +555,7 @@ ShmTopic::createNextGeneration(uint64_t from_tag, size_t capacity, int buf_num, 
 
   probe.disconnect();
 
-  // 切り替え前に掴んでいた旧世代を、追い出しサンプルの回収が終わるまで生かしておく。
+  // 旧世代のマッピングは、スロットのロックを解放してから手放す。
   auto old_segment = std::move(data_);
   auto old_ring    = std::move(ring_);
 
@@ -565,25 +564,23 @@ ShmTopic::createNextGeneration(uint64_t from_tag, size_t capacity, int buf_num, 
     return false;
   }
 
-  // 移行を始めてから CAS が成立するまでの間に、旧世代を掴んだままの Publisher が
-  // commit を終えている可能性がある。それらは移行対象の一覧に載っていないので
-  // ここで拾い直す（R03-F01）。
+  // NOTE: ここで旧世代を「もう一度さらって取りこぼしを拾う」処理を持っていたが、
+  //       R04-F11/F12 により削除した。理由は 2 つある。
   //
-  // CAS より後の commit は、Publisher 自身が publish 後の世代チェックで検出して
-  // 新世代へ publish し直す。両者を合わせると、切り替えを跨いだサンプルの
-  // 取りこぼしが無くなる。
-  if (old_ring != nullptr)
-  {
-    for (int round = 0; round < MAX_DRAIN_ROUNDS; ++round)
-    {
-      const uint64_t drained = migrateHistory(*old_ring, *ring_, migrated_up_to);
-      if (drained <= migrated_up_to)
-      {
-        break;
-      }
-      migrated_up_to = drained;
-    }
-  }
+  //       1. **定常状態では原理的に 1 件も拾えない。**
+  //          adoptSample() は発行番号 0 の空きスロットにしか書けないが、
+  //          新世代のスロット数は max(旧, 要求) なので、初回移行が済んだ時点で
+  //          埋まっている。それでも「拾った最大の発行番号」だけは進めていたので、
+  //          取りこぼしが静かに確定していた。
+  //
+  //       2. **そもそも重複している。** 拾うはずだったのは「移行のスナップショットと
+  //          CAS の間に旧世代へ commit された分」だが、その writer 自身が
+  //          publish 後の世代確認で気づいて新世代へ発行し直す。CAS はその確認より
+  //          前に完了しているためである。
+  //
+  //       むしろ両方が成立すると、同じ測定値が 2 つの発行番号・2 つの時刻で
+  //       二重に現れる（R04-F12）。履歴とタイムマシンから見ると「同じ測定が
+  //       別時刻に 2 回起きた」ように見えるので、有害ですらあった。
   if (old_ring != nullptr)
   {
     old_ring->releaseOwnedSlots();
@@ -599,10 +596,9 @@ ShmTopic::createNextGeneration(uint64_t from_tag, size_t capacity, int buf_num, 
 //! @brief 旧世代の有効なサンプルを新世代へ引き継ぐ
 //! @details 発行番号の小さい順に取り込むことで、リング上の新旧関係を保つ。
 //!          読み出しはスロットを排他して行うので、コピー中に上書きされることはない。
-//! @param [in] after_sequence これ以下の発行番号は引き継ぎ済みとして飛ばす
-//! @return 引き継いだ中で最大の発行番号（何も無ければ after_sequence）
-uint64_t
-ShmTopic::migrateHistory(RingBuffer &source, RingBuffer &destination, uint64_t after_sequence)
+//!          引き継がないと、レイアウトが変わった瞬間に過去のデータが全部消える。
+void
+ShmTopic::migrateHistory(RingBuffer &source, RingBuffer &destination)
 {
   const size_t slots         = source.getBufferNum();
   const size_t slot_capacity = source.getElementSize();
@@ -613,7 +609,7 @@ ShmTopic::migrateHistory(RingBuffer &source, RingBuffer &destination, uint64_t a
   for (size_t i = 0; i < slots; ++i)
   {
     const uint64_t sequence = source.getSequence(static_cast<int>(i));
-    if (sequence > after_sequence)
+    if (sequence != 0)
     {
       ordered.emplace_back(sequence, static_cast<int>(i));
     }
@@ -621,7 +617,6 @@ ShmTopic::migrateHistory(RingBuffer &source, RingBuffer &destination, uint64_t a
   std::sort(ordered.begin(), ordered.end());
 
   std::vector<unsigned char> scratch(slot_capacity);
-  uint64_t                   highest = after_sequence;
   for (const auto &candidate : ordered)
   {
     SampleInfo info;
@@ -630,14 +625,10 @@ ShmTopic::migrateHistory(RingBuffer &source, RingBuffer &destination, uint64_t a
     {
       continue;  // 書き込み中か、既に上書きされた
     }
-    if (info.sequence <= after_sequence)
-    {
-      continue;  // 読んだ時点で別のサンプルに置き換わっていた
-    }
+    // 発行番号と capture 時刻をそのまま引き継ぐ。新しく採り直すと、
+    // 同じ測定が別時刻に起きたように見えてしまう。
     destination.adoptSample(info, scratch.data(), info.payload_size);
-    highest = std::max(highest, info.sequence);
   }
-  return highest;
 }
 
 //! @brief 接続世代がまだ有効か

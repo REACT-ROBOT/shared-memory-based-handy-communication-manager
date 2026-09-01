@@ -60,7 +60,7 @@ public:
 
 private:
   //! 1 回分の publish。世代が切り替わっていたら false（publish 側で再試行）
-  bool publishOnce(const std::vector<T> &data);
+  bool publishOnce(const std::vector<T> &data, uint64_t capture_monotonic_us);
 
 public:
 
@@ -225,10 +225,15 @@ Publisher<std::vector<T>>::publish(const std::vector<T> &data)
   // 切り替わっていたら新しい世代へ発行し直す。スカラ版には R02-F05 で入れたが
   // vector 版に入れ忘れており、切替の隙間に旧世代へ commit したサンプルが
   // 「成功したのに誰にも読まれない」ままになっていた（R03-F01）。
+  // capture 時刻はここで 1 度だけ採り、再発行しても引き継ぐ。
+  // 発行し直すたびに採り直すと、**同じ測定が別時刻に起きたように見える**
+  // （R04-F12）。タイムマシンで時刻を合わせる用途では実害になる。
+  const uint64_t capture_monotonic_us = getCurrentTimeUSec();
+
   constexpr int MAX_PUBLISH_ATTEMPTS = 4;
   for (int attempt = 0; attempt < MAX_PUBLISH_ATTEMPTS; ++attempt)
   {
-    if (publishOnce(data))
+    if (publishOnce(data, capture_monotonic_us))
     {
       return;
     }
@@ -239,7 +244,7 @@ Publisher<std::vector<T>>::publish(const std::vector<T> &data)
 //! @brief 1 回分の publish。世代が切り替わっていたら false を返す（呼び出し側で再試行）
 template <typename T>
 bool
-Publisher<std::vector<T>>::publishOnce(const std::vector<T> &data)
+Publisher<std::vector<T>>::publishOnce(const std::vector<T> &data, uint64_t capture_monotonic_us)
 {
   // 長さが変わっても、容量に収まる限り世代は作り直さない。
   // 収まらないときだけ ShmTopic が新しい世代を作る（容量は増やすだけ）。
@@ -296,7 +301,7 @@ Publisher<std::vector<T>>::publishOnce(const std::vector<T> &data)
   // 世代切替との競合を決定的に再現するためのフック（既定では何もしない）
   SHM_FIRE_TEST_HOOK_BEFORE_COMMIT();
 
-  ring_buffer->commitBuffer(oldest_buffer, sizeof(T) * vector_size);
+  ring_buffer->commitBuffer(oldest_buffer, sizeof(T) * vector_size, capture_monotonic_us);
 
   ring_buffer->signal();
 

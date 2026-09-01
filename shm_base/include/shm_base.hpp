@@ -1194,8 +1194,6 @@ public:
   //! 世代セグメントの作成者が初期化を終えるのを待つ上限[usec]。
   //! ここで待ち切れなくても回収はしない（時間で生死を判定しない：R03-F03）。
   static constexpr uint64_t INIT_WAIT_TIMEOUT_US = 500000;  // 0.5s
-  //! 切り替え直後に旧世代へ滑り込んだサンプルを拾い直す回数（R03-F01）
-  static constexpr int MAX_DRAIN_ROUNDS = 4;
 
   ShmTopic(std::string name, PERM perm, bool create);
   ~ShmTopic();
@@ -1247,8 +1245,7 @@ private:
   //! 現役でないと**確実に言える**世代セグメントだけを削除する（R03-F03）
   void unlinkStaleGenerations(uint64_t live_tag);
   //! 旧世代の有効なサンプルを新世代へ引き継ぐ（履歴を切らさないため）
-  //! @return 引き継いだ中で最大の発行番号
-  uint64_t migrateHistory(RingBuffer &source, RingBuffer &destination, uint64_t after_sequence);
+  void migrateHistory(RingBuffer &source, RingBuffer &destination);
   //! 世代の作り直しを繰り返さないよう、容量は増やすだけにし余裕を持たせる
   static size_t growCapacity(size_t current, size_t required, size_t alignment);
 

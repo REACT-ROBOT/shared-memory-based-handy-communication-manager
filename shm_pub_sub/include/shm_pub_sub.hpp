@@ -137,7 +137,7 @@ public:
   void publish(const T &data);
 
 private:
-  bool publishOnce(const T &data);
+  bool publishOnce(const T &data, uint64_t capture_monotonic_us);
 
 public:
 
@@ -419,10 +419,15 @@ Publisher<T>::publish(const T &data)
   // 切り替わっていたら新しい世代へ発行し直す（R02-F05）。
   // これをしないと、切替の隙間に旧世代へ commit したサンプルが
   // 「成功したのに誰にも読まれない」ことになる。
+  // capture 時刻はここで 1 度だけ採り、再発行しても引き継ぐ。
+  // 発行し直すたびに採り直すと、**同じ測定が別時刻に起きたように見える**
+  // （R04-F12）。タイムマシンで時刻を合わせる用途では実害になる。
+  const uint64_t capture_monotonic_us = getCurrentTimeUSec();
+
   constexpr int MAX_PUBLISH_ATTEMPTS = 4;
   for (int attempt = 0; attempt < MAX_PUBLISH_ATTEMPTS; ++attempt)
   {
-    if (publishOnce(data))
+    if (publishOnce(data, capture_monotonic_us))
     {
       return;
     }
@@ -433,7 +438,7 @@ Publisher<T>::publish(const T &data)
 //! @brief 1 回分の publish。世代が切り替わっていたら false を返す（呼び出し側で再試行）
 template <typename T>
 bool
-Publisher<T>::publishOnce(const T &data)
+Publisher<T>::publishOnce(const T &data, uint64_t capture_monotonic_us)
 {
   if (!topic->ensureCapacity(sizeof(T), shm_buf_num, alignof(T), contractOf()))
   {
@@ -483,7 +488,7 @@ Publisher<T>::publishOnce(const T &data)
   // 世代切替との競合を決定的に再現するためのフック（既定では何もしない）
   SHM_FIRE_TEST_HOOK_BEFORE_COMMIT();
 
-  ring_buffer->commitBuffer(oldest_buffer, sizeof(T));
+  ring_buffer->commitBuffer(oldest_buffer, sizeof(T), capture_monotonic_us);
 
   ring_buffer->signal();
 
