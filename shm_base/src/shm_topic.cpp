@@ -242,6 +242,9 @@ ShmTopic::openRoot(bool create, size_t initial_capacity, int buf_num, size_t pay
   root_ring_.reset();
   current_tag_ = 0;
 
+  // 待っても直らない失敗を掴んだかどうか。掴んだら再試行ループを即座に打ち切る。
+  bool incompatible = false;
+
   auto attach_existing = [&]() -> bool {
     auto existing = std::make_unique<SharedMemoryPosix>(name_, O_RDWR, static_cast<PERM>(0));
     if (!existing->connect())
@@ -250,9 +253,14 @@ ShmTopic::openRoot(bool create, size_t initial_capacity, int buf_num, size_t pay
     }
     std::string reason;
     // 世代 1 なので expected_generation は 1。contract も照合する（R02-F01/F06）。
-    if (!RingBuffer::validateLayout(existing->getPtr(), existing->getSize(), &reason, contract, 1))
+    const auto verdict =
+        RingBuffer::inspectLayout(existing->getPtr(), existing->getSize(), &reason, contract, 1, name_);
+    if (verdict != RingBuffer::LayoutVerdict::Usable)
     {
       last_error_ = "root segment is not usable: " + reason;
+      // ABI や型が違うなら、待っても絶対に解決しない。
+      // ここで区別しないと publish のたびに秒単位で待たされる（R04-F13）。
+      incompatible = (verdict == RingBuffer::LayoutVerdict::Incompatible);
       return false;
     }
     try
@@ -271,6 +279,11 @@ ShmTopic::openRoot(bool create, size_t initial_capacity, int buf_num, size_t pay
   if (attach_existing())
   {
     return true;
+  }
+  if (incompatible)
+  {
+    // 作り直しても O_EXCL で弾かれるだけなので、ここで諦める
+    return false;
   }
   if (!create)
   {
@@ -320,6 +333,11 @@ ShmTopic::openRoot(bool create, size_t initial_capacity, int buf_num, size_t pay
     if (attach_existing())
     {
       return true;
+    }
+    if (incompatible)
+    {
+      // 待っても直らない。すぐ返す（R04-F13）
+      return false;
     }
     if (std::chrono::steady_clock::now() >= deadline)
     {

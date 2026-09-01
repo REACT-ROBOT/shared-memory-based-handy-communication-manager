@@ -864,6 +864,30 @@ public:
   static size_t getSize(size_t element_size, int buffer_num,
                         size_t payload_alignment = DEFAULT_PAYLOAD_ALIGNMENT);
   static bool   checkInitialized(unsigned char *first_ptr);
+
+  /*!
+   * \~japanese-en レイアウト検証の結果．**待てば直るかどうか**を区別する．
+   *
+   * \~japanese-en これを区別しないと、ABI や型が食い違っているという
+   *               「待っても絶対に解決しない」失敗に対しても、
+   *               「作成者の初期化完了待ち」と同じだけ待つことになる（R04-F13）。
+   *               publish のたびに秒単位で待たされ、40Hz のセンサノードが
+   *               エラーログ生成器になる。
+   */
+  enum class LayoutVerdict
+  {
+    Usable,        //!< 使ってよい
+    NotReady,      //!< まだ初期化途中。**待てば直る可能性がある**
+    Incompatible,  //!< ABI / 型 / 形式が違う。**待っても直らない**
+  };
+
+  /*!
+   * \~japanese-en validateLayout() と同じ検証を行い、結果を 3 値で返す．
+   * @param [in]  topic_name エラーメッセージに含めるトピック名（空でもよい）
+   */
+  static LayoutVerdict inspectLayout(const unsigned char *first_ptr, size_t mapping_size, std::string *reason = nullptr,
+                                     const TopicContract *expected = nullptr, uint64_t expected_generation = 0,
+                                     const std::string &topic_name = std::string());
   static bool   waitForInitialization(unsigned char *first_ptr, uint64_t timeout_usec);
 
   /*!

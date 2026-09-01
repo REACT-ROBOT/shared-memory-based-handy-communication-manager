@@ -311,17 +311,39 @@ RingBuffer::waitForInitialization(unsigned char *first_ptr, uint64_t timeout_use
 //! @details 共有メモリ上の値は「そう書いてあるだけ」なので、そこからポインタを
 //!          組み立てる前に、magic・ABI 版・各サイズ・全オフセットが実マッピング長に
 //!          収まることを溢れ検査付きで確認する（R01-F06）。
+//! @brief 既存の共有メモリのレイアウトを検証する（真偽版）
+//! @details 3 値が要るときは inspectLayout() を使うこと。
 bool
 RingBuffer::validateLayout(const unsigned char *first_ptr, size_t mapping_size, std::string *reason,
                            const TopicContract *expected, uint64_t expected_generation)
 {
-  auto fail = [reason](const std::string &msg) {
+  return inspectLayout(first_ptr, mapping_size, reason, expected, expected_generation) == LayoutVerdict::Usable;
+}
+
+RingBuffer::LayoutVerdict
+RingBuffer::inspectLayout(const unsigned char *first_ptr, size_t mapping_size, std::string *reason,
+                          const TopicContract *expected, uint64_t expected_generation, const std::string &topic_name)
+{
+  const std::string where = topic_name.empty() ? std::string() : (" [topic '" + topic_name + "']");
+  // 待っても直らない失敗。呼び出し側は即座に諦めるべきで、
+  // 運用者には復旧手順を示す必要がある（R04-F13）。
+  auto incompatible = [reason, &where, &topic_name](const std::string &msg) {
     if (reason != nullptr)
     {
-      *reason = msg;
+      *reason = msg + where + ". Remove the segment with 'shm_tool remove " +
+                (topic_name.empty() ? "<topic>" : topic_name) + "' and restart every process on this topic";
     }
-    return false;
+    return LayoutVerdict::Incompatible;
   };
+  // まだ初期化途中。待てば直る可能性がある。
+  auto not_ready = [reason, &where](const std::string &msg) {
+    if (reason != nullptr)
+    {
+      *reason = msg + where;
+    }
+    return LayoutVerdict::NotReady;
+  };
+  auto fail = incompatible;
 
   if (first_ptr == nullptr)
   {
@@ -341,9 +363,18 @@ RingBuffer::validateLayout(const unsigned char *first_ptr, size_t mapping_size, 
 
   if (h->magic != SHM_MAGIC)
   {
-    return fail("bad magic 0x" + std::to_string(h->magic) +
-                "; the segment was created by another format or by shm v1. "
-                "Remove it with 'shm_tool remove <topic>' and restart every process on this topic");
+    // magic が 0 なのは「作成直後でまだ初期化されていない」状態である。
+    // shm_open(O_CREAT) + ftruncate() した直後はゼロ埋めなので、作成者が
+    // initializeContents() を終える前に他プロセスが覗くとここに来る。
+    // **待てば直る**ので、恒久的な不整合と混同してはならない。
+    // v1 のセグメントも先頭 4 バイトが初期化フラグ 0 なら同じ扱いでよい
+    //（初期化されていないのだから待つのが正しい）。
+    if (h->magic == 0)
+    {
+      return not_ready("the segment has just been created and is not initialized yet");
+    }
+    return incompatible("bad magic 0x" + std::to_string(h->magic) +
+                        "; the segment was created by another format or by shm v1");
   }
   if (h->abi_major != ABI_MAJOR)
   {
@@ -367,8 +398,9 @@ RingBuffer::validateLayout(const unsigned char *first_ptr, size_t mapping_size, 
   const uint32_t state = h->state.load(std::memory_order_acquire);
   if (state != INITIALIZED)
   {
-    return fail(state == INITIALIZING ? "the segment is still being initialized"
-                                      : "the segment is not initialized");
+    // ここだけは待てば直る可能性がある
+    return not_ready(state == INITIALIZING ? "the segment is still being initialized"
+                                           : "the segment is not initialized");
   }
 
   const uint64_t boot = getBootIdHash();
@@ -395,7 +427,7 @@ RingBuffer::validateLayout(const unsigned char *first_ptr, size_t mapping_size, 
     actual.alignment      = h->payload_alignment;
     if (!expected->matches(actual, reason))
     {
-      return false;
+      return LayoutVerdict::Incompatible;
     }
   }
 
@@ -439,7 +471,7 @@ RingBuffer::validateLayout(const unsigned char *first_ptr, size_t mapping_size, 
     return fail("the segment was re-initialized while it was being validated");
   }
 
-  return true;
+  return LayoutVerdict::Usable;
 }
 
 //! @brief コンストラクタ

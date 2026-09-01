@@ -31,7 +31,7 @@ protected:
   void cleanupAll()
   {
     for (const char *t : { "r04_unlink_pub", "r04_unlink_sub", "r04_cap", "r04_deadreader", "r04_contend",
-                           "r04_heldslot" })
+                           "r04_heldslot", "r04_abi" })
     {
       try
       {
@@ -334,4 +334,69 @@ TEST_F(SHMR04Test, PublishSucceedsWhileOneSlotIsHeldByAReader)
   {
     EXPECT_EQ(m.v, 119u);
   }
+}
+
+// -----------------------------------------------------------------------------
+// R04-F13: 待っても直らない不整合では、待たずに失敗しなければならない
+//
+// openRoot() の 1 秒ループは「O_EXCL の競争に負けたので勝者の初期化完了を待つ」
+// ためのものだが、ABI・contract・magic の不一致という**待っても絶対に解決しない**
+// 失敗でも同じだけ待っていた。publish のたびに呼ばれるので、40Hz のセンサノードが
+// 1Hz のエラーログ生成器になり、原因も追いにくい。
+//
+// あわせて、復旧手順（shm_tool remove）とトピック名がメッセージに出ること。
+// ABI 4 への移行で運用者が実機で最初に見るのがこのメッセージである。
+// -----------------------------------------------------------------------------
+TEST_F(SHMR04Test, APermanentMismatchFailsFastAndSaysHowToRecover)
+{
+  const std::string topic = "r04_abi";
+
+  // 古い ABI のセグメントが残っている状態を作る。
+  // ABI 4 へ上げた後、実機に前のビルドのセグメントが残っているのがこれにあたる。
+  {
+    Publisher<std::vector<uint32_t>> seed(topic, 3);
+    seed.publish(std::vector<uint32_t>(8, 1));
+  }
+  {
+    SharedMemoryPosix shm(topic, O_RDWR, static_cast<PERM>(0));
+    ASSERT_TRUE(shm.connect());
+    reinterpret_cast<ShmHeader *>(shm.getPtr())->abi_major = RingBuffer::ABI_MAJOR - 1;
+  }
+
+  // 古いセグメントに繋ごうとする新しいプロセスにあたる。
+  // publish のたびに ensureCapacity を通る特殊化（lidar / point_cloud）では、
+  // 40Hz なら 40 回/秒この経路を通るので、1 回でも秒単位待つと実害が出る。
+  // ここでは同じ経路を繰り返し叩いて、毎回すぐ返ることを確かめる。
+  std::string message;
+  for (int i = 0; i < 5; ++i)
+  {
+    const auto started = std::chrono::steady_clock::now();
+    try
+    {
+      Publisher<std::vector<uint32_t>> pub(topic, 3);
+      pub.publish(std::vector<uint32_t>(8, 2));
+      FAIL() << "ABI が違うのに publish が成功した";
+    }
+    catch (const std::exception &e)
+    {
+      message = e.what();
+    }
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - started)
+                             .count();
+    EXPECT_LT(elapsed, 100) << "待っても直らない不整合で " << elapsed << " ms 待たされた（" << i << " 回目）";
+  }
+
+  EXPECT_NE(message.find(topic), std::string::npos) << "メッセージにトピック名が無い: " << message;
+  EXPECT_NE(message.find("shm_tool remove"), std::string::npos) << "メッセージに復旧手順が無い: " << message;
+  EXPECT_NE(message.find("ABI"), std::string::npos) << "メッセージに原因が無い: " << message;
+
+  // Subscriber 側も待たないこと
+  Subscriber<std::vector<uint32_t>> sub(topic);
+  const auto                        started = std::chrono::steady_clock::now();
+  bool                              ok      = false;
+  sub.subscribe(&ok);
+  EXPECT_FALSE(ok);
+  EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count(),
+            100);
 }
