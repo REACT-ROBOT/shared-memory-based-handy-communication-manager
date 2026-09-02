@@ -156,15 +156,74 @@ publish 所要 1462us に対し、入口からの遅れ 1461us
 
 ---
 
-## 未着手 — 共通化そのもの
+## 共通化 — SubscriberCore
 
-コピーそのものは残っている。上の適合性スイートは**漏れを検出できる**ように
-しただけで、**漏れが起きなくなった**わけではない。
+適合性スイートを安全網にして、コピーそのものを解消した。
 
-次の段階は、`shm_base` に型に依存しないヘルパ（例: `findAlignedSlot()`）を置き、
-5 箇所からそれを呼ぶ形へ寄せることである。3 リポジトリを同時に書き換え、
-`shm_base` のヘッダ互換にも触れるので、適合性スイートが緑であることを
-安全網にしながら進めるのがよい。
+型に依存するのは **スロットから自分の型へ読み出す処理だけ** である。
+そこを `SlotReader`（関数ポインタ + `void*`）として呼び戻す形にすれば、
+残りは全部 `shm_base` の `SubscriberCore` に置ける。
+
+`SubscriberCore` が持つもの:
+
+- `ShmTopic` の生成と所有、名前の検証
+- 世代への追随（`follow()`）と型の取り決めの照合
+- `subscribe()` / `subscribeAt()` の再試行ループ
+- `subscribeAlignedTo()` の `InvalidReference` ガードとずれ判定
+- `waitFor()` / `getRetentionWindow()` / `setDataExpiryTime_us()`
+- 期限の既定値（2 秒）と競合カウンタ
+
+各 `Subscriber<T>` に残るのは `readSlotInto()` と返り値のダブルバッファだけ。
+
+| 特殊化 | 変更 |
+|---|---|
+| scalar | 216 行 → 37 行 |
+| vector | 204 行 → 45 行 |
+| cv::Mat / Lidar2dScanData / PointCloud2DScanData | 同様に委譲のみ |
+
+`std::function` ではなく関数ポインタ + `void*` にしてある。ヒープ確保も
+`<functional>` への依存も増やさないためで、読み出し経路はセンサのレートで回る。
+
+### 共通化が効くことの確認
+
+`SubscriberCore` の `InvalidReference` ガードを **1 行**壊すと、
+scalar と vector の適合性テストに加えて既存の R04 回帰テストまで
+**3 件が同時に落ちる**。以前は片方だけ直しても気付けなかった。
+
+### 副次的に閉じたずれ
+
+`existsPublisherMemory()` と競合カウンタは core にあるので、core を使う特殊化には
+自動的に付く（外部 3 つには無かった）。期限の既定値も 1 箇所になった。
+
+書かれるだけで読まれていなかったメンバも 5 箇所から落とした
+（`current_reading_buffer` ×4、`vector_size` ×1）。
+
+### この作業が掘り当てた既存の不具合
+
+react_cv の回帰スイートを**通しで**実行すると SIGSEGV していた。
+共通化とは無関係で、変更前の HEAD でも同一に落ちることを確認済みである。
+
+`PublishMustNotWriteToUnallocatedBuffer` が `allocateBuffer()` でスロットの
+robust mutex を確保したまま、`releaseOwnedSlots()` を呼ばずに munmap していた。
+`~RingBuffer()` は意図的に解放しない（マッピングが先に消えている場合があるため）
+ので、確保した側が明示的に呼ぶ契約である。呼ばないと、スレッドの robust list が
+解放済み領域を指したまま残り、後続の**無関係な** `pthread_mutex_trylock` が
+SIGSEGV する（R04 で記録された挙動）。
+
+実際、次に走る `RingBufferElementSizeMustBeEightByteAligned` が
+`Publisher::publish()` の中で落ちていた。**単体では再現せず、スイートを通しで
+実行したときだけ起きる**ため見過ごされていた。shm 本体の同名テストは
+`releaseOwnedSlots()` を呼んでいる。
+
+---
+
+## 未着手
+
+| 項目 | 内容 |
+|---|---|
+| Publisher 側の共通化 | Subscriber ほど重複していないが、`ensureCapacity` → `acquireWritableSlot` → `commitBuffer` の並びは 5 箇所にある |
+| lidar / pc の publish 失敗 | 戻り値 void・例外なし・`std::cerr` のみで、呼び出し側から検知できない。cv は同条件で例外を投げるので型によって挙動が違う |
+| R05 の Low 5 件 | `r05-remediation.md` に判断理由つきで記録済み |
 
 そのほか、特殊化間に残っているずれ:
 
