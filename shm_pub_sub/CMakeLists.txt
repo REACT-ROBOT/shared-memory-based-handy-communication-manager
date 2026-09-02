@@ -352,7 +352,18 @@ if(BUILD_TESTS)
     #       型パラメータ化テスト（TYPED_TEST_P + INSTANTIATE_TYPED_TEST_SUITE_P）は
     #       1 件も見つけられず、黙って「テスト 0 件」になる。
     #       後者はビルド済みバイナリに --gtest_list_tests を掛けるので正しく拾える。
+    #
+    # NOTE: DISCOVERY_MODE PRE_TEST が必要である。既定の POST_BUILD は
+    #       **ビルド中に**バイナリを実行して一覧を得るが、-DSANITIZER=thread の
+    #       ビルドではそれが
+    #         FATAL: ThreadSanitizer: unexpected memory mapping
+    #       で失敗し、テストの実行以前にビルドごと落ちる（実際に落ちた）。
+    #       TSan は ASLR のエントロピーが大きい環境で起動できないため
+    #       `setarch $(uname -m) -R` を噛ませる必要があるが、ビルド中の実行には
+    #       それを挟めない。PRE_TEST なら一覧の取得は ctest の中で起きるので、
+    #       ctest 自体を setarch 配下で回せば解決する（ci.yml と同じ運用）。
     gtest_discover_tests(shm_pub_sub_conformance_test
+        DISCOVERY_MODE PRE_TEST
         PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT} RESOURCE_LOCK dev_shm
       )
 
