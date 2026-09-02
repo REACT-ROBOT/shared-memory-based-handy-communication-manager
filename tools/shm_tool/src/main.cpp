@@ -475,7 +475,9 @@ main(int argc, char *argv[])
   FILE *fp;
   char buf[256];
   std::string buf_str;
-  const char* format[] = {" ", "\t\t", "\t", "\t", "\t", " ", " ", " ", "\t", ""};
+  // ls -l の 9 欄（permission / link / user / group / size / 月 / 日 / 時刻 / 名前）
+  static constexpr size_t FIELD_NUM = 9;
+  const char *format[FIELD_NUM] = { " ", "\t\t", "\t", "\t", "\t", " ", " ", " ", "\t" };
   switch (mode)
   {
   case DOCTOR_MODE:
@@ -510,17 +512,37 @@ main(int argc, char *argv[])
       }
       buf_str = regex_replace(buf_str, std::regex("shm_"), "");
       {
-        auto offset = std::string::size_type(0);
-        for (int i = 0; i < 10; i++) 
-	{
-          auto pos = buf_str.find(" ", offset);
-          if (pos == std::string::npos) {
-            std::cout << buf_str.substr(offset);
+        // ls -l はサイズ欄を右詰めするので、空白は 1 個とは限らない。
+        // 区切りを 1 文字と決めうちしていたため、幅の狭い行では空のフィールドが
+        // 生まれて列が丸ごとずれ、名前が消えていた。空白の**連続**で区切る。
+        // 併せて、10 フィールドを最後まで回った行は改行を出しておらず、
+        // 次の行と繋がって表示されていた。
+        std::vector<std::string> fields;
+        for (std::string::size_type offset = 0; offset < buf_str.size();)
+        {
+          const auto begin = buf_str.find_first_not_of(" \t\n", offset);
+          if (begin == std::string::npos)
+          {
             break;
           }
-	  std::cout << buf_str.substr(offset, pos - offset) << format[i];
-          offset = pos + 1;
+          auto end = buf_str.find_first_of(" \t\n", begin);
+          if (end == std::string::npos)
+          {
+            end = buf_str.size();
+          }
+          // 名前に空白を含むセグメントがあり得るので、最後の欄は行末まで残す
+          if (fields.size() == FIELD_NUM - 1)
+          {
+            end = buf_str.find_last_not_of(" \t\n") + 1;
+          }
+          fields.push_back(buf_str.substr(begin, end - begin));
+          offset = end;
         }
+        for (size_t i = 0; i < fields.size(); ++i)
+        {
+          std::cout << fields[i] << (i + 1 < fields.size() ? format[i] : "");
+        }
+        std::cout << std::endl;
       }
     }
     (void) pclose(fp);
