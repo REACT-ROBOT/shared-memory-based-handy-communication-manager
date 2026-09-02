@@ -3,8 +3,9 @@
 - 対応日: 2026-09-01 〜 2026-09-02
 - 対象: [`r04-2026-09-01-review-finding.md`](r04-2026-09-01-review-finding.md)
 - 結果: **指摘 29 件すべて対応**。対応中に自分で見つけた 2 件も併せて修正。
-  回帰テスト 26 本を追加し、Release / 負荷下 / ASan / UBSan / TSan の全構成で **137/137 PASS**
-  （サニタイザ構成は Python テストを除く 136/136）
+  回帰テスト 28 本を追加し、Release / 負荷下 / ASan / UBSan / TSan の全構成で **138/138 PASS**
+  （サニタイザ構成は Python テストを除く 137/137）。
+  Raspberry Pi 4 でのワークスペース全体のビルドも確認済み（2026-09-02）
 - 版: `SHM_VERSION` を 4.0.0 → **5.0.0**（ABI は R03 で 4 に上がっていたが版が据え置きだった）
 
 ## 総括
@@ -64,6 +65,8 @@ R04 は 3 名のレビュアーによる並行レビューで、指摘の性格�
 | robust mutex を握ったまま munmap すると、後続の無関係な `trylock` が SIGSEGV する | `608239d` |
 | スロット待ちがスピンで、CPU 過負荷のとき保持者に CPU が回らない | `f3f2c89` |
 | 書式の宣言をインクルードガードの外に置いており、二重インクルードで二重定義になる | `b25cc18` |
+| 書式の宣言が `shm_schema<T>` の暗黙実体化より後ろにあり ill-formed | `2220561` |
+| `shm_tool` が `std::strerror` を使いながら `<cstring>` を include していない | `2220561` |
 
 #### 書式の宣言の置き場所（Pi4 の全体ビルドで露見）
 
@@ -84,6 +87,36 @@ error: redefinition of 'struct irlab::shm::shm_schema<Lidar2DData::Lidar2dScanDa
 構文チェックしていたため、「1 つの翻訳単位が 1 回だけ取り込む」状況しか
 作れず、露見しなかった。ワークスペース全体のビルドでしか出ない種類の
 不具合である。回帰テストとして、わざと 2 回 include する翻訳単位を追加した。
+
+#### 宣言の順序（同じく Pi4 で露見。こちらが主因だった）
+
+ガードの内側へ移しても Pi4 のビルドは落ち続けた。診断が
+
+```
+30 error: specialization of ‘irlab::shm::shm_schema<PointCloud...>’ after instantiation
+30 error: redefinition of ‘struct irlab::shm::shm_schema<PointCloud...>’
+```
+
+と**同数で対**になっているのが手がかりで、原因は 1 つだった。
+`Publisher<T>` / `Subscriber<T>` の**全特殊化**の `contractOf()` は通常の
+メンバ関数なのでその場で本体が処理され、`schema_version_of<T>()` の呼び出しで
+`shm_schema<T>` を主テンプレートから暗黙実体化する。その後ろで特殊化を
+宣言すると「暗黙実体化の後の特殊化」となり ill-formed である。
+
+宣言を `Publisher` / `Subscriber` の特殊化より前へ移した。
+
+**この問題はコンパイラの版によって通ってしまう。** 実体化の時点
+（point of instantiation）の扱いに幅があるためで、手元の x86 gcc 11 では
+誤った順序に戻してもエラーにならないことを確認した。
+**コンパイルが通ったことが正しさの根拠にならない**種類の問題である。
+
+そこで置き場所を静的に検査するテストを追加した
+（`check_format_declaration_placement.py`）。宣言が
+
+1. インクルードガードの内側にあること
+2. `schema_version_of<>` の最初の使用より前にあること
+
+をコンパイラに頼らず確かめる。誤った版で実際に検出することを確認済み。
 
 ---
 
@@ -233,11 +266,13 @@ G2 以外はカバーできた。G2 が拾うはずだったケースは publish
 
 ## 未実施
 
-- **Raspberry Pi 4（aarch64）での実行**。2026-09-02 の全体ビルドで上記の
-  二重インクルードが露見し、修正済み（`b25cc18`）。再ビルドの確認待ち。
-  次の点は実機で確かめる価値がある。
+- **Raspberry Pi 4（aarch64）でのテスト実行**。
+  **ワークスペース全体のビルドは 2026-09-02 に成功を確認した**
+  （`static assertion 0 件 / error 0 件`）。その過程で上記 3 件を修正している。
+  実行はこれから。次の点は実機で確かめる価値がある。
   - `ShmHeader` 192 バイトの `static_assert`（クロスコンパイル + qemu では検証済み）
-  - `pthread_mutex_clocklock` の可用性（aarch64 の glibc 版に依存。2.30 未満ならスピンに落ちる）
+  - `pthread_mutex_clocklock` の可用性（aarch64 の glibc 版に依存。2.30 未満ならスピンに落ちる）。
+    ビルドが通ったので構文上の問題は無いが、どちらの経路が選ばれたかは実行時にしか分からない
   - `PTHREAD_PRIO_INHERIT` と SCHED_FIFO の組み合わせ
 - **実センサでの通し確認**。ABI が 4 に上がったので、入れ替え前に
   `shm_tool remove` で既存セグメントを消し、そのトピックを使う全プロセスを
