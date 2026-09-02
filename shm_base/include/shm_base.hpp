@@ -329,8 +329,6 @@ struct TimeQuery
 // 上書きし、壊れた値が有効データとして公開され得たため（R01-F04）。
 // ****************************************************************************
 
-//! @brief 共有メモリ先頭に置く固定長ヘッダ（128 バイト）
-//! @details element_capacity / buf_num に依存しない固定長。
 /*!
  * \~japanese-en ペイロードの持ち方．
  * \~japanese-en 同じトピックに別の持ち方で接続すると、長さの解釈が食い違って
@@ -555,9 +553,17 @@ fold_layout_word(uint64_t hash, uint64_t value)
 /*!
  * \~japanese-en 型のメモリレイアウトからハッシュを作る．
  *
- * \~japanese-en `sizeof(T)` / `alignof(T)` と、各メンバの `offsetof` / `sizeof` を畳み込む。
+ * \~japanese-en `sizeof(T)` / `alignof(T)` と、各メンバの `offsetof` / `sizeof` /
+ *               `alignof` / **メンバ名のハッシュ** / **型の指紋** を畳み込む。
  *               メンバの並べ替え・型入れ替え・追加・削除・アライメント変更が
  *               すべてここに出るので、**人間が版番号を維持する必要がない**。
+ *
+ * \~japanese-en 名前と型の指紋が要るのは、位置と大きさだけでは次を区別できないためである。
+ *                 `{x,y,theta}` → `{theta,x,y}`  位置も大きさも同じ → **メンバ名**が要る
+ *                 `float v` → `int32_t v`        位置も大きさも同じ → **型の性質**が要る
+ *                 入れ子 `{x,y}` → `{y,x}`       外から見て同じ → **入れ子型の版**が要る
+ *               R04 の時点では offsetof と sizeof だけだったので、これらを
+ *               検出できていなかった（R05 で追加）。
  *
  * \~japanese-en 捕まえられないのは「レイアウトが同一のまま意味だけ変えた」場合だけで
  *               （`float range` を m から mm にした等）、そこは `revision` で明示する。
@@ -769,7 +775,11 @@ namespace shm
 
 
 
+//! @brief 共有メモリ先頭に置く固定長ヘッダ（192 バイト）
+//! @details element_capacity / buf_num に依存しない固定長なので、
 //!          レイアウトを読む前にこのヘッダだけで妥当性を判定できる。
+//!          sizeof はプロセス間の合意そのものなので、ring_buffer.cpp の
+//!          static_assert で 192 に固定してある。増減は ABI_MAJOR の変更を伴う。
 struct ShmHeader
 {
   uint32_t              magic;              //!< SHM_MAGIC。別形式・旧版の検出
@@ -873,6 +883,16 @@ public:
   static constexpr uint16_t ABI_MAJOR = 4;
   static constexpr uint16_t ABI_MINOR = 0;
 
+  //! ShmHeader::state が取り得る値。
+  //! 共有メモリ上に書かれるので、これはプロセス間の合意の一部である。
+  //! private にしていたため shm_tool が `1u` をハードコードしており、
+  //! 値を変えると診断だけが黙って誤るようになっていた。
+  static constexpr uint32_t NOT_INITIALIZED = 0;
+  static constexpr uint32_t INITIALIZED     = 1;
+  //! 初期化を実行中であることを示す中間状態。NOT_INITIALIZED からの CAS で
+  //! 一つの writer だけがこの状態に遷移でき、他は初期化の完了を待つ。
+  static constexpr uint32_t INITIALIZING = 2;
+
   // ------------------------------------------------------------------------
   // 入力の上限。現実的にあり得ない値を弾き、範囲外ポインタの生成を防ぐ。
   // ------------------------------------------------------------------------
@@ -884,10 +904,10 @@ public:
   //! ペイロード領域の先頭は常に max(payload_alignment, 64) に載るので、
   //! element_size が payload_alignment の倍数である限り全スロットが整列する。
   static constexpr size_t DEFAULT_PAYLOAD_ALIGNMENT = 1;
-  //! ページ境界を超えるアライメント要求は共有メモリでは満たせない
   //! スロットの robust mutex を待つ上限[usec]。
   //! 臨界区間は memcpy 1 回ぶんなので、これを超えるのは異常事態。
   static constexpr uint64_t SLOT_LOCK_TIMEOUT_US = 2000;
+  //! ページ境界を超えるアライメント要求は共有メモリでは満たせない
   static constexpr size_t MAX_PAYLOAD_ALIGNMENT = 4096;
 
   /*!
@@ -1126,22 +1146,14 @@ private:
   std::atomic<uint64_t> last_sequence;
   std::atomic<uint64_t> data_expiry_time_us;
 
-  // データ位置の計算に使ったレイアウト。共有メモリ上の値がこれと食い違ったら、
-  // 別のプロセスが異なるレイアウトで初期化し直したということなので、
-  // このインスタンスが持つオフセットは使えない（isLayoutChanged() 参照）。
   // 検証済みのレイアウト。**接続後はここだけを使う**（R02-F07）。
   // 共有ヘッダの live 値からポインタや長さを再計算すると、接続後に他プロセスが
   // ヘッダを書き換えた場合に「検証済み」という前提が崩れる。
+  // 食い違いの検出は isLayoutChanged() が行う。
   size_t   expected_element_size;
   size_t   expected_buf_num;
   size_t   expected_payload_alignment;
   uint64_t expected_generation;
-
-  static constexpr uint32_t INITIALIZED     = 1;
-  static constexpr uint32_t NOT_INITIALIZED = 0;
-  // 初期化を実行中であることを示す中間状態。NOT_INITIALIZED からの CAS で
-  // 一つの writer だけがこの状態に遷移でき、他は初期化の完了を待つ。
-  static constexpr uint32_t INITIALIZING = 2;
   // 他プロセスによる初期化の完了を待つ上限。
   //
   // **待ちきれなくても takeover はしない**。時間の経過は相手の死の証明にならず、

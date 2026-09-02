@@ -220,7 +220,6 @@ public:
    *
    * @param [in]  reference    合わせる相手のサンプル（時刻だけを使う）
    * @param [out] status       結果の状態
-   * @param [out] info         取得したサンプルの素性（不要なら nullptr）
    * @param [in]  max_skew_us  許容する時刻のずれ[usec]。**必須**。
    *                           これを超えていたら、相手より古ければ TooOld、
    *                           新しければ TooNew を返す（融合してはいけない値を
@@ -230,6 +229,7 @@ public:
    *                           上限を書き忘れると数百 ms ずれた値を Success として
    *                           受け取ることになる。センサの周期から決めて明示すること
    *                           （R04-F14）。
+   * @param [out] info         取得したサンプルの素性（不要なら nullptr）
    * @return const T& 取得したデータ。status が Success 以外のときの内容は不定
    */
   const T &subscribeAlignedTo(const SampleInfo &reference, SearchStatus *status, uint64_t max_skew_us, SampleInfo *info = nullptr);
@@ -251,7 +251,7 @@ public:
    *                                 スナップショットを取れなかった。**再試行の価値がある**
    *                 - NotConnected … トピックに接続できていない
    *
-   * @param [in]  query  検索条件（時刻・時計・選択方針）
+   * @param [in]  query  検索条件（時刻と選択方針。時計は常に CLOCK_MONOTONIC_RAW）
    * @param [out] status 結果の状態（不要なら nullptr）
    * @param [out] info   取得したサンプルの素性（不要なら nullptr）
    * @return const T& 取得したデータ。status が Success 以外のときの内容は不定
@@ -328,8 +328,12 @@ private:
 //!                        \~japanese-en 権限情報
 //! @return                \~english     None
 //!                        \~japanese-en なし
-//! @details \~english     Create shared memory objects and initialize mutex and condition variables.
-//!          \~japanese-en 共有メモリオブジェクトの生成、mutexや条件変数の初期化を行う．
+//! @details \~english     Prepares the topic's generation and attaches to a segment that satisfies the
+//!          \~english     requested capacity. Slot mutexes are initialized by the RingBuffer; there are
+//!          \~english     no condition variables in the layout.
+//!          \~japanese-en トピックの世代を用意し、要求容量を満たすセグメントへ接続する．
+//!          \~japanese-en スロットの mutex を初期化するのは RingBuffer で、
+//!          \~japanese-en 条件変数はレイアウトに存在しない．
 template <typename T>
 Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm)
   : shm_name(name)
@@ -406,10 +410,15 @@ Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm)
 //! @param [in] data
 //! @return  \~english     None
 //!          \~japanese-en なし
-//! @details \~english     Writes the topic to the buffer with the oldest timestamp and updates the timestamp.
-//!          \~english     It also sends a resume signal to the waiting process via a pthread condition variable.
-//!          \~japanese-en タイムスタンプが最も古いバッファにトピックを書き込み、タイムスタンプを更新する．
-//!          \~japanese-en また、pthreadの条件変数を介して、待機中のプロセスに再開信号を送る．
+//! @details \~english     Acquires the slot with the smallest sequence number (the oldest), writes the
+//!          \~english     payload into it, and allocates a new sequence number on commit.
+//!          \~english     Waiters are not signalled through a condition variable: there is none in the
+//!          \~english     layout. `waitFor()` polls the sequence number instead.
+//!          \~japanese-en 発行番号が最も小さい（＝最も古い）スロットを確保して書き込み、
+//!          \~japanese-en コミット時に新しい発行番号を採番する．
+//!          \~japanese-en 待機側への通知に条件変数は使わない（レイアウトに存在しない）．
+//!          \~japanese-en `waitFor()` が発行番号をポーリングする．理由は
+//!          \~japanese-en ring_buffer.cpp の `signal()` のコメントを参照．
 template <typename T>
 void
 Publisher<T>::publish(const T &data)
@@ -616,7 +625,9 @@ Subscriber<T>::readSlotInto(RingBuffer *ring_buffer, int slot, SampleInfo *info)
 //! @details         \~english     The topic with the most recent timestamp is loaded.
 //!                  \~english     It is recommended to duplicate the data by copy constructor or assignment, since it
 //!                  returns a direct reference to memory so that it can be later extended to variable-length classes.
-//!                  \~japanese-en タイムスタンプが最も新しいトピックを読み込む．
+//!                  \~japanese-en 発行番号が最も大きい（＝最後に commit された）トピックを読み込む．
+//!                  \~japanese-en 「最新」を時刻で決めると、同一 microsecond に複数の publish が
+//!                  \~japanese-en あったときにスロット番号で誤選択する（R01-F05）．
 //!                  \~japanese-en
 //!                  後々可変長なクラスに拡張できるように、メモリへの直接的な参照を返すので、コピーコンストラクタや代入によってデータを複製することを推奨する．
 template <typename T>

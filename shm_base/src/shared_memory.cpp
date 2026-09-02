@@ -110,7 +110,7 @@ disconnectMemory(std::string name)
 }
 
 //! @brief トピックの共有メモリを世代ごと破棄する(POSIX版)
-//! @details 形式 v3 ではレイアウトを変えるたびに /shm_<topic>#<N> という
+//! @details 形式 v3 ではレイアウトを変えるたびに /shm_<topic>#<N>-<ノンス> という
 //!          別セグメントが増える。disconnectMemory() は世代 1 しか消さないので、
 //!          トピックを完全に片付けるときはこちらを使うこと。
 int

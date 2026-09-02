@@ -184,7 +184,9 @@ private:
 //! @param [in] buffer_num バッファ数
 //! @param [in] perm 権限情報
 //! @return なし
-//! @details 共有メモリオブジェクトの生成、mutexや条件変数の初期化を行う．
+//! @details トピックの世代を用意し、要求容量を満たすセグメントへ接続する．
+//!          スロットの mutex を初期化するのは RingBuffer で、
+//!          条件変数はレイアウトに存在しない．
 template <typename T>
 Publisher<std::vector<T>>::Publisher(std::string name, int buffer_num, PERM perm)
   : shm_name(name)
@@ -231,9 +233,11 @@ Publisher<std::vector<T>>::Publisher(std::string name, int buffer_num, PERM perm
 //! @brief トピックの書き込み
 //! @param [in] data
 //! @return なし
-//! @details タイムスタンプが最も古いバッファにトピックを書き込み、タイムスタンプを更新する．
-//! また、pthreadの条件変数を介して、待機中のプロセスに再開信号を送る．
-//! @note python対応のために、boostを使用しているので、boostの条件変数でも良いかもしれない。
+//! @details 発行番号が最も小さい（＝最も古い）スロットを確保して書き込み、
+//!          コミット時に新しい発行番号を採番する．
+//!          待機側への通知に条件変数は使わない（レイアウトに存在しない）．
+//!          `waitFor()` が発行番号をポーリングする．理由は
+//!          ring_buffer.cpp の `signal()` のコメントを参照．
 template <typename T>
 void
 Publisher<std::vector<T>>::publish(const std::vector<T> &data)
@@ -375,7 +379,9 @@ Subscriber<std::vector<T>>::Subscriber(std::string name)
 //! @brief トピックを読み込む
 //! @param なし
 //! @return const T& 読み込んだトピックへのconst参照
-//! @details タイムスタンプが最も新しいトピックを読み込む．
+//! @details 発行番号が最も大きい（＝最後に commit された）トピックを読み込む．
+//!          「最新」を時刻で決めると、同一 microsecond に複数の publish があった
+//!          ときにスロット番号で誤選択する（R01-F05）．
 //! 後々可変長なクラスに拡張できるように、メモリへの直接的な参照を返すので、コピーコンストラクタや代入によってデータを複製することを推奨する．
 //! @brief 指定スロットを、payload と素性が同じサンプルであることを保証して読む
 //! @details 理由はスカラ版の同名関数のコメントを参照（R02-F03）。

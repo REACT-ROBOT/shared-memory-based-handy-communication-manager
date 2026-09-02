@@ -164,7 +164,7 @@ inspectSegment(const std::string &entry)
     ::munmap(base, r.file_size);
     return r;
   }
-  if (r.state != 1u /* RingBuffer::INITIALIZED */)
+  if (r.state != irlab::shm::RingBuffer::INITIALIZED)
   {
     r.problems.push_back("★初期化されていない");
     ::munmap(base, r.file_size);
@@ -566,7 +566,7 @@ main(int argc, char *argv[])
     }
     try
     {
-      // 形式 v3 ではレイアウト世代ごとに /shm_<topic>#<N> が増えるため、
+      // 形式 v3 ではレイアウト世代ごとに /shm_<topic>#<N>-<ノンス> が増えるため、
       // トピック名だけを消しても古い世代が残る。世代ごと片付ける。
       // 返り値を見ていなかったため、存在しないトピックの remove も成功扱い
       // （exit 0）になっていた。スクリプトから使えるように結果を返す。
