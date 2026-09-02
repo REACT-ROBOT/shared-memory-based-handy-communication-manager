@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <cerrno>
 #include <thread>
 #include <fstream>
 #include <cstdio>
@@ -567,9 +568,15 @@ TEST(SHMBaseIntegrationTest, UtilityFunctions) {
     int result = disconnectMemory("test_utility_memory");
     EXPECT_EQ(result, 0); // Should succeed
     
-    // Test disconnecting non-existent memory
+    // 存在しない名前を消そうとしたら失敗を返すこと。
+    // 「might fail, which is expected」とだけ書いて何も検査していなかったが、
+    // これは曖昧にしてよい契約ではない。shm_tool remove は戻り値を見て
+    // 「消すものが無かった」を終了コードに反映しており（R04）、
+    // disconnectMemory() が黙って成功を返すようになるとそれが崩れる。
+    errno  = 0;
     result = disconnectMemory("non_existent_memory");
-    // This might fail, which is expected behavior
+    EXPECT_EQ(result, -1) << "存在しない共有メモリの削除が成功を返した";
+    EXPECT_EQ(errno, ENOENT) << "失敗したが errno が ENOENT ではない";
 }
 
 // Performance tests (optional, can be disabled for regular testing)
@@ -756,233 +763,22 @@ protected:
 };
 
 // ---------------------------------------------------------------------------
-// テスト1: 基本的な再現テスト — waiter を timedwait 中に kill
+// NOTE: ここには condition variable の破損を調べる 3 件
+//       （SingleProcessKillDuringTimedwait / KillDuringGroupTransition /
+//        MassiveWaitersKillDuringTransition）があったが、削除した。
 //
-// 単一の waiter プロセスが timedwait に入った後 SIGKILL し、
-// その後 broadcast がブロックするかを検証する。
-// ---------------------------------------------------------------------------
-TEST_F(CondVarCorruptionTest, SingleProcessKillDuringTimedwait) {
-    auto* data = createSharedTestData();
-
-    pid_t pid = fork();
-    if (pid == 0) {
-        SharedMemoryPosix child_shm(SHM_NAME, O_RDWR, DEFAULT_PERM);
-        child_shm.connect();
-        auto* d = reinterpret_cast<CondVarTestData*>(child_shm.getPtr());
-
-        pthread_mutex_lock(&d->mutex);
-        d->waiters_entered.fetch_add(1);
-
-        struct timespec ts;
-        clock_gettime(CLOCK_MONOTONIC, &ts);
-        ts.tv_sec += 60;
-        pthread_cond_timedwait(&d->cond, &d->mutex, &ts);
-
-        pthread_mutex_unlock(&d->mutex);
-        _exit(0);
-    }
-
-    // waiter が timedwait に入るのを待つ
-    while (data->waiters_entered.load() < 1) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    // futex_wait に到達する時間を確保
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-
-    kill(pid, SIGKILL);
-    waitpid(pid, nullptr, 0);
-
-    recoverMutex(data);
-
-    bool completed = tryBroadcast(data, 1000);
-
-    if (!completed) {
-        std::cerr << "[BLOCKED] pthread_cond_broadcast が永久ブロック "
-                  << "(条件変数の内部状態が壊れた)" << std::endl;
-    } else {
-        std::cerr << "[OK] pthread_cond_broadcast は完了 "
-                  << "(今回は破壊が再現されなかった)" << std::endl;
-    }
-    SUCCEED() << "broadcast blocked: " << (completed ? "no" : "YES");
-}
-
-// ---------------------------------------------------------------------------
-// テスト2: signal 直後の kill で内部プロトコル遷移中を狙う
+//       3 件とも末尾が SUCCEED() だけで EXPECT / ASSERT が 1 つも無く、
+//       ブロック回数を出力して必ず PASS するだけだった。しかも検査対象は
+//       テストが自前で作った pthread_cond_t であって、このライブラリの
+//       コードではない。**共有メモリのレイアウトに condition variable は
+//       存在せず**、RingBuffer::signal() は no-op である（その理由は
+//       ring_buffer.cpp の同関数のコメントにある）。
 //
-// glibc の condvar 内部では、signal/broadcast を受けた waiter が
-// G1→G2 グループ遷移プロトコルを実行する。この遷移中に kill されると
-// 次の broadcast がブロックする確率が高い。
-// signal で waiter を起こし、起きてプロトコルを処理している最中に
-// SIGKILL を送る。
+//       つまり 3 件は「なぜポーリング方式を選んだか」を調べた glibc の
+//       調査記録であって、回帰テストではなかった。その結論を検証している
+//       のは下の PollingApproachIsImmune で、これは RingBuffer::waitFor()
+//       を実際に叩いているので残してある。
 // ---------------------------------------------------------------------------
-TEST_F(CondVarCorruptionTest, KillDuringGroupTransition) {
-    constexpr int NUM_ROUNDS = 50;
-    int block_count = 0;
-    int total_valid = 0;
-
-    for (int round = 0; round < NUM_ROUNDS; ++round) {
-        disconnectMemory("test_condvar_corruption");
-        auto* data = createSharedTestData();
-
-        pid_t pid = fork();
-        if (pid == 0) {
-            SharedMemoryPosix child_shm(SHM_NAME, O_RDWR, DEFAULT_PERM);
-            child_shm.connect();
-            auto* d = reinterpret_cast<CondVarTestData*>(child_shm.getPtr());
-
-            pthread_mutex_lock(&d->mutex);
-            d->waiters_entered.fetch_add(1);
-
-            struct timespec ts;
-            clock_gettime(CLOCK_MONOTONIC, &ts);
-            ts.tv_sec += 60;
-
-            // timedwait のループ — signal を受けても再度 wait に入る
-            while (true) {
-                pthread_cond_timedwait(&d->cond, &d->mutex, &ts);
-            }
-            // SIGKILL でのみ終了
-        }
-
-        while (data->waiters_entered.load() < 1) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
-        // signal を送って waiter を起こし、内部プロトコル処理中に kill
-        // (mutex を持った状態で signal → waiter が起きて遷移開始 → kill)
-        {
-            int ret = pthread_mutex_lock(&data->mutex);
-            if (ret == EOWNERDEAD) pthread_mutex_consistent(&data->mutex);
-            pthread_cond_signal(&data->cond);
-            pthread_mutex_unlock(&data->mutex);
-        }
-
-        // waiter がプロトコル処理を開始した直後を狙って kill
-        // (ゼロ遅延 ～ 数us のウィンドウ)
-        kill(pid, SIGKILL);
-        waitpid(pid, nullptr, 0);
-
-        recoverMutex(data);
-
-        total_valid++;
-        if (!tryBroadcast(data, 500)) {
-            block_count++;
-        }
-    }
-
-    std::cerr << "\n===== signal 直後 kill → broadcast ブロック頻度 =====" << std::endl;
-    std::cerr << "  ラウンド数:     " << NUM_ROUNDS << std::endl;
-    std::cerr << "  ブロック発生:   " << block_count << " / " << total_valid << std::endl;
-    if (total_valid > 0) {
-        std::cerr << "  ブロック発生率: "
-                  << (100.0 * block_count / total_valid) << "%" << std::endl;
-    }
-    std::cerr << "===================================================\n" << std::endl;
-
-    if (block_count > 0) {
-        std::cerr << "[CONFIRMED] 条件変数の破壊による永久ブロックが再現された" << std::endl;
-    } else {
-        std::cerr << "[NOTE] この環境 (glibc " << gnu_get_libc_version()
-                  << ") では再現されなかった。" << std::endl;
-        std::cerr << "       タイミング依存のため、異なる環境/負荷状態で発生し得る。" << std::endl;
-    }
-    SUCCEED();
-}
-
-// ---------------------------------------------------------------------------
-// テスト3: 大量 waiter の同時 kill (最大再現率)
-//
-// NUM_WAITERS 個のプロセスを timedwait に入れ、signal で全員を起こし、
-// 遷移プロトコル処理中に一斉 SIGKILL する。
-// waiter 数が多いほど、少なくとも1つが遷移途中に kill される確率が上がる。
-// ---------------------------------------------------------------------------
-TEST_F(CondVarCorruptionTest, MassiveWaitersKillDuringTransition) {
-    constexpr int NUM_WAITERS = 20;
-    constexpr int NUM_ROUNDS = 10;
-    int block_count = 0;
-    int total_valid = 0;
-
-    for (int round = 0; round < NUM_ROUNDS; ++round) {
-        disconnectMemory("test_condvar_corruption");
-        auto* data = createSharedTestData();
-
-        std::vector<pid_t> children;
-        for (int i = 0; i < NUM_WAITERS; ++i) {
-            pid_t pid = fork();
-            if (pid == 0) {
-                SharedMemoryPosix child_shm(SHM_NAME, O_RDWR, DEFAULT_PERM);
-                child_shm.connect();
-                auto* d = reinterpret_cast<CondVarTestData*>(child_shm.getPtr());
-
-                pthread_mutex_lock(&d->mutex);
-                d->waiters_entered.fetch_add(1);
-
-                struct timespec ts;
-                clock_gettime(CLOCK_MONOTONIC, &ts);
-                ts.tv_sec += 60;
-
-                while (true) {
-                    pthread_cond_timedwait(&d->cond, &d->mutex, &ts);
-                }
-            }
-            children.push_back(pid);
-        }
-
-        // 全 waiter が timedwait に入るのを待つ
-        int wait_ms = 0;
-        while (data->waiters_entered.load() < NUM_WAITERS && wait_ms < 5000) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            wait_ms++;
-        }
-        int entered = data->waiters_entered.load();
-        if (entered < 2) {
-            // 不十分な場合はスキップ
-            for (pid_t p : children) { kill(p, SIGKILL); waitpid(p, nullptr, 0); }
-            continue;
-        }
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-
-        // broadcast で全 waiter を起こし、遷移プロトコル処理中を狙って kill
-        {
-            int ret = pthread_mutex_lock(&data->mutex);
-            if (ret == EOWNERDEAD) pthread_mutex_consistent(&data->mutex);
-            pthread_cond_broadcast(&data->cond);
-            pthread_mutex_unlock(&data->mutex);
-        }
-
-        // 即座に全プロセスを SIGKILL (遷移処理のウィンドウを狙う)
-        for (pid_t p : children) {
-            kill(p, SIGKILL);
-        }
-        for (pid_t p : children) {
-            waitpid(p, nullptr, 0);
-        }
-
-        recoverMutex(data);
-
-        total_valid++;
-        bool broadcast_ok = tryBroadcast(data, 1000);
-        if (!broadcast_ok) {
-            block_count++;
-        }
-
-        std::cerr << "  round " << round << ": " << entered << " waiters, "
-                  << "broadcast " << (broadcast_ok ? "ok" : "BLOCKED") << std::endl;
-    }
-
-    std::cerr << "\n===== 大量 waiter kill → broadcast ブロック頻度 =====" << std::endl;
-    std::cerr << "  ラウンド数:     " << NUM_ROUNDS << std::endl;
-    std::cerr << "  ブロック発生:   " << block_count << " / " << total_valid << std::endl;
-    if (total_valid > 0) {
-        std::cerr << "  ブロック発生率: "
-                  << (100.0 * block_count / total_valid) << "%" << std::endl;
-    }
-    std::cerr << "===================================================\n" << std::endl;
-
-    SUCCEED();
-}
 
 // ---------------------------------------------------------------------------
 // テスト4: 現行のポーリング方式がプロセス異常終了の影響を受けないことの確認

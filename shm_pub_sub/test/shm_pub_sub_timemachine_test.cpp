@@ -103,19 +103,16 @@ TEST_F(SHMTimeMachineTest, AtOrBeforeReturnsTheSampleValidAtThatTime)
   Publisher<Msg>  pub("tm_basic", 5);
   Subscriber<Msg> sub("tm_basic");
 
-  std::vector<SampleInfo> stamps;
+  // NOTE: ここに std::vector<SampleInfo> stamps があったが、push も read も
+  //       されていなかった。同じループの subscribeAt() も結果を (void) で
+  //       捨てており、5ms ずつ間隔を空けて 5 回 publish する以外に何もして
+  //       いない。保持範囲は下の getRetentionWindow() で取るので不要である。
   for (uint32_t i = 1; i <= 5; ++i)
   {
     pub.publish(makeMsg(i));
     bool ok = false;
     sub.subscribe(&ok);
     ASSERT_TRUE(ok);
-    SampleInfo   info{};
-    SearchStatus st = SearchStatus::Empty;
-    sub.subscribeAt(TimeQuery{ 0, SearchPolicy::Nearest }, &st, &info);
-    // Nearest with time 0 は最も古いものを返す。ここでは stamps 収集のため
-    // 直接 window から取る方が確実なので、後で使う分だけ控える。
-    (void)st;
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
 

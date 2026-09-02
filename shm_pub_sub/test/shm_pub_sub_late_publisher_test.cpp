@@ -269,10 +269,11 @@ TEST_F(SHMLatePublisherTest, ExistingSubscriberMustKeepReadingAcrossLatePublishe
       EXPECT_EQ(got_after.seq, 777u);
     }
 
-    // 既存データが残っていれば「読める」状態は維持されるはずで、
-    // 現行実装ではタイムスタンプが消えるため waitFor もタイムアウトする。
-    EXPECT_TRUE(ok_after || sub.waitFor(100000))
-        << "後発 Publisher の生成後、既存データも更新も検知できない";
+    // NOTE: ここに EXPECT_TRUE(ok_after || sub.waitFor(100000)) があったが、
+    //       6 行上で ok_after が真であることを既に期待している以上、短絡評価で
+    //       waitFor() は**絶対に呼ばれない**。上の EXPECT_TRUE と同じことを
+    //       二度言っているだけなので削除した。
+    //       （この修正が入る前は ok_after が偽になり、waitFor 側で拾っていた）
   }
 
   // 次の publish が来ればデータは復帰する（＝消えるのは publish までの区間）

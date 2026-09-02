@@ -47,10 +47,6 @@ struct Tagged
 size_t countSegments(const std::string &prefix)
 {
   size_t n = 0;
-  for (const auto &entry : { std::string("/dev/shm") })
-  {
-    (void)entry;
-  }
   // /dev/shm を直接数える
   std::string cmd = "ls /dev/shm 2>/dev/null | grep -c '^shm_" + prefix + "'";
   FILE *fp = popen(cmd.c_str(), "r");

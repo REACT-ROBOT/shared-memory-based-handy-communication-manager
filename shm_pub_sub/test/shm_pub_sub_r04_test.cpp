@@ -438,40 +438,15 @@ TEST_F(SHMR04Test, AligningToAnInvalidReferenceIsRejected)
 }
 
 // -----------------------------------------------------------------------------
-// R04-F14: ずれの上限を超えたら Success にしない
+// NOTE: R04-F14 の「ずれの上限を超えたら Success にしない」を見る
+//       AlignmentBeyondTheAllowedSkewIsNotSuccess をここに置いていたが、
+//       shm_pub_sub_timemachine_test.cpp の RejectsAlignmentThatIsTooFarApart と
+//       同じコードパス・同じ不変条件で、上限判定を無効化する注入では
+//       この 2 件だけが同時に落ちた。timemachine 版は max_skew_us = 0 が
+//       無制限であることまで見る上位互換なので、そちらに集約した。
 //
-// Nearest は有効なサンプルがあれば必ず「最も近いもの」を返し、
-// どれだけ離れていても TooOld / TooNew にはならない。上限は呼び出し側が示す。
-// -----------------------------------------------------------------------------
-TEST_F(SHMR04Test, AlignmentBeyondTheAllowedSkewIsNotSuccess)
-{
-  const std::string topic = "r04_align";
-
-  Publisher<Msg> pub(topic, 4);
-  pub.publish(Msg{ 1 });
-
-  Subscriber<Msg> sub(topic);
-  sub.setDataExpiryTime_us(0);
-  bool       ok = false;
-  SampleInfo published{};
-  sub.subscribe(&ok, &published);
-  ASSERT_TRUE(ok);
-
-  // 実際のサンプルより十分に新しい時刻を基準にする
-  SampleInfo reference    = published;
-  reference.capture_monotonic_us = published.capture_monotonic_us + 500000;  // 500ms 後
-
-  SearchStatus status = SearchStatus::Success;
-  sub.subscribeAlignedTo(reference, &status, 10000);  // 許容 10ms
-  EXPECT_EQ(status, SearchStatus::TooOld)
-      << "500ms ずれているのに整列済みとして返した。実際の status=" << static_cast<int>(status);
-
-  // 上限を広げれば通る
-  status = SearchStatus::Empty;
-  sub.subscribeAlignedTo(reference, &status, 1000000);
-  EXPECT_EQ(status, SearchStatus::Success);
-}
-
+//       同じ R04-F14 のもう一方 AligningToAnInvalidReferenceIsRejected は、
+//       全ゼロの SampleInfo を弾く別経路なので下に残してある。
 // -----------------------------------------------------------------------------
 // R04-F19: トピック名に '#' を許すと、別トピックのセグメントを消せてしまう
 //

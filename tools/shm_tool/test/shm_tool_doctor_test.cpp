@@ -71,8 +71,17 @@ protected:
 
 // -----------------------------------------------------------------------------
 // 正常なトピックだけなら「対処が必要 0 件」で終了コード 0
+//
+// 書式が未宣言でも「動作はしている」ので終了コードは 0 のままである（注記に留める）。
+// 移行の途中で全トピックが赤くなると、本当に対処が要るものが埋もれるためで、
+// Publisher<int> は書式を宣言していないので同じセットアップで両方を見られる。
+//
+// NOTE: 以前は AnUndeclaredFormatIsANoteNotAProblem という別テストがあったが、
+//       セットアップが 1 文字も違わず（同じトピック名・同じコマンド・同じ
+//       終了コードの期待）、検索する文字列だけが違っていた。shm_tool は毎回
+//       popen で別プロセスを起こすので、統合して実行を 1 回減らしてある。
 // -----------------------------------------------------------------------------
-TEST_F(SHMToolDoctorTest, HealthySegmentsAreReportedAsOk)
+TEST_F(SHMToolDoctorTest, HealthySegmentsAreOkAndAnUndeclaredFormatIsOnlyANote)
 {
   Publisher<int> pub("doctor_ok", 3);
   pub.publish(1);
@@ -83,7 +92,8 @@ TEST_F(SHMToolDoctorTest, HealthySegmentsAreReportedAsOk)
 
   EXPECT_NE(r.output.find("doctor_ok"), std::string::npos) << r.output;
   EXPECT_NE(r.output.find("対処が必要 0 件"), std::string::npos) << r.output;
-  EXPECT_EQ(r.exit_code, 0) << r.output;
+  EXPECT_NE(r.output.find("未宣言"), std::string::npos) << "未宣言を表示していない\n" << r.output;
+  EXPECT_EQ(r.exit_code, 0) << "注記だけで終了コードが 1 になっている\n" << r.output;
 }
 
 // -----------------------------------------------------------------------------
@@ -110,23 +120,6 @@ TEST_F(SHMToolDoctorTest, AnOldAbiSegmentIsReportedAndChangesTheExitCode)
   EXPECT_NE(r.output.find("ABI"), std::string::npos) << "古い ABI を報告していない\n" << r.output;
   EXPECT_NE(r.output.find("shm_tool remove"), std::string::npos) << "復旧手順を案内していない\n" << r.output;
   EXPECT_EQ(r.exit_code, 1) << "問題があるのに終了コードが 0\n" << r.output;
-}
-
-// -----------------------------------------------------------------------------
-// 書式が未宣言でも「動作はしている」ので終了コードは 0（注記に留める）
-//
-// 移行の途中で全トピックが赤くなると、本当に対処が要るものが埋もれる。
-// -----------------------------------------------------------------------------
-TEST_F(SHMToolDoctorTest, AnUndeclaredFormatIsANoteNotAProblem)
-{
-  Publisher<int> pub("doctor_ok", 3);
-  pub.publish(1);
-
-  const ToolResult r = runTool("doctor doctor_ok");
-  ASSERT_NE(r.exit_code, -1);
-
-  EXPECT_NE(r.output.find("未宣言"), std::string::npos) << "未宣言を表示していない\n" << r.output;
-  EXPECT_EQ(r.exit_code, 0) << "注記だけで終了コードが 1 になっている\n" << r.output;
 }
 
 // -----------------------------------------------------------------------------
