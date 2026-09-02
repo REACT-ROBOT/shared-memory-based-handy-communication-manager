@@ -549,8 +549,16 @@ carry the same unit but a different origin, so passing one returns a quietly ske
 | `SearchPolicy` | Behaviour | When nothing matches |
 |---|---|---|
 | `Nearest` | closest sample, at any distance | `Empty` only |
-| `AtOrBefore` | newest sample **at or before** the time | `TooNew` (everything is later) |
-| `AtOrAfter` | oldest sample **at or after** the time | `TooOld` (everything is earlier) |
+| `AtOrBefore` | newest sample **at or before** the time | `TooOld` |
+| `AtOrAfter` | oldest sample **at or after** the time | `TooNew` |
+
+`TooOld` and `TooNew` describe **the time you asked for**, relative to what is
+retained — not the direction the samples lie in.
+
+- Nothing matches `AtOrBefore`: nothing older than your time is still held, so
+  **that moment has already been overwritten** → `TooOld`
+- Nothing matches `AtOrAfter`: nothing newer than your time exists yet, so
+  **that moment has not been published yet** → `TooNew`
 
 `subscribeAlignedTo()` is a thin wrapper over `Nearest` plus the skew check.
 

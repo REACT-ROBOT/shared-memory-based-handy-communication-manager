@@ -308,6 +308,32 @@ if(BUILD_TESTS)
   # ハングを FAIL にする（ctest の --timeout に依存させない）
   set_tests_properties(${shm_pub_sub_r04_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT} RESOURCE_LOCK dev_shm)
 
+    # 5 つの特殊化が同じ振る舞いをすることを確かめる適合性スイート。
+    #
+    # 型に依存しない約 150 行が 5 箇所にコピーされており、R01〜R05 では
+    # それを手で 5 回適用する運用だった。実際 R04-F12 は本体 2 つにしか
+    # 入らず、世代切替が最も頻繁に起きる外部 3 つに届いていなかった。
+    #
+    # 契約は test/shm_pub_sub_conformance.hpp に 1 箇所だけ書いてある。
+    # 外部リポジトリ（react_cv / sensor_daemons）は同じヘッダを取り込んで
+    # Traits を書くだけで同じ検査を受けられる。
+    add_executable(shm_pub_sub_conformance_test
+        test/shm_pub_sub_conformance_test.cpp
+      )
+    target_link_libraries(shm_pub_sub_conformance_test
+        PRIVATE
+        shm_pub_sub
+        ${GTEST_LDFLAGS}
+      )
+    # NOTE: ここは gtest_add_tests ではなく gtest_discover_tests を使う。
+    #       前者はソースを正規表現で走査して TEST_F を拾う実装なので、
+    #       型パラメータ化テスト（TYPED_TEST_P + INSTANTIATE_TYPED_TEST_SUITE_P）は
+    #       1 件も見つけられず、黙って「テスト 0 件」になる。
+    #       後者はビルド済みバイナリに --gtest_list_tests を掛けるので正しく拾える。
+    gtest_discover_tests(shm_pub_sub_conformance_test
+        PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT} RESOURCE_LOCK dev_shm
+      )
+
     # ペイロード書式の宣言（R04 / 制約 A）の回帰テスト
     add_executable(shm_pub_sub_layout_hash_test
         test/shm_pub_sub_layout_hash_test.cpp

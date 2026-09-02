@@ -637,8 +637,16 @@ const Scan  &scan = scan_sub.subscribeAt(q, &status, &info);
 | `SearchPolicy` | 挙動 | 見つからないとき |
 |---|---|---|
 | `Nearest` | 最も近いサンプル。距離は問わない | `Empty` のみ |
-| `AtOrBefore` | 指定時刻**以前**で最も新しいもの | `TooNew`（全部が指定時刻より後） |
-| `AtOrAfter` | 指定時刻**以後**で最も古いもの | `TooOld`（全部が指定時刻より前） |
+| `AtOrBefore` | 指定時刻**以前**で最も新しいもの | `TooOld` |
+| `AtOrAfter` | 指定時刻**以後**で最も古いもの | `TooNew` |
+
+`TooOld` / `TooNew` は**指定した時刻が保持範囲に対してどうか**を表す。
+サンプル側から見た向きではないので注意すること。
+
+- `AtOrBefore` で該当が無い = 指定時刻より前のものが残っていない
+  = **その時刻は既に上書きされた** → `TooOld`
+- `AtOrAfter` で該当が無い = 指定時刻より後のものがまだ無い
+  = **その時刻はまだ publish されていない** → `TooNew`
 
 `subscribeAlignedTo()` は `Nearest` + ずれの上限判定を組み合わせた薄い包みである。
 
