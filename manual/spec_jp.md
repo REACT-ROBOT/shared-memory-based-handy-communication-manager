@@ -588,14 +588,17 @@ bool ok = false;
 odom_sub.subscribe(&ok, &odom_info);
 
 SearchStatus status;
-const Scan &scan = scan_sub.subscribeAlignedTo(odom_info, &status, nullptr, 50000);
+SampleInfo scan_info;
+// 50 ms 以上ずれていたら TooOld / TooNew で弾く
+const Scan &scan = scan_sub.subscribeAlignedTo(odom_info, &status, 50000, &scan_info);
+if (status == SearchStatus::Success) { /* scan を使う */ }
 ```
 
 | 型 | 意味 |
 |---|---|
 | `TimeQuery{time_us, policy}` | 検索する時刻と方針 |
 | `SearchPolicy` | `Nearest` / `AtOrBefore` / `AtOrAfter` |
-| `SearchStatus` | `Success` / `NotConnected` / `Empty` / `TooOld` / `TooNew` / `Contended` |
+| `SearchStatus` | `Success` / `NotConnected` / `Empty` / `TooOld` / `TooNew` / `Contended` / `InvalidReference` |
 | `SampleInfo` | 発行番号・capture 時刻・payload 長 |
 | `RetentionWindow` | 現在保持している履歴の範囲 |
 
@@ -614,6 +617,30 @@ const Scan &scan = scan_sub.subscribeAlignedTo(odom_info, &status, nullptr, 5000
 保持できる履歴の長さは `buf_num ÷ 発行レート` である。10Hz のセンサを
 `buf_num = 3` で持つと履歴は 300ms しかない。実際に保持している時間幅は
 `getRetentionWindow()` か `shm_tool doctor` で確認できる。
+
+## 時刻を直接指定する — `subscribeAt()`
+
+基準にするサンプルが無く、時刻そのものが分かっている場合に使う。
+
+```cpp
+TimeQuery   q{ target_us, SearchPolicy::AtOrBefore };
+SearchStatus status;
+SampleInfo   info;
+const Scan  &scan = scan_sub.subscribeAt(q, &status, &info);
+```
+
+`time_us` は `CLOCK_MONOTONIC_RAW` の値である。`clock_gettime(CLOCK_MONOTONIC_RAW, ...)`
+か、他のサンプルの `SampleInfo::capture_monotonic_us` から取ること。
+`CLOCK_MONOTONIC`（`_RAW` 無し）や壁時計の値を渡すと、同じ単位に見えて
+基準が違うため、静かにずれた結果が返る。
+
+| `SearchPolicy` | 挙動 | 見つからないとき |
+|---|---|---|
+| `Nearest` | 最も近いサンプル。距離は問わない | `Empty` のみ |
+| `AtOrBefore` | 指定時刻**以前**で最も新しいもの | `TooNew`（全部が指定時刻より後） |
+| `AtOrAfter` | 指定時刻**以後**で最も古いもの | `TooOld`（全部が指定時刻より前） |
+
+`subscribeAlignedTo()` は `Nearest` + ずれの上限判定を組み合わせた薄い包みである。
 
 # 運用
 

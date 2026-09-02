@@ -214,7 +214,7 @@ public:
    *   SampleInfo   scan_info;
    *   SearchStatus st;
    *   // 20 ms 以上ずれていたら使わない
-   *   const Scan& scan = scan_sub.subscribeAlignedTo(odom_info, &st, &scan_info, 20000);
+   *   const Scan& scan = scan_sub.subscribeAlignedTo(odom_info, &st, 20000, &scan_info);
    *   if (st == SearchStatus::Success) { ... }
    * \endcode
    *

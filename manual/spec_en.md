@@ -502,7 +502,7 @@ Built for "fetch the scan closest in time to this odometry update".
 |---|---|
 | `TimeQuery{time_us, policy}` | the time to search for, and the policy |
 | `SearchPolicy` | `Nearest` / `AtOrBefore` / `AtOrAfter` |
-| `SearchStatus` | `Success` / `NotConnected` / `Empty` / `TooOld` / `TooNew` / `Contended` |
+| `SearchStatus` | `Success` / `NotConnected` / `Empty` / `TooOld` / `TooNew` / `Contended` / `InvalidReference` |
 | `SampleInfo` | sequence number, capture times, payload size |
 | `RetentionWindow` | the range of history currently held |
 
@@ -515,8 +515,44 @@ never reports `TooOld`/`TooNew` by itself. State the bound through
 failed `subscribe()` is all zeros; passing it as the reference is rejected with
 `InvalidReference` instead of silently searching for time 0.
 
+```cpp
+SampleInfo odom_info;
+bool ok = false;
+odom_sub.subscribe(&ok, &odom_info);
+
+SearchStatus status;
+SampleInfo   scan_info;
+// reject anything more than 50 ms away from the odometry sample
+const Scan &scan = scan_sub.subscribeAlignedTo(odom_info, &status, 50000, &scan_info);
+if (status == SearchStatus::Success) { /* use scan */ }
+```
+
 History depth is `buf_num ÷ publish rate`. A 10 Hz sensor with `buf_num = 3` holds only
 300 ms. `getRetentionWindow()` and `shm_tool doctor` report what is actually held.
+
+## Naming a time directly — `subscribeAt()`
+
+Use this when there is no reference sample and you already know the time.
+
+```cpp
+TimeQuery    q{ target_us, SearchPolicy::AtOrBefore };
+SearchStatus status;
+SampleInfo   info;
+const Scan  &scan = scan_sub.subscribeAt(q, &status, &info);
+```
+
+`time_us` is a `CLOCK_MONOTONIC_RAW` reading. Take it from
+`clock_gettime(CLOCK_MONOTONIC_RAW, ...)` or from another sample's
+`SampleInfo::capture_monotonic_us`. `CLOCK_MONOTONIC` (without `_RAW`) and the wall clock
+carry the same unit but a different origin, so passing one returns a quietly skewed result.
+
+| `SearchPolicy` | Behaviour | When nothing matches |
+|---|---|---|
+| `Nearest` | closest sample, at any distance | `Empty` only |
+| `AtOrBefore` | newest sample **at or before** the time | `TooNew` (everything is later) |
+| `AtOrAfter` | oldest sample **at or after** the time | `TooOld` (everything is earlier) |
+
+`subscribeAlignedTo()` is a thin wrapper over `Nearest` plus the skew check.
 
 # 🛠 Operations
 
