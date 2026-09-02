@@ -34,7 +34,7 @@ protected:
   {
     for (const char *t : { "r04_unlink_pub", "r04_unlink_sub", "r04_cap", "r04_deadreader", "r04_contend",
                            "r04_heldslot", "r04_abi", "r04_align", "r04_suffix",
-                           "r04_ordinary_name", "r04_shape" })
+                           "r04_ordinary_name", "r04_shape", "r05_poison" })
     {
       try
       {
@@ -575,4 +575,71 @@ TEST_F(SHMR04Test, ScalarAndVectorExposeTheSameShape)
   ASSERT_TRUE(ok);
   EXPECT_EQ(v.size(), 4u);
   EXPECT_EQ(v[0], 5u);
+}
+
+// -----------------------------------------------------------------------------
+// R05: スロットの robust mutex が壊れていても、abort せずに失敗すること
+//
+// futex ワードに「生きているタスクとして解決できない TID」が入っていると、
+// robust + PTHREAD_PRIO_INHERIT の mutex に**待ち時間つきロック**を掛けたとき
+// glibc が
+//   Assertion `e != ESRCH || !robust' failed. (pthread_mutex_timedlock.c)
+// で abort する。戻り値ではなく assert なので捕捉も回復もできず、
+// 例外でも安全停止でもなく SIGABRT でプロセスが落ちる。
+//
+// そうなる状態は現実に起こり得る:
+//   - セグメントの mutex 領域が別プロセスの誤書き込みで壊れた
+//   - 保持者が別の PID namespace に居る（コンテナ間で /dev/shm を共有）
+//   - 保持したまま munmap して終了し、robust list が処理されなかった
+// いずれも /dev/shm に永続するので、Subscriber が起動のたびに同じスロットを
+// 選んで死ぬ恒久的なクラッシュループになる。
+//
+// 対策は 2 つ入れてある。
+//   1. PTHREAD_PRIO_INHERIT を設定しない
+//   2. 待ち方を trylock + nanosleep にする（trylock は同じ状態でも EBUSY を
+//      返すだけで安全なので、古い PI 付きセグメントが残っていても落ちない）
+// -----------------------------------------------------------------------------
+TEST_F(SHMR04Test, ACorruptedSlotMutexFailsInsteadOfAbortingTheProcess)
+{
+  const std::string topic = "r05_poison";
+
+  {
+    Publisher<Msg> pub(topic, 3);
+    pub.publish(Msg{ 1 });
+  }
+
+  // 全スロットの futex ワードに実在しない TID を書き込む
+  {
+    SharedMemoryPosix shm(topic, O_RDWR, static_cast<PERM>(0));
+    ASSERT_TRUE(shm.connect());
+    unsigned char   *ptr    = shm.getPtr();
+    const ShmHeader *header = reinterpret_cast<const ShmHeader *>(ptr);
+    SlotRecord      *slots  = reinterpret_cast<SlotRecord *>(ptr + header->slot_offset);
+    for (uint64_t i = 0; i < header->buf_num; ++i)
+    {
+      *reinterpret_cast<unsigned int *>(&slots[i].owner) = 0x00300000u;
+    }
+  }
+
+  // ここで abort すればテストプロセスごと落ちる（= 検出）
+  {
+    Subscriber<Msg> sub(topic);
+    sub.setDataExpiryTime_us(0);
+    bool ok = false;
+    ASSERT_NO_FATAL_FAILURE(sub.subscribe(&ok));
+    EXPECT_FALSE(ok) << "壊れたスロットから読めてしまった";
+  }
+  {
+    Publisher<Msg> pub(topic, 3);
+    ASSERT_NO_FATAL_FAILURE({
+      try
+      {
+        pub.publish(Msg{ 2 });
+      }
+      catch (const std::runtime_error &)
+      {
+        // 確保できずに例外で知らせるのは正しい
+      }
+    });
+  }
 }

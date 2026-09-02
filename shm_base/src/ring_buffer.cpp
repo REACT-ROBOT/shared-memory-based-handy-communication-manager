@@ -1,5 +1,6 @@
 #include <shm_base.hpp>
 #include <sched.h>
+#include <ctime>
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -44,65 +45,52 @@ getCurrentTimeUSec()
 }
 
 //! @brief スロットの robust mutex を、単調時計で区切った上限まで待って取る
-//! @details reader も payload コピーの間はスロットを排他するようになったため
-//!          （R03-F04）、trylock 一発で諦めると次のような取りこぼしが起きる:
+//! @details reader も payload コピーの間はスロットを排他するため（R03-F04）、
+//!          trylock 一発で諦めると次のような取りこぼしが起きる:
 //!            - buf_num=1 で reader が全力で回ると writer が確保できず publish が失敗
 //!            - 同じスロットを狙う reader 同士が互いに弾き合う
 //!          スロットの臨界区間は memcpy 1 回ぶんしかないので、短い上限まで
 //!          待てば十分に解消する。
 //!
-//!          待ち方は **カーネルで眠る**（`pthread_mutex_clocklock`）。
-//!          以前は trylock + sched_yield のスピンだったが、CPU が過負荷のときに
-//!          待ち手が自分の量子を浪費するだけで保持者に CPU が回らず、
-//!          2ms の上限をあっさり超えていた。実測では 20 スレッドの負荷下で
-//!          buf_num=1 の publish が 25 回中 16 回失敗した。
+//!          **待ち方に `pthread_mutex_clocklock` を使ってはならない。**
+//!          robust mutex の futex ワードに「生きているタスクとして解決できない
+//!          TID」が入っていると、glibc が
+//!            Assertion `e != ESRCH || !robust' failed. (pthread_mutex_timedlock.c)
+//!          で **abort する**。戻り値ではなく assert なので捕捉も回復もできない。
+//!          そうなる状態は現実に起こり得る（R05）:
+//!            - セグメントの mutex 領域が別プロセスの誤書き込みで壊れた
+//!            - 保持者が別の PID namespace に居る（コンテナ間で /dev/shm を共有）
+//!            - 保持したまま munmap して終了し、robust list が処理されなかった
+//!          いずれも `/dev/shm` に永続するので、Subscriber が起動のたびに
+//!          同じスロットを選んで死ぬ恒久的なクラッシュループになる。
 //!
-//!          時計は CLOCK_MONOTONIC を使う。CLOCK_REALTIME を使う
-//!          `pthread_mutex_timedlock` は NTP の時刻補正で待ち時間が伸縮する。
+//!          `pthread_mutex_trylock` は同じ状態でも EBUSY を返すだけで安全なので、
+//!          **trylock と nanosleep の組み合わせ**で待つ。
+//!          `sched_yield` のスピンに戻すわけではない（R04-F23 の原因はそれで、
+//!          CPU 過負荷のとき待ち手が自分の量子を捨てるだけで保持者に CPU が
+//!          回らなかった）。実際に眠れば保持者が走れる。
 //! @return 0 なら取得（EOWNERDEAD なら consistent 宣言が必要）、EBUSY なら時間切れ
-#if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 30))
-#if defined(__SANITIZE_THREAD__)
-// GCC: TSan 有効
-#elif defined(__has_feature)
-#if __has_feature(thread_sanitizer)
-// Clang: TSan 有効
-#else
-#define SHM_HAS_CLOCKLOCK 1
-#endif
-#else
-#define SHM_HAS_CLOCKLOCK 1
-#endif
-#endif
-
 static int
 lockSlotWithin(pthread_mutex_t *mutex, uint64_t timeout_us)
 {
-  if (timeout_us == 0)
+  int r = pthread_mutex_trylock(mutex);
+  if (r != EBUSY || timeout_us == 0)
   {
-    return pthread_mutex_trylock(mutex);
+    return r;
   }
 
-  // ThreadSanitizer は pthread_mutex_clocklock を捕捉しないため、ロックの獲得が
-  // 見えず「未ロックの mutex を unlock した」と誤検出する。TSan の目的は競合検出で
-  // あって性能ではないので、そのビルドでは下のスピン待ちを使う。
-#if defined(SHM_HAS_CLOCKLOCK)
-  struct timespec deadline;
-  clock_gettime(CLOCK_MONOTONIC, &deadline);
-  deadline.tv_nsec += static_cast<long>(timeout_us % 1000000ULL) * 1000L;
-  deadline.tv_sec += static_cast<time_t>(timeout_us / 1000000ULL);
-  if (deadline.tv_nsec >= 1000000000L)
+  // 保持者が走れるよう、実際に眠って待つ。
+  // 臨界区間は memcpy 1 回ぶんなので、細かい刻みで十分に拾える。
+  constexpr uint64_t SLEEP_STEP_US = 50;
+  const uint64_t     deadline      = getCurrentTimeUSec() + timeout_us;
+  while (true)
   {
-    deadline.tv_nsec -= 1000000000L;
-    ++deadline.tv_sec;
-  }
-  const int r = pthread_mutex_clocklock(mutex, CLOCK_MONOTONIC, &deadline);
-  return (r == ETIMEDOUT) ? EBUSY : r;
-#else
-  // 古い glibc 向けの代替。スピンなので過負荷では不利だが、動作はする。
-  const uint64_t deadline = getCurrentTimeUSec() + timeout_us;
-  for (;;)
-  {
-    const int r = pthread_mutex_trylock(mutex);
+    struct timespec nap;
+    nap.tv_sec  = 0;
+    nap.tv_nsec = static_cast<long>(SLEEP_STEP_US) * 1000L;
+    nanosleep(&nap, nullptr);
+
+    r = pthread_mutex_trylock(mutex);
     if (r != EBUSY)
     {
       return r;
@@ -111,9 +99,7 @@ lockSlotWithin(pthread_mutex_t *mutex, uint64_t timeout_us)
     {
       return EBUSY;
     }
-    sched_yield();
   }
-#endif
 }
 
 //! @brief 壁時計の時刻[usec]
@@ -902,10 +888,13 @@ RingBuffer::initializeExclusiveAccess()
   // これが無いと「死んだのか、単に遅いだけなのか」を時刻で推測するしかなく、
   // 生きている writer からスロットを奪ってデータを壊す（R01-F04）。
   pthread_mutexattr_setrobust(&m_attr, PTHREAD_MUTEX_ROBUST);
-  // 優先度継承。SCHED_FIFO で走る制御ループが、低優先度のプロセスが握った
-  // スロットを待つときに優先度逆転を起こさないようにする（R04-F08）。
-  // 対応していない環境では失敗するが、その場合も通常の mutex として動く。
-  pthread_mutexattr_setprotocol(&m_attr, PTHREAD_PRIO_INHERIT);
+  // NOTE: PTHREAD_PRIO_INHERIT は**設定してはならない**（R05）。
+  //       R04-F08 で優先度逆転を避けるために入れたが、robust + PI の mutex に
+  //       待ち時間つきロックを掛けると、futex ワードに解決できない TID が
+  //       入っている場合に glibc が abort する。詳細は lockSlotWithin() の
+  //       コメントを参照。
+  //       現在は trylock でしか取らないので優先度継承は働かない。
+  //       待っている間は nanosleep で眠るため、保持者に CPU は回る。
 
   for (size_t i = 0; i < expected_buf_num; ++i)
   {
