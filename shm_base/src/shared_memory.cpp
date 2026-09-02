@@ -275,13 +275,16 @@ SharedMemoryPosix::disconnectAndUnlink()
   // 「他の利用者がいないことを呼び出し側が保証する」ことを前提とする API とする。
   // 名前を消しても既存のマッピングは生き続けるので、破棄した後もそれを掴んだ
   // プロセスは黙って読み書きを続けられる点に注意すること。
-  struct stat shm_stat;
-  bool        should_unlink = (shm_fd >= 0 && fstat(shm_fd, &shm_stat) == 0);
+  // ガードを外した後も fstat() の呼び出しと struct stat が残っていたが、
+  // 結果は一度も読まれていなかった。判定は「自分がこのセグメントを開けていたか」
+  // だけである。
+  const bool should_unlink = (shm_fd >= 0);
 
   // First disconnect (unmap and close fd)
   disconnect();
 
-  // Only unlink if no other processes/threads are using it
+  // 開けていたなら名前を消す。他の利用者がいないことは呼び出し側の保証である
+  // （上の NOTE のとおり、それを知る移植性のある手段は無い）。
   if (should_unlink)
   {
     return disconnectMemory(shm_name);

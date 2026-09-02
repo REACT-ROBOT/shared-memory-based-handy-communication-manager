@@ -210,10 +210,21 @@ inspectSegment(const std::string &entry)
   }
 
   // 実際に保持している履歴の時間幅を数える。B/C の判断材料になる。
-  // inspectLayout() を通っているので、以下のオフセットと個数は検証済みである。
-  const uint64_t slots_end = h->slot_offset + h->buf_num * h->slot_size;
-  if (h->slot_size == sizeof(SlotRecord) && h->buf_num > 0 && slots_end <= r.file_size &&
-      (h->slot_offset % alignof(SlotRecord)) == 0)
+  //
+  // ここには slot_size / buf_num / slots_end / slot_offset の妥当性を見る if が
+  // あったが、4 項すべてが恒真だった。上で inspectLayout() が Usable を返した
+  // 時点で、それぞれ次の検査を通っている。
+  //   slot_size == sizeof(SlotRecord)        "slot size mismatch" で fail
+  //   buf_num   ∈ [1, MAX_BUFFER_NUM]        "buf_num is out of range" で fail
+  //   slot_offset は computeLayout の値と一致 "the offsets recorded in the header
+  //                                           disagree..." で fail。その値は
+  //                                           alignUp(sizeof(ShmHeader),
+  //                                           alignof(SlotRecord)) なので
+  //                                           alignof(SlotRecord) の倍数
+  //   slots_end <= total_size <= mapping_size "mapping is smaller than the
+  //                                           layout" で fail
+  // 恒真の条件を残すと、偽になり得ると読ませたうえ、万一偽になれば履歴 0 と
+  // 黙って誤報告することになるので、条件ごと外した。
   {
     uint64_t oldest = UINT64_MAX, newest = 0;
     for (uint64_t i = 0; i < h->buf_num; ++i)

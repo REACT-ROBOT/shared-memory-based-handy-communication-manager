@@ -1,5 +1,7 @@
 #include <shm_base.hpp>
-#include <sched.h>
+// NOTE: <sched.h> があったが、必要としていたのは sched_yield() だけで、
+//       R05 で lockSlotWithin() を trylock + nanosleep へ書き換えた際に
+//       その最後の利用者が消えた。<ctime> は nanosleep のために要る。
 #include <ctime>
 #include <algorithm>
 #include <cerrno>
@@ -963,18 +965,6 @@ RingBuffer::getGenerationTag() const
   return header->latest_generation.load(std::memory_order_acquire);
 }
 
-uint64_t
-RingBuffer::getLatestGeneration() const
-{
-  return unpackGeneration(getGenerationTag());
-}
-
-void
-RingBuffer::setGenerationTag(uint64_t tag)
-{
-  header->latest_generation.store(tag, std::memory_order_release);
-}
-
 //! @brief 世代タグを 1 回の CAS で進める
 //! @details 世代とノンスを不可分に公開するための唯一の切り替え点。
 bool
@@ -1723,12 +1713,6 @@ RingBuffer::markAsRead(uint64_t sequence)
   while (sequence > seen && !last_sequence.compare_exchange_weak(seen, sequence, std::memory_order_relaxed))
   {
   }
-}
-
-void
-RingBuffer::markAsInitialized()
-{
-  header->state.store(INITIALIZED, std::memory_order_release);
 }
 
 //! @brief 共有メモリ上のレイアウトが、このインスタンスの前提と食い違っているか

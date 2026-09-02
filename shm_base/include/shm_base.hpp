@@ -77,100 +77,14 @@ get_alignment()
   }
 }
 
-/*!
- * \~english     Align pointer to required boundary
- * \~japanese-en ポインタを必要な境界にアライン
- */
-template <typename T>
-inline T *
-align_pointer(void *ptr)
-{
-  const size_t    alignment    = get_alignment<T>();
-  const uintptr_t addr         = reinterpret_cast<uintptr_t>(ptr);
-  const uintptr_t aligned_addr = (addr + alignment - 1) & ~(alignment - 1);
-
-  // Additional safety check for ARM
-  if constexpr (is_arm_platform())
-  {
-    if ((aligned_addr % alignment) != 0)
-    {
-      throw std::runtime_error("ARM alignment failure: unable to align pointer properly");
-    }
-  }
-
-  return reinterpret_cast<T *>(aligned_addr);
-}
-
-/*!
- * \~english     Calculate aligned size for type T
- * \~japanese-en 型Tのアライン済みサイズを計算
- */
-template <typename T>
-constexpr size_t
-get_aligned_size(size_t count = 1)
-{
-  const size_t alignment = get_alignment<T>();
-  const size_t size      = sizeof(T) * count;
-  return (size + alignment - 1) & ~(alignment - 1);
-}
-
-/*!
- * \~english     Reserve space for `count` objects of type T in a shared-memory
- *               layout, aligning the current offset first. Returns the offset
- *               the objects were placed at and advances `offset` past them.
- * \~japanese-en 共有メモリ上の配置を組み立てるためのヘルパ．
- *               現在のオフセットを型 T の境界へ切り上げてから T を count 個分
- *               確保し、確保した先頭オフセットを返す（offset は末尾へ進む）．
- * \~japanese-en sizeof の総和で配置を決めると、8 の倍数でないサイズの型が
- *               挟まった時点で以降の要素がすべて非アラインになる．
- *               x86 では動いてしまうが ARM では 64bit アクセスが SIGBUS に
- *               なるため、必ずこのヘルパを通して配置すること．
- */
-template <typename T>
-inline size_t
-reserve_aligned(size_t &offset, size_t count = 1)
-{
-  const size_t alignment = get_alignment<T>();
-  offset                 = (offset + alignment - 1) & ~(alignment - 1);
-  const size_t reserved  = offset;
-  offset += sizeof(T) * count;
-  return reserved;
-}
-
-/*!
- * \~english     Check if pointer is properly aligned for type T
- * \~japanese-en ポインタが型Tに対して適切にアライメントされているかチェック
- */
-template <typename T>
-inline bool
-is_aligned(const void *ptr)
-{
-  if constexpr (!is_arm_platform())
-  {
-    // x86/x64: Always return true for compatibility
-    return true;
-  }
-  else
-  {
-    // ARM: Strict alignment checking
-    if (ptr == nullptr)
-    {
-      return false;
-    }
-    const uintptr_t addr      = reinterpret_cast<uintptr_t>(ptr);
-    const size_t    alignment = get_alignment<T>();
-    bool            aligned   = (addr % alignment) == 0;
-
-    // Additional check for double types on ARM
-    if constexpr (std::is_same_v<T, double> || sizeof(T) == sizeof(double))
-    {
-      // Ensure 8-byte alignment for double-sized types on ARM
-      aligned = aligned && (addr % 8) == 0;
-    }
-
-    return aligned;
-  }
-}
+// NOTE: ここには align_pointer() / get_aligned_size() / reserve_aligned() /
+//       is_aligned() があったが、いずれも呼び出し元がゼロだったので削除した。
+//       配置を組み立てるヘルパ（reserve_aligned）は shm_service / shm_action が
+//       使っていたもので、それらを削除した時点で最後の利用者を失っている。
+//       残りの 3 つは形式 v2 への移行で使われなくなった。
+//       現在レイアウトを決めているのは RingBuffer::computeLayout() ただ 1 箇所で、
+//       境界の計算はそこに閉じている。
+//       get_alignment<T>() と is_arm_platform() は現役なので残してある。
 
 /*!
  * \~english     Permissions for shared memory
@@ -708,13 +622,9 @@ fireBeforeCommit()
 //! @details 再起動をまたいで残ったセグメントを見分けるために使う。
 uint64_t getBootIdHash();
 
-//! @brief 利用者が書式を宣言したか
-template <typename T>
-constexpr bool
-schema_is_declared()
-{
-  return shm_schema<T>::declared;
-}
+// NOTE: schema_is_declared<T>() があったが、SHM_ASSERT_FORMAT_DECLARED は
+//       shm_schema<T>::declared を直接見ており、この関数を通らない。
+//       呼び出し元がゼロだったので削除した。
 
 }  // namespace shm
 
@@ -1058,18 +968,21 @@ public:
   uint64_t getGeneration() const;
   //! @brief 共有メモリに記録されている topic contract
   TopicContract getContract() const;
-  //! @brief トピック全体で現在有効な世代（世代 1 のセグメントのものが正本）
   //! @brief 現在有効な世代とノンスを詰めたタグ（root セグメントのものが正本）
   uint64_t getGenerationTag() const;
-  //! @brief 現在有効な世代番号
-  uint64_t getLatestGeneration() const;
   //! @brief このセグメント自身のノンス
   uint64_t getSegmentNonce() const;
-  void     setGenerationTag(uint64_t tag);
   //! @brief 現在有効な世代を CAS で進める。成功したら真
+  //! @details **世代タグを書き換える唯一の手段である。** 素の store で上書きする
+  //!          setGenerationTag() を以前は公開していたが、それでは世代とノンスを
+  //!          不可分に公開するという R03-F03 の不変条件を外から破れてしまう。
+  //!          呼び出し元はゼロだったので削除した。
   bool     tryAdvanceGenerationTag(uint64_t expected_tag, uint64_t desired_tag);
-  //! @deprecated getTimestamp_us(int) が「無効」を表す値を返したかの判定。
-  //!             v2 では sequence が 0 のスロットに対してこの値が返る。
+  //! @brief getTimestamp_us(int) が「有効なデータが無い」を表す値を返したかの判定
+  //! @details その番兵は WRITING_FLAG（最上位ビット）で、名前は v1 の
+  //!          「書き込み途中」マーカーに由来する。現在は発行番号 0 のスロット、
+  //!          または範囲外のスロット番号に対して返る。素のビット演算を
+  //!          呼び出し側に書かせないための唯一の手段なので残してある。
   static bool    isBeingWritten(uint64_t timestamp);
   int            getNewestBufferNum();
   int            getOldestBufferNum();
@@ -1082,7 +995,10 @@ public:
   bool           waitFor(uint64_t timeout_usec);
   void           signal();
   bool           isLayoutChanged() const;
-  void           markAsInitialized();
+  // NOTE: markAsInitialized() は公開していない。state を INITIALIZED にするのは
+  //       initializeContents() の末尾にある release store ただ 1 箇所である。
+  //       外から呼べると「一者だけが初期化を完了させる」という R02-F02 の
+  //       不変条件を破れてしまう。呼び出し元はゼロだったので削除した。
   //! @brief 読み終えた発行番号を記録する（isUpdated() / waitFor() の基準）
   void           markAsRead(uint64_t sequence);
 
