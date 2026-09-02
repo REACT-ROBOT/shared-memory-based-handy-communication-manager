@@ -136,13 +136,9 @@ public:
   void                  setDataExpiryTime_us(uint64_t time_us);
 
   // 競合カウンタ（詳細は Subscriber<T> 本体のコメントを参照）
-  uint64_t getContentionRetryCount() const { return contention_retry_count_; }
-  uint64_t getContentionFailureCount() const { return contention_failure_count_; }
-  void     resetContentionCounts()
-  {
-    contention_retry_count_   = 0;
-    contention_failure_count_ = 0;
-  }
+  uint64_t getContentionRetryCount() const { return core_.getContentionRetryCount(); }
+  uint64_t getContentionFailureCount() const { return core_.getContentionFailureCount(); }
+  void     resetContentionCounts() { core_.resetContentionCounters(); }
 
 private:
   //! このトピックに何を入れるかの取り決め（R02-F01）
@@ -157,21 +153,28 @@ private:
     return c;
   }
 
-  //! 指定スロットを、payload と素性が同じサンプルであることを保証して読む
+  //! 指定スロットを、payload と素性が同じサンプルであることを保証して読む。
+  //! **この特殊化で型に依存するのはここだけ**で、残りは SubscriberCore にある。
   bool readSlotInto(RingBuffer *ring_buffer, int slot, SampleInfo *info);
 
-  std::string               shm_name;
-  std::unique_ptr<ShmTopic> topic;
-  int                       current_reading_buffer;
-  uint64_t                  data_expiry_time_us;
+  //! SubscriberCore へ渡す呼び戻し。型消去のためにメンバ関数を関数ポインタへ包む。
+  SubscriberCore::SlotReader slotReader()
+  {
+    return SubscriberCore::SlotReader{
+      [](void *ctx, RingBuffer *ring_buffer, int slot, SampleInfo *info) -> bool {
+        return static_cast<Subscriber<std::vector<T>> *>(ctx)->readSlotInto(ring_buffer, slot, info);
+      },
+      this
+    };
+  }
 
-  size_t         vector_size;
+  std::string shm_name;
+  //! 世代管理・再試行・時刻検索・期限・競合カウンタは全てここが持つ。
+  SubscriberCore core_;
   // 返り値はダブルバッファで持つ。理由はスカラ版と同じ（失敗した subscribe() が
   // 直前に返した値を壊さないようにするため）。
   std::vector<T> return_buffers_[2];
   int            return_index_;
-  uint64_t       contention_retry_count_   = 0;
-  uint64_t       contention_failure_count_ = 0;
 };
 
 // ****************************************************************************
@@ -349,10 +352,8 @@ Publisher<std::vector<T>>::_publish(const std::vector<T> data)
 template <typename T>
 Subscriber<std::vector<T>>::Subscriber(std::string name)
   : shm_name(name)
-  , topic(nullptr)
-  , current_reading_buffer(0)
-  , data_expiry_time_us(2000000)
-  , vector_size(0)
+  // トピックの生成、名前の検証、期限の既定値（2 秒）は SubscriberCore が持つ。
+  , core_(name, "shm::Subscriber")
   , return_buffers_{}
   , return_index_(0)
 {
@@ -369,11 +370,6 @@ Subscriber<std::vector<T>>::Subscriber(std::string name)
                              ", which exceeds the maximum the shared memory layout can guarantee (" +
                              std::to_string(RingBuffer::MAX_PAYLOAD_ALIGNMENT) + ")");
   }
-  if (name.empty())
-  {
-    throw std::runtime_error("shm::Subscriber: Please set name!");
-  }
-  topic = std::make_unique<ShmTopic>(shm_name, static_cast<PERM>(0), false);
 }
 
 //! @brief トピックを読み込む
@@ -422,13 +418,11 @@ Subscriber<std::vector<T>>::readSlotInto(RingBuffer *ring_buffer, int slot, Samp
     return false;
   }
 
-  vector_size = hint / sizeof(T);
   if (info != nullptr)
   {
     *info = sample;
   }
-  current_reading_buffer = slot;
-  return_index_          = 1 - return_index_;
+  return_index_ = 1 - return_index_;
   return true;
 }
 
@@ -443,7 +437,6 @@ template <typename T>
 const std::vector<T> &
 Subscriber<std::vector<T>>::subscribe(bool *is_success, SampleInfo *info)
 {
-  // legacy の subscribe(bool*) は null を渡せない契約なので、ここで明示する。
   if (is_success == nullptr)
   {
     throw std::invalid_argument("shm::Subscriber::subscribe(): 'is_success' must not be null");
@@ -454,45 +447,9 @@ Subscriber<std::vector<T>>::subscribe(bool *is_success, SampleInfo *info)
     *info = SampleInfo{};
   }
 
-  RingBuffer::TopicContract contract = contractOf();
-  // 現在有効な世代へ追随する。世代が進んでいれば新しいセグメントへ張り直す。
-  // 型が食い違っていればここで失敗し、payload には一切触れない。
-  if (!topic->follow(&contract))
-  {
-    return return_buffers_[return_index_];
-  }
-  RingBuffer *ring_buffer = topic->ring();
-  ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
-
-  // 読み出しは readSlotInto() に一本化する。以前はここに seqlock を直書きしており、
-  // info を取るために subscribe() の**後で** getSampleInfo() を呼び直していたため、
-  // 「payload は N、info は N+1」という組合せが返り得た（R02-F03 と同じ窓）。
-  // スカラ版と同じ経路を通ることで、この窓も retry/failure の計上漏れも無くなる
-  //（R03-F02）。
-  constexpr int MAX_READ_RETRY = 5;
-  bool          no_data        = false;
-  for (int attempt = 0; attempt < MAX_READ_RETRY; ++attempt)
-  {
-    const int newest_buffer = ring_buffer->getNewestBufferNum();
-    if (newest_buffer < 0)
-    {
-      no_data = true;
-      break;
-    }
-    if (readSlotInto(ring_buffer, newest_buffer, info))
-    {
-      *is_success = true;
-      return return_buffers_[return_index_];
-    }
-    ++contention_retry_count_;
-  }
-
-  // 一貫したスナップショットを取得できなかった。
-  // 返るのは直前に成功した値なので、is_success を必ず確認すること。
-  if (!no_data)
-  {
-    ++contention_failure_count_;
-  }
+  // 世代への追随・再試行・競合カウンタは SubscriberCore が持つ。
+  // 失敗したときは直前に返した値をそのまま返すので、is_success を必ず確認すること。
+  *is_success = core_.readNewest(contractOf(), slotReader(), info);
   return return_buffers_[return_index_];
 }
 
@@ -500,97 +457,15 @@ template <typename T>
 const std::vector<T> &
 Subscriber<std::vector<T>>::subscribeAlignedTo(const SampleInfo &reference, SearchStatus *status, uint64_t max_skew_us, SampleInfo *info)
 {
-  // 基準が有効でなければ、時刻 0 に対する検索になってしまう。
-  // subscribe() が失敗したときの SampleInfo は全ゼロなので、
-  // それをそのまま渡す誤りが起きやすい（R04-F14）。
-  if (reference.sequence == 0)
-  {
-    if (status != nullptr)
-    {
-      *status = SearchStatus::InvalidReference;
-    }
-    if (info != nullptr)
-    {
-      *info = SampleInfo{};
-    }
-    return return_buffers_[return_index_];
-  }
-
-  SampleInfo   found{};
-  SearchStatus local_status = SearchStatus::Empty;
-  const std::vector<T> &value =
-      subscribeAt(TimeQuery{ reference.capture_monotonic_us, SearchPolicy::Nearest }, &local_status, &found);
-
-  if (local_status == SearchStatus::Success && max_skew_us != 0)
-  {
-    const uint64_t target = reference.capture_monotonic_us;
-    const uint64_t t      = found.capture_monotonic_us;
-    const uint64_t skew   = (t > target) ? (t - target) : (target - t);
-    if (skew > max_skew_us)
-    {
-      local_status = (t < target) ? SearchStatus::TooOld : SearchStatus::TooNew;
-    }
-  }
-
-  if (status != nullptr)
-  {
-    *status = local_status;
-  }
-  if (info != nullptr)
-  {
-    *info = (local_status == SearchStatus::Success) ? found : SampleInfo{};
-  }
-  return value;
+  core_.readAlignedTo(contractOf(), reference, slotReader(), max_skew_us, status, info);
+  return return_buffers_[return_index_];
 }
 
 template <typename T>
 const std::vector<T> &
 Subscriber<std::vector<T>>::subscribeAt(const TimeQuery &query, SearchStatus *status, SampleInfo *info)
 {
-  RingBuffer::TopicContract contract = contractOf();
-  auto set_status = [status](SearchStatus value) {
-    if (status != nullptr)
-    {
-      *status = value;
-    }
-  };
-
-  if (!topic->follow(&contract))
-  {
-    set_status(SearchStatus::NotConnected);
-    return return_buffers_[return_index_];
-  }
-  RingBuffer *ring_buffer = topic->ring();
-
-  constexpr int MAX_READ_RETRY = 5;
-  SearchStatus  search_status  = SearchStatus::Empty;
-  for (int attempt = 0; attempt < MAX_READ_RETRY; ++attempt)
-  {
-    const int found = ring_buffer->findBufferNum(query, &search_status);
-    if (found < 0)
-    {
-      if (search_status == SearchStatus::Contended)
-      {
-        // 全スロットがたまたま書き込み中だっただけ。少し待てば読める。
-        ++contention_retry_count_;
-        continue;
-      }
-      set_status(search_status);
-      return return_buffers_[return_index_];
-    }
-
-    // payload と素性を一体で読む（R02-F03）。
-    // 長さの境界検証も同じスナップショット内で行う（R02-F01）。
-    if (readSlotInto(ring_buffer, found, info))
-    {
-      set_status(SearchStatus::Success);
-      return return_buffers_[return_index_];
-    }
-    ++contention_retry_count_;
-  }
-
-  ++contention_failure_count_;
-  set_status(SearchStatus::Contended);
+  core_.readAt(contractOf(), query, slotReader(), status, info);
   return return_buffers_[return_index_];
 }
 
@@ -598,37 +473,21 @@ template <typename T>
 RetentionWindow
 Subscriber<std::vector<T>>::getRetentionWindow()
 {
-  RingBuffer::TopicContract contract = contractOf();
-  if (!topic->follow(&contract))
-  {
-    return RetentionWindow{};
-  }
-  return topic->ring()->getRetentionWindow();
+  return core_.getRetentionWindow(contractOf());
 }
 
 template <typename T>
 bool
 Subscriber<std::vector<T>>::waitFor(uint64_t timeout_usec)
 {
-  RingBuffer::TopicContract contract = contractOf();
-  if (!topic->follow(&contract))
-  {
-    return false;
-  }
-  RingBuffer *ring_buffer = topic->ring();
-  ring_buffer->setDataExpiryTime_us(data_expiry_time_us);
-  return ring_buffer->waitFor(timeout_usec);
+  return core_.waitFor(contractOf(), timeout_usec);
 }
 
 template <typename T>
 void
 Subscriber<std::vector<T>>::setDataExpiryTime_us(uint64_t time_us)
 {
-  data_expiry_time_us = time_us;
-  if (topic->ring() != nullptr)
-  {
-    topic->ring()->setDataExpiryTime_us(data_expiry_time_us);
-  }
+  core_.setDataExpiryTime_us(time_us);
 }
 
 
@@ -638,8 +497,7 @@ template <typename T>
 bool
 Subscriber<std::vector<T>>::existsPublisherMemory()
 {
-  RingBuffer::TopicContract contract = contractOf();
-  return topic->follow(&contract);
+  return core_.existsPublisherMemory(contractOf());
 }
 
 }  // namespace shm

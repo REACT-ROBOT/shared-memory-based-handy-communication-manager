@@ -1293,6 +1293,107 @@ private:
   std::string                        last_error_;
 };
 
+// ****************************************************************************
+//! @class SubscriberCore
+//! @brief 全ての Subscriber 特殊化が共有する、型に依存しない読み出し処理
+//!
+//! @details
+//! `Subscriber<T>` には 5 つの特殊化がある（scalar / vector / cv::Mat /
+//! Lidar2dScanData / PointCloud2DScanData。後ろ 3 つは別リポジトリ）。
+//! かつては `subscribeAt()` / `subscribeAlignedTo()` / `waitFor()` /
+//! `getRetentionWindow()` / `setDataExpiryTime_us()` と subscribe のリトライ
+//! ループが **5 箇所にバイト等価でコピー** されており、R01〜R05 の 45 コミットは
+//! それを毎回手で 5 回適用する運用だった。
+//!
+//! 実際に漏れた。R04-F12（capture 時刻を publish の入口で一度だけ採る）は
+//! 本体 2 つにしか入らず、世代切替が最も頻繁に起きる外部 3 つに届いていなかった。
+//!
+//! 型に依存するのは **スロットから自分の型へ読み出す処理だけ** なので、
+//! そこを SlotReader として呼び戻す形にすれば残りは全部ここに置ける。
+//!
+//! @note このクラスは ShmTopic を所有する。`Subscriber<T>` 側は
+//!       返り値バッファと `readSlotInto()` だけを持てばよい。
+// ****************************************************************************
+class SubscriberCore
+{
+public:
+  //! スロットを「自分の型」で読み出す処理。型依存はここに閉じている。
+  //!
+  //! std::function を使わないのは、ヒープ確保も <functional> への依存も
+  //! 増やさないためである。読み出し経路はセンサのレートで回る。
+  struct SlotReader
+  {
+    //! @return 読めたら真。コピー中・型と長さが食い違うなら偽（呼び出し側が再試行する）
+    using Fn = bool (*)(void *context, RingBuffer *ring_buffer, int slot, SampleInfo *info);
+
+    Fn    fn      = nullptr;
+    void *context = nullptr;
+
+    bool operator()(RingBuffer *ring_buffer, int slot, SampleInfo *info) const
+    {
+      return fn(context, ring_buffer, slot, info);
+    }
+  };
+
+  //! @param [in] name トピック名
+  //! @param [in] who  エラーメッセージに載せる呼び出し元（"shm::Subscriber" など）
+  SubscriberCore(const std::string &name, const char *who);
+
+  // コピー禁止・ムーブ可（Subscriber<T> の既定のムーブに合わせる）
+  SubscriberCore(const SubscriberCore &)            = delete;
+  SubscriberCore &operator=(const SubscriberCore &) = delete;
+  SubscriberCore(SubscriberCore &&)                 = default;
+  SubscriberCore &operator=(SubscriberCore &&)      = default;
+
+  //! @brief 最新のサンプルを読む（`subscribe()` の中身）
+  //! @return 読めたら真。偽のとき呼び出し側は直前の返り値をそのまま返すこと
+  bool readNewest(const RingBuffer::TopicContract &contract, const SlotReader &reader, SampleInfo *info);
+
+  //! @brief 指定した時刻のサンプルを読む（`subscribeAt()` の中身）
+  bool readAt(const RingBuffer::TopicContract &contract, const TimeQuery &query, const SlotReader &reader,
+              SearchStatus *status, SampleInfo *info);
+
+  //! @brief 別トピックのサンプルに時刻を合わせて読む（`subscribeAlignedTo()` の中身）
+  bool readAlignedTo(const RingBuffer::TopicContract &contract, const SampleInfo &reference, const SlotReader &reader,
+                     uint64_t max_skew_us, SearchStatus *status, SampleInfo *info);
+
+  //! @brief 更新を待つ
+  bool waitFor(const RingBuffer::TopicContract &contract, uint64_t timeout_usec);
+
+  //! @brief 現在保持している範囲
+  RetentionWindow getRetentionWindow(const RingBuffer::TopicContract &contract);
+
+  //! @brief publisher がトピックを公開しているか
+  bool existsPublisherMemory(const RingBuffer::TopicContract &contract);
+
+  //! @brief データの期限[usec]。0 で無効
+  void     setDataExpiryTime_us(uint64_t time_us);
+  uint64_t getDataExpiryTime_us() const { return data_expiry_time_us_; }
+
+  //! @brief 競合で読み直した回数（レート設計の健全性を測る）
+  uint64_t getContentionRetryCount() const { return contention_retry_count_; }
+  //! @brief 再試行しても読めなかった回数
+  uint64_t getContentionFailureCount() const { return contention_failure_count_; }
+  void     resetContentionCounters()
+  {
+    contention_retry_count_   = 0;
+    contention_failure_count_ = 0;
+  }
+
+  //! @brief 世代の面倒を見ている ShmTopic
+  ShmTopic       *topic() { return topic_.get(); }
+  const ShmTopic *topic() const { return topic_.get(); }
+
+private:
+  //! 一貫したスナップショットを取れるまでの試行回数
+  static constexpr int MAX_READ_RETRY = 5;
+
+  std::unique_ptr<ShmTopic> topic_;
+  uint64_t                  data_expiry_time_us_      = 2000000;  //!< 既定 2 秒
+  uint64_t                  contention_retry_count_   = 0;
+  uint64_t                  contention_failure_count_ = 0;
+};
+
 }  // namespace shm
 
 }  // namespace irlab

@@ -800,6 +800,217 @@ ShmTopic::ensureCapacity(size_t required_capacity, int buf_num, size_t payload_a
   return false;
 }
 
+// ============================================================================
+// SubscriberCore
+//
+// Subscriber<T> の 5 つの特殊化にバイト等価でコピーされていた、型に依存しない
+// 読み出し処理をここへ集めた。型に依存するのはスロットから自分の型へ読み出す
+// 処理だけなので、そこを SlotReader として呼び戻す。
+//
+// **ここを直したら 5 つ全部に効く。** 逆に、ここに無いものを特定の特殊化にだけ
+// 足すと、また同じずれが始まる。共通の契約は
+// shm_pub_sub/test/shm_pub_sub_conformance.hpp が 5 つ全部に対して検査する。
+// ============================================================================
+
+SubscriberCore::SubscriberCore(const std::string &name, const char *who)
+{
+  if (name.empty())
+  {
+    throw std::runtime_error(std::string(who) + ": Please set name!");
+  }
+  try
+  {
+    topic_ = std::unique_ptr<ShmTopic>(new ShmTopic(name, static_cast<PERM>(0), false));
+  }
+  catch (const std::runtime_error &e)
+  {
+    throw std::runtime_error(std::string(who) + ": " + e.what());
+  }
+}
+
+void
+SubscriberCore::setDataExpiryTime_us(uint64_t time_us)
+{
+  data_expiry_time_us_ = time_us;
+  // まだ接続していなければ、次に follow() したときに反映される
+  if (topic_ != nullptr && topic_->ring() != nullptr)
+  {
+    topic_->ring()->setDataExpiryTime_us(data_expiry_time_us_);
+  }
+}
+
+bool
+SubscriberCore::readNewest(const RingBuffer::TopicContract &contract, const SlotReader &reader, SampleInfo *info)
+{
+  // 現在有効な世代へ追随する。世代が進んでいれば新しいセグメントへ張り直す。
+  // 型が食い違っていればここで失敗し、payload には一切触れない（R02-F01）。
+  RingBuffer::TopicContract expected = contract;
+  if (topic_ == nullptr || !topic_->follow(&expected))
+  {
+    return false;
+  }
+  RingBuffer *ring_buffer = topic_->ring();
+  ring_buffer->setDataExpiryTime_us(data_expiry_time_us_);
+
+  bool no_data = false;
+  for (int attempt = 0; attempt < MAX_READ_RETRY; ++attempt)
+  {
+    const int newest = ring_buffer->getNewestBufferNum();
+    if (newest < 0)
+    {
+      no_data = true;
+      break;
+    }
+    if (reader(ring_buffer, newest, info))
+    {
+      return true;
+    }
+    // コピー中に上書きされた。選び直して読み直す。
+    ++contention_retry_count_;
+  }
+
+  // 一貫したスナップショットを取れなかった。データが無いのとは区別して数える。
+  if (!no_data)
+  {
+    ++contention_failure_count_;
+  }
+  return false;
+}
+
+bool
+SubscriberCore::readAt(const RingBuffer::TopicContract &contract, const TimeQuery &query, const SlotReader &reader,
+                       SearchStatus *status, SampleInfo *info)
+{
+  auto set_status = [status](SearchStatus value) {
+    if (status != nullptr)
+    {
+      *status = value;
+    }
+  };
+
+  RingBuffer::TopicContract expected = contract;
+  if (topic_ == nullptr || !topic_->follow(&expected))
+  {
+    set_status(SearchStatus::NotConnected);
+    return false;
+  }
+  RingBuffer *ring_buffer = topic_->ring();
+
+  SearchStatus search_status = SearchStatus::Empty;
+  for (int attempt = 0; attempt < MAX_READ_RETRY; ++attempt)
+  {
+    const int found = ring_buffer->findBufferNum(query, &search_status);
+    if (found < 0)
+    {
+      if (search_status == SearchStatus::Contended)
+      {
+        // 全スロットがたまたま書き込み中だっただけ。少し待てば読める。
+        ++contention_retry_count_;
+        continue;
+      }
+      set_status(search_status);
+      return false;
+    }
+
+    // payload と素性を一体で読む（R02-F03）
+    if (reader(ring_buffer, found, info))
+    {
+      set_status(SearchStatus::Success);
+      return true;
+    }
+    // コピー中に上書きされた → 検索からやり直す
+    ++contention_retry_count_;
+  }
+
+  // 一貫したスナップショットを取れなかった。データが無いのとは違うので、
+  // 呼び出し側が再試行を判断できるよう Contended を返す。
+  ++contention_failure_count_;
+  set_status(SearchStatus::Contended);
+  return false;
+}
+
+bool
+SubscriberCore::readAlignedTo(const RingBuffer::TopicContract &contract, const SampleInfo &reference,
+                              const SlotReader &reader, uint64_t max_skew_us, SearchStatus *status, SampleInfo *info)
+{
+  auto set_status = [status](SearchStatus value) {
+    if (status != nullptr)
+    {
+      *status = value;
+    }
+  };
+
+  // 基準が有効でなければ、時刻 0 に対する検索になってしまう。
+  // subscribe() が失敗したときの SampleInfo は全ゼロなので、
+  // それをそのまま渡す誤りが起きやすい（R04-F14）。
+  if (reference.sequence == 0)
+  {
+    set_status(SearchStatus::InvalidReference);
+    if (info != nullptr)
+    {
+      *info = SampleInfo{};
+    }
+    return false;
+  }
+
+  SampleInfo   found{};
+  SearchStatus local_status = SearchStatus::Empty;
+  const bool   ok           = readAt(contract, TimeQuery{ reference.capture_monotonic_us, SearchPolicy::Nearest },
+                                     reader, &local_status, &found);
+
+  if (ok && max_skew_us != 0)
+  {
+    const uint64_t target = reference.capture_monotonic_us;
+    const uint64_t t      = found.capture_monotonic_us;
+    const uint64_t skew   = (t > target) ? (t - target) : (target - t);
+    if (skew > max_skew_us)
+    {
+      // 融合してはいけないほどずれた値を、黙って成功として返さない。
+      local_status = (t < target) ? SearchStatus::TooOld : SearchStatus::TooNew;
+    }
+  }
+
+  set_status(local_status);
+  if (info != nullptr)
+  {
+    *info = (local_status == SearchStatus::Success) ? found : SampleInfo{};
+  }
+  return local_status == SearchStatus::Success;
+}
+
+bool
+SubscriberCore::waitFor(const RingBuffer::TopicContract &contract, uint64_t timeout_usec)
+{
+  RingBuffer::TopicContract expected = contract;
+  if (topic_ == nullptr || !topic_->follow(&expected))
+  {
+    return false;
+  }
+  RingBuffer *ring_buffer = topic_->ring();
+  ring_buffer->setDataExpiryTime_us(data_expiry_time_us_);
+  return ring_buffer->waitFor(timeout_usec);
+}
+
+RetentionWindow
+SubscriberCore::getRetentionWindow(const RingBuffer::TopicContract &contract)
+{
+  RingBuffer::TopicContract expected = contract;
+  if (topic_ == nullptr || !topic_->follow(&expected))
+  {
+    return RetentionWindow{};
+  }
+  return topic_->ring()->getRetentionWindow();
+}
+
+bool
+SubscriberCore::existsPublisherMemory(const RingBuffer::TopicContract &contract)
+{
+  // 共有メモリが存在し、有効な世代が公開されているかを確認する。
+  // 型の取り決めも照合するので、成功したときは購読できる状態になっている。
+  RingBuffer::TopicContract expected = contract;
+  return topic_ != nullptr && topic_->follow(&expected);
+}
+
 }  // namespace shm
 
 }  // namespace irlab
