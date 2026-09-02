@@ -298,6 +298,22 @@ ShmTopic::openRoot(bool create, size_t initial_capacity, int buf_num, size_t pay
       last_error_ = std::string("cannot attach the root segment: ") + e.what();
       return false;
     }
+
+    // root は初期化済みなのに世代タグがまだ公開されていない状態を、
+    // 誰でも直せるようにする（R05）。
+    //
+    // 作成者は「初期化 → タグを CAS で公開」の 2 手で進むが、その間に他プロセスが
+    // 接続すると、publish 後の isGeneration() が root のタグ（まだ 0）と
+    // 食い違って false になり、4 回再試行して例外で失敗する。
+    // タグを公開できるのが作成者だけだと、作成者がこの 2 手の間で死んだとき
+    // **誰も直せず、そのトピックは恒久的に沈黙する**。
+    //
+    // CAS なので、他が先に公開していれば失敗するだけで無害である。
+    if (root_ring_->getGenerationTag() == 0)
+    {
+      root_ring_->tryAdvanceGenerationTag(0, packGeneration(1, 0));
+    }
+
     root_ = std::move(existing);
     return true;
   };
@@ -587,6 +603,13 @@ ShmTopic::createNextGeneration(uint64_t from_tag, size_t capacity, int buf_num, 
 
   if (!attachGeneration(next_tag, &contract))
   {
+    // 失敗経路でも、マッピングを手放す前に必ず解放する（R05）。
+    // ~RingBuffer() は意図的に何もしないので、ここを飛ばすと robust list が
+    // 解放済み領域を指したまま残る。
+    if (old_ring != nullptr)
+    {
+      old_ring->releaseOwnedSlots();
+    }
     return false;
   }
 

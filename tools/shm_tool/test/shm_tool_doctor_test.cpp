@@ -54,7 +54,7 @@ protected:
   void TearDown() override { cleanup(); }
   void cleanup()
   {
-    for (const char *t : { "doctor_ok", "doctor_abi" })
+    for (const char *t : { "doctor_ok", "doctor_abi", "doctor_bad" })
     {
       try
       {
@@ -135,4 +135,63 @@ TEST_F(SHMToolDoctorTest, RemovingAMissingTopicFails)
   const ToolResult r = runTool("remove doctor_no_such_topic");
   ASSERT_NE(r.exit_code, -1);
   EXPECT_EQ(r.exit_code, 1) << r.output;
+}
+
+// -----------------------------------------------------------------------------
+// R05: 壊れたヘッダで doctor 自身が落ちてはならない
+//
+// doctor はまさに「壊れたセグメントを調べる」ために使うものなので、
+// 一番使いたい場面で落ちるのは目的そのものの取りこぼしである。
+//
+// 以前は自前の緩い検査しかしておらず、
+//   - buf_num * slot_size が uint64 で折り返ってマッピング外を読む（SEGV）
+//   - slot_offset が 64 バイト境界に載らず非アラインな atomic を読む
+//     （x86 では動くが aarch64 では SIGBUS）
+//   - ライブラリが接続を拒否する状態を「OK」と報告する
+// という 3 つの問題があった。RingBuffer::inspectLayout() を通すことで
+// 3 件とも塞いだ。
+// -----------------------------------------------------------------------------
+TEST_F(SHMToolDoctorTest, CorruptedHeadersAreReportedInsteadOfCrashingTheTool)
+{
+  struct Poison
+  {
+    const char *what;
+    void (*apply)(ShmHeader *);
+  };
+  const Poison poisons[] = {
+    { "buf_num の乗算が折り返る", [](ShmHeader *h) { h->buf_num = (UINT64_MAX / sizeof(SlotRecord)) + 2; } },
+    { "slot_offset の加算が折り返る", [](ShmHeader *h) { h->slot_offset = UINT64_MAX - sizeof(SlotRecord) + 1; } },
+    { "slot_offset が非アライン", [](ShmHeader *h) { h->slot_offset = sizeof(ShmHeader) + 1; } },
+    { "buf_num が上限超過", [](ShmHeader *h) { h->buf_num = 100000; } },
+    { "element_capacity が過大", [](ShmHeader *h) { h->element_capacity = UINT64_MAX; } },
+    { "total_size が過大", [](ShmHeader *h) { h->total_size = UINT64_MAX; } },
+  };
+
+  for (const Poison &poison : poisons)
+  {
+    try
+    {
+      disconnectTopic("doctor_bad");
+    }
+    catch (const std::exception &)
+    {
+    }
+    {
+      Publisher<int> pub("doctor_bad", 3);
+      pub.publish(1);
+    }
+    {
+      SharedMemoryPosix shm("doctor_bad", O_RDWR, static_cast<PERM>(0));
+      ASSERT_TRUE(shm.connect()) << poison.what;
+      poison.apply(reinterpret_cast<ShmHeader *>(shm.getPtr()));
+    }
+
+    const ToolResult r = runTool("doctor doctor_bad");
+    ASSERT_NE(r.exit_code, -1) << poison.what;
+    // 落ちていない（SEGV なら 139、abort なら 134）ことがまず重要
+    EXPECT_LT(r.exit_code, 128) << poison.what << " で doctor が異常終了した\n" << r.output;
+    // そのうえで、使えない状態だと報告していること
+    EXPECT_EQ(r.exit_code, 1) << poison.what << " を OK と報告した\n" << r.output;
+    EXPECT_NE(r.output.find("★"), std::string::npos) << poison.what << "\n" << r.output;
+  }
 }

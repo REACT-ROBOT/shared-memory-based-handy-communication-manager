@@ -489,13 +489,73 @@ struct shm_schema
   static constexpr uint32_t version = 0;
 };
 
-//! @brief レイアウト記述の 1 要素（メンバの位置・大きさ・境界）
+//! @brief レイアウト記述の 1 要素
 struct LayoutField
 {
   uint64_t offset;
   uint64_t size;
   uint64_t align;
+  //! メンバ名のハッシュ。**位置と大きさだけでは同サイズの並べ替えを検出できない**。
+  //! `Pose{x,y,theta}` を `Pose{theta,x,y}` に並べ替えると、どのメンバも
+  //! 同じサイズ・同じ境界なのでオフセットの並びまで一致してしまう（R05）。
+  uint64_t name_hash;
+  //! 型の指紋。同じサイズ・同じ境界でも型が違えば別物である
+  //! （`float` を `int32_t` に変えた等）。型名ではなく **型の性質**から作るので、
+  //! ツールチェインが違っても同じ値になる。
+  uint64_t type_fingerprint;
 };
+
+//! @brief 文字列を FNV-1a で畳み込む（メンバ名の識別に使う）
+constexpr uint64_t
+fold_layout_name(const char *text)
+{
+  uint64_t hash = 1469598103934665603ULL;
+  for (const char *p = text; *p != '\0'; ++p)
+  {
+    hash ^= static_cast<uint64_t>(static_cast<unsigned char>(*p));
+    hash *= 1099511628211ULL;
+  }
+  return hash;
+}
+
+/*!
+ * \~japanese-en 型の性質から指紋を作る．
+ *
+ * \~japanese-en `type_schema_id<T>()` は `__PRETTY_FUNCTION__` の hash なので
+ *               ツールチェインが違うと別の値になる。ここでは
+ *               「整数か浮動小数点か」「符号の有無」「大きさ」「境界」といった
+ *               **移植性のある性質**だけを畳み込むので、コンパイラが違っても
+ *               同じ値になる。同じサイズ・同じ境界でも型が違えば区別できる。
+ */
+template <typename M>
+constexpr uint64_t
+type_fingerprint()
+{
+  using Element  = typename std::remove_all_extents<M>::type;
+  uint64_t print = 0;
+  print |= std::is_integral<Element>::value ? (1ULL << 0) : 0;
+  print |= std::is_floating_point<Element>::value ? (1ULL << 1) : 0;
+  print |= std::is_signed<Element>::value ? (1ULL << 2) : 0;
+  print |= std::is_unsigned<Element>::value ? (1ULL << 3) : 0;
+  print |= std::is_enum<Element>::value ? (1ULL << 4) : 0;
+  print |= std::is_pointer<Element>::value ? (1ULL << 5) : 0;
+  print |= std::is_class<Element>::value ? (1ULL << 6) : 0;
+  print |= std::is_union<Element>::value ? (1ULL << 7) : 0;
+  print |= std::is_array<M>::value ? (1ULL << 8) : 0;
+  print ^= static_cast<uint64_t>(sizeof(Element)) << 16;
+  print ^= static_cast<uint64_t>(alignof(Element)) << 32;
+  print ^= static_cast<uint64_t>(std::rank<M>::value) << 44;
+  print ^= static_cast<uint64_t>(std::extent<M>::value) << 48;
+  // 入れ子の構造体は、その型自身の宣言も畳み込む。
+  // これをしないと `Inner{float x,y}` を `Inner{float y,x}` に並べ替えたとき、
+  // 外側から見える大きさ・境界・名前が変わらないので検出できない（R05）。
+  //
+  // NOTE: 入れ子の型は**外側より前に宣言すること**。ここで shm_schema<Element> を
+  //       実体化するので、後から特殊化を宣言すると ill-formed になる。
+  //       型の定義の隣に宣言を置いていれば自然に満たされる。
+  print ^= shm_schema<Element>::version;
+  return print;
+}
 
 /*!
  * \~japanese-en 並べたメンバが型を隙間なく覆っているかを検査する．
@@ -532,8 +592,20 @@ layout_covers_type(uint64_t type_size, uint64_t type_align, const LayoutField (&
     {
       return false;  // 宣言順がオフセット順と違う、または重なっている
     }
-    const uint64_t member_align = (fields[i].align != 0) ? fields[i].align : 1;
-    if (fields[i].offset - previous_end >= member_align)
+    // 許される隙間は「そのオフセットに載るために必要だった調整」までである。
+    //
+    // `alignof(decltype(T::m))` を使ってはならない。`decltype` は素の型を返すので
+    // **メンバ宣言に付けた `alignas` を拾わない**（`struct{char a; alignas(16) int b;}`
+    // の b は境界 16 に置かれるのに 4 と報告される）。無名共用体も同様で、
+    // 代表として並べたメンバの境界は共用体全体の境界と一致しない。
+    // どちらも正しい宣言が弾かれていた（R05）。
+    //
+    // 実際のオフセットを割り切る最大の 2 冪を見れば、宣言に何が書いてあっても
+    // 「そこに置くために必要だった調整」が分かる。型全体の境界で頭打ちにする。
+    const uint64_t natural_align = fields[i].offset & (~fields[i].offset + 1);
+    const uint64_t tail_align    = (type_align != 0) ? type_align : 1;
+    const uint64_t allowed_gap   = (natural_align < tail_align) ? natural_align : tail_align;
+    if (fields[i].offset - previous_end >= allowed_gap)
     {
       return false;  // 境界調整で説明できない隙間 = 書かれていないメンバがある
     }
@@ -583,6 +655,8 @@ layout_hash(uint64_t type_size, uint64_t type_align, uint32_t revision, const La
     hash = fold_layout_word(hash, fields[i].offset);
     hash = fold_layout_word(hash, fields[i].size);
     hash = fold_layout_word(hash, fields[i].align);
+    hash = fold_layout_word(hash, fields[i].name_hash);
+    hash = fold_layout_word(hash, fields[i].type_fingerprint);
   }
   const uint32_t folded = static_cast<uint32_t>(hash ^ (hash >> 32));
   // 0 は「未宣言」を表すので避ける
@@ -659,7 +733,11 @@ schema_is_declared()
 
 //! 1 メンバぶんの記述
 #define SHM_LAYOUT_FIELD(T, m)                                                                                         \
-  ::irlab::shm::LayoutField{ offsetof(T, m), sizeof(T::m), alignof(decltype(T::m)) }
+  ::irlab::shm::LayoutField                                                                                            \
+  {                                                                                                                    \
+    offsetof(T, m), sizeof(T::m), alignof(decltype(T::m)), ::irlab::shm::fold_layout_name(#m),                          \
+        ::irlab::shm::type_fingerprint<decltype(T::m)>()                                                                \
+  }
 
 // メンバ列を LayoutField の並びへ展開する（最大 32 個）
 #define SHM_LF_1(T, a) SHM_LAYOUT_FIELD(T, a)

@@ -190,9 +190,30 @@ inspectSegment(const std::string &entry)
     r.notes.push_back("書式が未宣言（SHM_DECLARE_LAYOUT を付けると同サイズの並べ替えも検出できる）");
   }
 
+  // スロットを触る前に、ライブラリと同じ検証を通す（R05）。
+  //
+  // 以前はここで自前の緩い検査しかしておらず、次の 2 つで落ちていた。
+  //   - buf_num * slot_size が uint64 で折り返り、ガードを通過してマッピング外を読む
+  //   - slot_offset が 64 バイト境界に載っておらず、非アラインな atomic を読む
+  //     （x86 では動くが **aarch64 では SIGBUS**）
+  // さらに、ライブラリが接続を拒否する状態（buf_num 範囲外など）を「OK」と
+  // 報告していた。doctor の目的は「そのまま使えるか」を答えることなので、
+  // ライブラリの判定をそのまま使うのが正しい。
+  std::string reason;
+  const auto  verdict = irlab::shm::RingBuffer::inspectLayout(
+      static_cast<const unsigned char *>(base), r.file_size, &reason, nullptr, 0, r.name);
+  if (verdict != irlab::shm::RingBuffer::LayoutVerdict::Usable)
+  {
+    r.problems.push_back(std::string("★") + reason);
+    ::munmap(base, r.file_size);
+    return r;
+  }
+
   // 実際に保持している履歴の時間幅を数える。B/C の判断材料になる。
+  // inspectLayout() を通っているので、以下のオフセットと個数は検証済みである。
   const uint64_t slots_end = h->slot_offset + h->buf_num * h->slot_size;
-  if (h->slot_size == sizeof(SlotRecord) && h->buf_num > 0 && slots_end <= r.file_size)
+  if (h->slot_size == sizeof(SlotRecord) && h->buf_num > 0 && slots_end <= r.file_size &&
+      (h->slot_offset % alignof(SlotRecord)) == 0)
   {
     uint64_t oldest = UINT64_MAX, newest = 0;
     for (uint64_t i = 0; i < h->buf_num; ++i)

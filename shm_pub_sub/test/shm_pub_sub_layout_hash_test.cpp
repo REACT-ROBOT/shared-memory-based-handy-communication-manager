@@ -39,10 +39,77 @@ struct LayoutRevised
   float    values[8];
 };
 
+// --- R05: 位置と大きさだけでは足りない例 ---
+// 全メンバが同じサイズ・同じ境界なので、並べ替えてもオフセットの並びが一致する
+struct PoseXYT
+{
+  double x, y, theta;
+};
+struct PoseTXY
+{
+  double theta, x, y;
+};
+// 同じサイズ・同じ境界のまま型だけ入れ替えた
+struct TypedFloat
+{
+  uint32_t n;
+  float    v;
+};
+struct TypedInt
+{
+  uint32_t n;
+  int32_t  v;
+};
+// 入れ子の内部だけ並べ替えた
+struct InnerXY
+{
+  float x, y;
+};
+struct InnerYX
+{
+  float y, x;
+};
+struct OuterXY
+{
+  uint32_t id;
+  InnerXY  p;
+};
+struct OuterYX
+{
+  uint32_t id;
+  InnerYX  p;
+};
+// --- R05: 正しいのに弾かれていた例 ---
+struct AlignedMember
+{
+  char a;
+  alignas(16) int b;
+};
+struct WithAnonymousUnion
+{
+  uint32_t a;
+  union
+  {
+    uint32_t s;
+    uint64_t l;
+  };
+};
+
 SHM_DECLARE_LAYOUT(LayoutA, count, values);
 SHM_DECLARE_LAYOUT(LayoutB, values, count);
 SHM_DECLARE_LAYOUT(LayoutSame, count, values);
 SHM_DECLARE_LAYOUT_REV(LayoutRevised, 2, count, values);
+SHM_DECLARE_LAYOUT(PoseXYT, x, y, theta);
+SHM_DECLARE_LAYOUT(PoseTXY, theta, x, y);
+SHM_DECLARE_LAYOUT(TypedFloat, n, v);
+SHM_DECLARE_LAYOUT(TypedInt, n, v);
+// 入れ子の型は外側より前に宣言すること（外側の宣言で実体化されるため）
+SHM_DECLARE_LAYOUT(InnerXY, x, y);
+SHM_DECLARE_LAYOUT(InnerYX, y, x);
+SHM_DECLARE_LAYOUT(OuterXY, id, p);
+SHM_DECLARE_LAYOUT(OuterYX, id, p);
+SHM_DECLARE_LAYOUT(AlignedMember, a, b);
+SHM_DECLARE_LAYOUT(WithAnonymousUnion, a, s);
 
 struct SerializedPayload
 {
@@ -275,4 +342,71 @@ TEST_F(SHMLayoutHashTest, ADeclaredSegmentIsRejectedByAnUndeclaredProcess)
   bool            ok = false;
   sub.subscribe(&ok);
   EXPECT_FALSE(ok) << "自分が書式を知らないのに接続できてしまった";
+}
+
+// -----------------------------------------------------------------------------
+// R05: 位置と大きさだけではレイアウトの違いを表せない
+//
+// 初版のハッシュは offsetof / sizeof / alignof の 3 数値だけを畳み込んでいた。
+// そのため「全メンバが同じサイズ・同じ境界」の型を並べ替えても、
+// オフセットの並びまで一致してハッシュが変わらなかった。
+// `SHM_DECLARE_LAYOUT` が塞ぐと謳っていた当のケースである。
+//
+// メンバ名のハッシュと、型の性質から作る指紋を足して塞いだ。
+// 型の指紋は型**名**ではなく「整数か浮動小数点か」「符号の有無」「大きさ」
+// 「境界」などから作るので、ツールチェインが違っても同じ値になる。
+// -----------------------------------------------------------------------------
+TEST_F(SHMLayoutHashTest, SameSizedMembersInADifferentOrderAreDetected)
+{
+  ASSERT_EQ(sizeof(PoseXYT), sizeof(PoseTXY)) << "前提: サイズが同じであること";
+  EXPECT_NE(shm_schema<PoseXYT>::version, shm_schema<PoseTXY>::version)
+      << "全メンバが同サイズ・同境界の並べ替えを検出できていない";
+}
+
+TEST_F(SHMLayoutHashTest, SwappingAMemberTypeAtTheSameSizeIsDetected)
+{
+  ASSERT_EQ(sizeof(TypedFloat), sizeof(TypedInt));
+  EXPECT_NE(shm_schema<TypedFloat>::version, shm_schema<TypedInt>::version)
+      << "float と int32_t の入れ替えを検出できていない";
+}
+
+TEST_F(SHMLayoutHashTest, ReorderingInsideANestedStructIsDetected)
+{
+  ASSERT_EQ(sizeof(OuterXY), sizeof(OuterYX));
+  EXPECT_NE(shm_schema<InnerXY>::version, shm_schema<InnerYX>::version);
+  EXPECT_NE(shm_schema<OuterXY>::version, shm_schema<OuterYX>::version)
+      << "入れ子の内部の並べ替えが外側に伝わっていない";
+}
+
+// -----------------------------------------------------------------------------
+// R05: 正しい宣言を弾いてはならない
+//
+// 隙間の許容量に `alignof(decltype(T::m))` を使っていたため、
+// メンバ宣言に付けた `alignas` を拾えず（`decltype` は素の型を返す）、
+// 無名共用体の境界も表せず、**正しい宣言がコンパイルエラーになっていた**。
+// 90 種類以上のペイロード型を移行する計画なので、移行の途中で確実に踏む。
+//
+// 実際のオフセットを割り切る最大の 2 冪を見る形に変えた。
+// このテストはコンパイルできること自体が検証内容である。
+// -----------------------------------------------------------------------------
+TEST_F(SHMLayoutHashTest, UnusualButCorrectDeclarationsAreAccepted)
+{
+  EXPECT_TRUE(shm_schema<AlignedMember>::declared) << "メンバに alignas を付けた型が宣言できない";
+  EXPECT_TRUE(shm_schema<WithAnonymousUnion>::declared) << "無名共用体を含む型が宣言できない";
+  EXPECT_NE(shm_schema<AlignedMember>::version, 0u);
+  EXPECT_NE(shm_schema<WithAnonymousUnion>::version, 0u);
+
+  // 隙間の許容量の判定そのものも直接検証する
+  using irlab::shm::LayoutField;
+  using irlab::shm::layout_covers_type;
+
+  // struct { char a; alignas(16) int b; }  sizeof 32 / alignof 16
+  constexpr LayoutField aligned_member[] = { { 0, 1, 1, 1, 1 }, { 16, 4, 4, 2, 2 } };
+  static_assert(layout_covers_type(32, 16, aligned_member), "alignas メンバを弾いている");
+
+  // struct { uint32_t a; uint32_t b; uint32_t c; } で b を書き漏らした
+  constexpr LayoutField missing_middle[] = { { 0, 4, 4, 1, 1 }, { 8, 4, 4, 3, 3 } };
+  static_assert(!layout_covers_type(12, 4, missing_middle), "途中の書き漏らしを見逃している");
+
+  SUCCEED();
 }
