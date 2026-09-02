@@ -191,7 +191,8 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)/python
 ### デバッグ方法
 
 1. **ログの確認**: システムログでエラーメッセージを確認
-2. **共有メモリの確認**: `ipcs`コマンドで共有メモリの状態を確認
+2. **共有メモリの確認**: `shm_tool doctor` でトピックの状態を確認
+   （`ipcs` は System V 共有メモリ用で、このライブラリは POSIX 共有メモリを使うため映らない）
 3. **プロセス間通信の確認**: Publisher/Subscriberの動作を個別に確認
 
 ## 関連ドキュメント

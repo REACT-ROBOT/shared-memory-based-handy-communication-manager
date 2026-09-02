@@ -337,11 +337,11 @@ tail -f /var/log/syslog | grep shm
 
 #### 2. Shared Memory Inspection
 ```bash
-# Check shared memory segments
-ipcs -m
-
-# Remove specific shared memory segment if needed
-ipcrm -m <shmid>
+# ipcs / ipcrm operate on System V shared memory and will show nothing:
+# this library uses POSIX shared memory (shm_open, /dev/shm).
+shm_tool list            # what exists
+shm_tool doctor          # read the headers and report what needs attention
+shm_tool remove <topic>  # remove a topic and all of its generations
 ```
 
 #### 3. Process Communication Verification

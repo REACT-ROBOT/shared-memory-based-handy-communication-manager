@@ -37,15 +37,21 @@ std::runtime_error: Shared memory segment already exists
 
 **🔧 Solutions:**
 ```bash
-# List shared memory segments
-ls -la /dev/shm/
+# See what exists, and whether it is healthy
+shm_tool list
+shm_tool doctor
 
-# Remove specific segments
-sudo rm -f /dev/shm/shm_*
-
-# Or clean all (be careful!)
-sudo rm -f /dev/shm/*
+# Remove one topic, including every generation segment it owns
+shm_tool remove <topic>
 ```
+
+> Do not delete the files by hand. A topic is `/dev/shm/shm_<topic>` **plus** one
+> `shm_<topic>#<gen>-<nonce>` per layout generation. Removing only the first leaves
+> orphaned generations behind, which `shm_tool doctor` then reports as
+> "root segment missing". `shm_tool remove` takes the whole set.
+
+> `rm -f /dev/shm/*` destroys other applications' segments too — Chrome, PostgreSQL and
+> systemd all live there. Never run it.
 
 ### 2. 🔌 Connection and Communication Issues
 
@@ -160,7 +166,7 @@ fatal error: shm_pub_sub.hpp: No such file or directory
 **🔧 Solutions:**
 ```bash
 # 1. Check include paths
-g++ -I./include -I./src/include your_file.cpp
+g++ -std=c++17 -I./shm_base/include -I./shm_pub_sub/include your_file.cpp
 
 # 2. Copy headers to system location
 sudo cp include/*.hpp /usr/local/include/
@@ -398,26 +404,29 @@ std::cout << "Publish time: " << duration.count() << " μs" << std::endl;
 ```bash
 #!/bin/bash
 # emergency_cleanup.sh
-echo "Cleaning up shared memory..."
-sudo rm -f /dev/shm/shm_*
-echo "Killing hanging processes..."
+echo "Stopping the processes first — a live publisher recreates its topic..."
 pkill -f your_program_name
-echo "Resetting permissions..."
-sudo chmod 1777 /dev/shm
+echo "Removing this application's topics..."
+for topic in $(shm_tool list | awk 'NR>1 {print $NF}' | cut -d'#' -f1 | sort -u); do
+  shm_tool remove "$topic"
+done
+shm_tool doctor
 echo "Cleanup complete!"
 ```
 
 ### Recovery Steps
 ```bash
 # 1. Stop all processes
-sudo pkill -f shm_
+pkill -f your_program_name
 
 # 2. Clean shared memory
-sudo rm -f /dev/shm/shm_*
+shm_tool remove <topic>     # per topic; see what is there with shm_tool list
 
-# 3. Reset system limits
-echo "kernel.shm_max = 268435456" | sudo tee -a /etc/sysctl.conf
-sudo sysctl -p
+# 3. If /dev/shm is full, raise the tmpfs size — NOT kernel.shm* .
+#    kernel.shmmax and friends govern System V shared memory, which this
+#    library never uses. POSIX segments are limited by the /dev/shm mount.
+df -h /dev/shm
+sudo mount -o remount,size=2G /dev/shm
 
 # 4. Restart processes
 ./your_program

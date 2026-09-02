@@ -24,17 +24,20 @@ fatal error: shm_pub_sub.hpp: No such file or directory
 
 ```bash
 # 1. インクルードパスの確認
-ls include/
-# shm_pub_sub.hpp, udp_comm.hpp などがあることを確認
+#    ヘッダは 2 か所に分かれている（shm_pub_sub.hpp が shm_base.hpp を取り込む）
+ls shm_base/include shm_pub_sub/include
+# shm_base.hpp / shm_pub_sub.hpp, shm_pub_sub_vector.hpp
 
-# 2. コンパイル時のインクルードパス指定
-g++ -I./include your_program.cpp
+# 2. コンパイル時のインクルードパス指定（ビルドツリーを直接使う場合）
+g++ -std=c++17 -I./shm_base/include -I./shm_pub_sub/include your_program.cpp
+# インストール済みなら include/ 1 つにまとまる
+g++ -std=c++17 -I$HOME/.local/include your_program.cpp
 
-# 3. CMakeLists.txtでの設定
-target_include_directories(your_target PRIVATE include)
-
-# 4. 必要なヘッダーファイルの確認
-find /path/to/project -name "*.hpp" | grep shm
+# 3. CMake なら find_package が両方のパスを付けてくれる
+#    （shm_base を先に見つけること。逆順だと find_package(shm_pub_sub) が失敗する）
+find_package(shm_base    REQUIRED)
+find_package(shm_pub_sub REQUIRED)
+target_link_libraries(your_target shm_pub_sub)
 ```
 
 ### ❌ リンクエラー
@@ -48,14 +51,22 @@ undefined reference to `irlab::shm::Publisher<int>::publish(int const&)'
 
 ```bash
 # 1. ライブラリファイルの確認
-ls build/
-# libshm_pub_sub.so などがあることを確認
+ls build/lib/
+# shm_base.so, shm_pub_sub.so —— lib の接頭辞は付かない（PREFIX "" 指定のため）
 
 # 2. リンク時のライブラリ指定
-g++ your_program.cpp -L./build -lshm_pub_sub
+#    -lshm_pub_sub は libshm_pub_sub.so を探すので通らない。-l: 形式を使う。
+g++ -std=c++17 your_program.cpp \
+    -L./build/lib -l:shm_pub_sub.so -l:shm_base.so -lrt -pthread
 
 # 3. 実行時のライブラリパス設定
-export LD_LIBRARY_PATH=./build:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=$PWD/build/lib:$LD_LIBRARY_PATH
+
+# 4. どの実装を掴んでいるか確認する
+#    shm_pub_sub.so は shm_base.so を素の名前で DT_NEEDED に持ち RUNPATH が無い。
+#    LD_LIBRARY_PATH の先頭にある実装が勝つので、古いビルドツリーが残っていると
+#    そちらを掴んで undefined symbol になる。
+ldd ./your_program | grep shm
 ```
 
 ### ❌ C++17エラー
@@ -201,18 +212,23 @@ what(): Failed to create shared memory
 **対処法**:
 
 ```bash
-# 1. 既存の共有メモリセグメントを確認・削除
-ipcs -m
-# 不要な共有メモリを削除
-ipcrm -m [shmid]
+# 1. 既存のセグメントを確認する
+#    ipcs / ipcrm は System V 用で、このライブラリには使えない。
+#    使うのは POSIX 共有メモリ（shm_open / /dev/shm）である。
+shm_tool list
+shm_tool doctor          # ヘッダを読んで、古い ABI や壊れたものを指摘する
 
-# 2. 権限の確認
+# 2. 不要なトピックを消す（世代セグメントごと片付く）
+shm_tool remove <topic>
+
+# 3. 権限の確認
 ls -la /dev/shm/
-# shm_* ファイルの権限を確認
-
-# 3. 権限変更（必要に応じて）
-sudo chmod 666 /dev/shm/shm_*
 ```
+
+セグメントの権限が想定より狭いことがある。既定は `0660` だが、**作成時の
+`umask` が引かれる**ので、`umask 0022` の環境では `0640` になり、
+別ユーザ（同一グループ）から書けない。同じグループで読み書きさせたい場合は
+publisher を起こす前に `umask 0002` にしておくこと。
 
 ## ⚡ パフォーマンス問題
 
@@ -338,11 +354,11 @@ ldd your_program
 # shm_monitor.sh - 共有メモリ監視スクリプト
 
 echo "=== 共有メモリ使用状況 ==="
-echo "システム全体:"
-ipcs -m
+echo "このライブラリのトピック:"
+shm_tool doctor
 
 echo ""
-echo "SHMライブラリ関連:"
+echo "/dev/shm の実体:"
 ls -la /dev/shm/ | grep shm_
 
 echo ""
@@ -376,7 +392,7 @@ find . -name "*.so" -exec ls -la {} \;
 
 echo ""
 echo "=== 共有メモリ状況 ==="
-ipcs -m
+shm_tool doctor
 ls -la /dev/shm/ | grep shm_
 
 echo ""
@@ -409,7 +425,7 @@ ps aux | grep -E "(your_program|shm|service|action)" | grep -v grep
 4. → データが受信されない
 
 【試したこと】
-・共有メモリセグメントの確認 (ipcs -m)
+・共有メモリセグメントの確認 (shm_tool doctor)
 ・トピック名の確認
 ・プロセスの起動順序確認
 ・...

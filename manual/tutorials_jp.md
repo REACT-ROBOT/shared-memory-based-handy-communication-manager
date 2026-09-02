@@ -96,7 +96,7 @@ sudo apt install gdb valgrind
 sudo apt install linux-tools-generic
 
 # 共有メモリ監視
-ipcs -m  # 共有メモリセグメント確認
+shm_tool doctor  # トピックの健全性を確認（ipcs は System V 用で無関係）
 ```
 
 ## 🚀 次のステップ
