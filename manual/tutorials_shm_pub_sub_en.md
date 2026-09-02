@@ -34,74 +34,60 @@
 Single Publisher ← [shared memory] → Multiple Subscribers
       │                                        │
    Publish Data                          Subscribe Data
-   Atomic Write                          Atomic Read
       │                                        │
-   Zero-Copy Transfer                    Lock-Free Access
+   one copy into a slot                  one copy out of a slot
+   robust per-slot mutex                 no kernel round trip
 ```
 
 ### ⚡ Why is it Incredibly Fast?
 
-**1. Zero-Copy Direct Memory Access**
-```cpp
-// Traditional approach (slow): Multiple copies
-char buffer[1024];
-serialize_data(sensor_data, buffer);     // Copy 1: Object → Buffer
-write_to_socket(buffer, 1024);          // Copy 2: Buffer → Network
-// Receiver side
-read_from_socket(buffer, 1024);         // Copy 3: Network → Buffer
-deserialize_data(buffer, sensor_data);  // Copy 4: Buffer → Object
+**1. No kernel round trip**
 
-// SHM approach (fast): Zero-copy
-Publisher<SensorData> pub("sensors");
-pub.publish(sensor_data);               // Direct memory write
-// Subscribers read directly from shared memory - no copying!
+There is not zero copying. `publish()` copies once from your object into a slot, and
+`subscribe()` copies once from the slot into the return buffer. What is avoided is the
+**crossing into kernel space and the scheduler getting involved**.
+
+```cpp
+// Socket:        user → kernel → user, two copies and two syscalls per message
+// Shared memory: both sides already mmap the same physical pages.
+//                One copy, no syscall.
 ```
 
-**2. Lock-Free Ring Buffer Design**
+**2. A robust mutex per slot — not lock-free**
+
+Each slot carries a `PTHREAD_PROCESS_SHARED | PTHREAD_MUTEX_ROBUST` mutex, and a writer
+finds a free slot with `trylock`. What that buys over a lock-free scheme is **fault
+tolerance**:
+
+- `EBUSY` means a *live* writer holds the slot, so it is never stolen.
+- `EOWNERDEAD` — the kernel has confirmed the owner died — is the only case where the
+  slot is reclaimed.
+
+`SIGKILL` on a process in the middle of a write therefore cannot corrupt the topic. The
+interrupted slot still has `sequence == 0`, so no reader ever sees it, and the next
+writer reclaims it.
+
+**3. Sequence numbers come from one counter and are never reused**
+
+`sequence` is allocated from a single counter in the generation-1 segment header. Growing
+the buffer creates a new segment, but the numbering continues unbroken, so
+`SampleInfo::sequence` reliably tells a reader whether it missed a sample.
+
+**4. Slots sit on cache-line boundaries**
+
 ```cpp
-// Internal ring buffer implementation (simplified)
-template<typename T>
-class LockFreeRingBuffer {
-private:
-    std::atomic<size_t> write_pos_{0};
-    std::atomic<size_t> read_pos_{0};
-    alignas(64) T data_[BUFFER_SIZE];    // Cache-line aligned
-    
-public:
-    bool publish(const T& item) {
-        size_t current_write = write_pos_.load(std::memory_order_relaxed);
-        size_t next_write = (current_write + 1) % BUFFER_SIZE;
-        
-        // Check if buffer is full
-        if (next_write == read_pos_.load(std::memory_order_acquire)) {
-            return false;  // Buffer full
-        }
-        
-        // Write data (no locks needed!)
-        data_[current_write] = item;
-        
-        // Update write position atomically
-        write_pos_.store(next_write, std::memory_order_release);
-        return true;
-    }
-    
-    bool subscribe(T& item) {
-        size_t current_read = read_pos_.load(std::memory_order_relaxed);
-        
-        // Check if data available
-        if (current_read == write_pos_.load(std::memory_order_acquire)) {
-            return false;  // No data available
-        }
-        
-        // Read data (no locks needed!)
-        item = data_[current_read];
-        
-        // Update read position atomically
-        read_pos_.store((current_read + 1) % BUFFER_SIZE, std::memory_order_release);
-        return true;
-    }
-};
+struct alignas(64) SlotRecord {
+    std::atomic<uint64_t> sequence;              // 0 = no valid data
+    std::atomic<uint64_t> payload_size;
+    std::atomic<uint64_t> capture_monotonic_us;  // the only field searched by time
+    std::atomic<uint64_t> capture_realtime_us;   // recorded, never searched
+    pthread_mutex_t       owner;                 // robust, process-shared
+};  // 128 bytes
 ```
+
+Two processes touching adjacent slots do not false-share. These fields are `std::atomic`
+because some paths (choosing which slot to read, searching by time) inspect them without
+taking the lock; consistency of the values is established by the locked path.
 
 ## 🚀 Basic Usage Examples
 
@@ -975,10 +961,13 @@ int main() {
 
 ### Performance Optimization
 
-1. **CPU Affinity for Critical Threads**
-2. **Lock-Free Programming Patterns**
-3. **Memory Prefetching for Predictable Access**
-4. **NUMA-Aware Memory Allocation**
+1. **CPU affinity for critical threads**
+2. **Size `buffer_num` for the history you need** — the retention window is
+   `buffer_num ÷ publish rate`, so a 10 Hz sensor at `buffer_num = 3` keeps only 300 ms
+3. **Keep the critical section short** — a writer holds a slot only while copying, and
+   readers pick another slot rather than wait, so a slow copy costs throughput
+4. **Prefer a fixed-size POD over `std::vector<T>`** where you can: a size change forces
+   a generation cut-over, which allocates a new segment
 
 ## 🔍 Troubleshooting Common Issues
 

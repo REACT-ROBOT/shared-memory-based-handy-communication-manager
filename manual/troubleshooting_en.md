@@ -468,7 +468,7 @@ When reporting issues, include:
 ### 🤝 Community Support
 - **GitHub Issues**: Report bugs and get help
 - **Documentation**: [Complete API Reference](spec_en.md)
-- **Examples**: [Sample Code Collection](examples_en.md)
+- **Examples**: [sample code in the repository](../shm_pub_sub/samples/)
 
 ---
 

@@ -23,67 +23,71 @@
 │  │  読取位置                    書込位置                │    │
 │  └─────────────────────────────────────────────────────┘    │
 │                                                             │
-│  ヘッダー情報:                                               │
-│  - シーケンス番号 (データの順序管理)                          │
-│  - タイムスタンプ (データの新鮮度)                           │
-│  - データサイズ (可変長データ対応)                           │
-│  - CRC32チェック (データ整合性)                              │
+│  ヘッダー (ShmHeader, 192 バイト):                           │
+│  - magic / abi_major / state (形式と初期化状態の検証)         │
+│  - buf_num / element_capacity / 各種 offset (レイアウト)      │
+│  - sequence (発行番号の正本。単調増加)                        │
+│  - latest_generation (現世代とノンスを 1 語に詰めたもの)      │
+│  - topic contract (型・要素サイズ・スキーマ版)                │
 └─────────────────────────────────────────────────────────────┘
 
-Multiple Subscribers ← [shared memory] ← Single Publisher
+Multiple Subscribers ← [shared memory] ← Publisher(s)
       │                                        │
    受信プロセス1                           送信プロセス
-   受信プロセス2                              │
-   受信プロセス3                        ゼロコピー高速書込
+   受信プロセス2
+   受信プロセス3
       │
    並列データ処理
 ```
 
-### ⚡ なぜ超高速なのか？
+### ⚡ 何が速さを支えているか
 
-**1. ゼロコピー設計**
+**1. カーネルを経由しない**
+
+コピーが無いわけではない。`publish()` は利用者のオブジェクトからスロットへ
+1 回コピーし、`subscribe()` はスロットから返り値バッファへ 1 回コピーする。
+速いのは**カーネル空間との往復とスケジューラの介在が無い**からであって、
+ゼロコピーだからではない。
+
 ```cpp
-// ❌ 従来の方法: データコピーが発生
-char buffer[1024];
-read(socket_fd, buffer, 1024);    // カーネル→ユーザー空間コピー
-memcpy(data_ptr, buffer, 1024);   // バッファ→データ構造コピー
-
-// ✅ 共有メモリ: 直接アクセス
-Publisher<SensorData> pub("sensors");
-pub.publish(sensor_data);  // メモリに直接書込、コピーなし
+// ソケット: ユーザ→カーネル→ユーザ で 2 回のコピーと 2 回のシステムコール
+// 共有メモリ: 同じ物理ページを両者が mmap 済み。コピーは 1 回、syscall は 0 回
 ```
 
-**2. 効率的なリングバッファ**
+**2. スロット単位のロバスト mutex**
+
+ロックフリーではない。スロットごとに `PTHREAD_PROCESS_SHARED |
+PTHREAD_MUTEX_ROBUST` の mutex を置き、writer は空いているスロットを
+`trylock` で探す。ロックフリー方式との引き換えに得ているのは**耐障害性**である。
+
+- `EBUSY` なら生きている writer が使用中なので、絶対に奪わない
+- `EOWNERDEAD`（カーネルが所有者の死を確定した）ときだけ回収する
+
+つまり、書き込み中のプロセスを `SIGKILL` してもトピックは壊れない。
+中断されたスロットは `sequence` が 0 のままなので読み手からは見えず、
+次の writer が回収する。
+
+**3. 発行番号は 1 か所から採番する**
+
+`sequence` は世代 1 のセグメントのヘッダにある 1 つのカウンタから採番し、
+**再利用しない**。容量拡張でセグメントが世代交代しても番号は連続するので、
+`SampleInfo::sequence` で「取りこぼしたか」を確実に判定できる。
+
+**4. スロットはキャッシュライン境界に置く**
+
 ```cpp
-// リングバッファの利点
-class RingBuffer {
-    atomic<size_t> write_index;  // 原子操作で高速
-    atomic<size_t> read_index;   // ロックフリー設計
-    
-    // 書込み: O(1)の一定時間
-    bool write(const T& data) {
-        size_t next = (write_index + 1) % buffer_size;
-        if (next != read_index) {  // オーバーフロー検出
-            buffer[write_index] = data;
-            write_index = next;
-            return true;
-        }
-        return false;  // バッファフル
-    }
-};
+struct alignas(64) SlotRecord {
+    std::atomic<uint64_t> sequence;              // 0 = 有効なデータ無し
+    std::atomic<uint64_t> payload_size;
+    std::atomic<uint64_t> capture_monotonic_us;  // 検索に使うのはこちらだけ
+    std::atomic<uint64_t> capture_realtime_us;   // 記録専用
+    pthread_mutex_t       owner;                 // robust, process-shared
+};  // 128 バイト
 ```
 
-**3. CPUキャッシュ最適化**
-```cpp
-// メモリアクセスパターンの最適化
-struct alignas(64) CacheOptimizedData {  // キャッシュライン境界
-    atomic<uint64_t> sequence;
-    uint64_t timestamp;
-    uint32_t data_size;
-    uint32_t checksum;
-    char data[MAX_DATA_SIZE];
-} __attribute__((packed));
-```
+隣り合うスロットを別のプロセスが触っても false sharing が起きない。
+`payload_size` などが `atomic` なのは、ロックを取らずに読む経路（読むスロットの
+選択、時刻検索）があるためで、値の整合性はロックを取る側で保証する。
 
 ## 🚀 基本的な使い方
 

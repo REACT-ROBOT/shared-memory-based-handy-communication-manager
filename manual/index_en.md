@@ -18,7 +18,7 @@
 ### Beginner's Guide
 - [📖 Introduction - Communication Library Fundamentals](introduction_en.md)
 - [🚀 Quick Start Guide](quickstart_en.md)
-- [⚙️ Installation and Configuration](installation_en.md)
+- [⚙️ Installation and Configuration](quickstart_en.md#-installation-2-minutes)
 
 ### Tutorials
 - [📝 Basic Tutorials (C++)](tutorials_en.md)
@@ -28,12 +28,12 @@
 
 ### Detailed Specifications
 - [📋 API Specifications](spec_en.md)
-- [🔧 Advanced Configuration and Applications](advanced_en.md)
+- [🔧 Build options and operations](spec_en.md)
 - [🐛 Troubleshooting](troubleshooting_en.md)
 
 ### References
 - [📚 References](reference_en.md)
-- [💡 Sample Code Collection](examples_en.md)
+- [💡 Sample code](../shm_pub_sub/samples/) - in the repository
 
 ## 🎯 Features
 

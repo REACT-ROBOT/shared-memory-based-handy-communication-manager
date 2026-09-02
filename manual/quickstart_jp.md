@@ -179,19 +179,28 @@ export LD_LIBRARY_PATH=$HOME/.local/lib   # 両方のターミナルで
 
 **コンパイルエラー**: ヘッダーファイルが見つからない
 ```bash
-# includeパスを確認
-ls ../include/
-# shm_pub_sub.hpp や udp_comm.hpp があることを確認
+# インストール済みなら 1 か所にまとまっている
+ls $HOME/.local/include/
+# shm_base.hpp  shm_pub_sub.hpp  shm_pub_sub_vector.hpp
+
+# ビルドツリーを直接使う場合は 2 か所に分かれているので -I が 2 つ要る
+ls shm_base/include shm_pub_sub/include
 ```
 
-**実行エラー**: ライブラリが見つからない
+**リンクエラー**: `cannot find -lshm_pub_sub`
 ```bash
-# ライブラリファイルを確認
-ls *.so
-# libshm_pub_sub.so や libudp_comm.so があることを確認
+# lib の接頭辞は付かない。-l: 形式で指定すること。
+ls $HOME/.local/lib/     # shm_base.so  shm_pub_sub.so
+g++ ... -L$HOME/.local/lib -l:shm_pub_sub.so -l:shm_base.so -lrt -pthread
+```
 
-# LD_LIBRARY_PATHを設定
-export LD_LIBRARY_PATH=.:$LD_LIBRARY_PATH
+**実行エラー**: ライブラリが見つからない / undefined symbol
+```bash
+export LD_LIBRARY_PATH=$HOME/.local/lib:$LD_LIBRARY_PATH
+
+# どの実装を掴んでいるか必ず確認する。古いビルドツリーが
+# LD_LIBRARY_PATH に残っていると、そちらの shm_base.so が勝つ。
+ldd ./your_program | grep shm
 ```
 
 **通信できない**: 
@@ -201,7 +210,7 @@ export LD_LIBRARY_PATH=.:$LD_LIBRARY_PATH
 ### さらなるヘルプ
 
 - **[🐛 トラブルシューティング](troubleshooting_jp.md)** - 詳細な解決方法
-- **[📚 サンプルコード集](examples_jp.md)** - 動作確認済みの例
+- **[📚 サンプルコード](../shm_pub_sub/samples/)** - リポジトリ内の動作確認済みの例
 
 ---
 
