@@ -108,7 +108,7 @@ public:
   const std::vector<T> &subscribe(bool *is_success, SampleInfo *info);
   //! @brief 別トピックのサンプルに時刻を合わせて読む（詳細は Subscriber<T> 本体のコメントを参照）
   const std::vector<T> &subscribeAlignedTo(const SampleInfo &reference, SearchStatus *status,
-                                           SampleInfo *info = nullptr, uint64_t max_skew_us = 0);
+                                           uint64_t max_skew_us, SampleInfo *info = nullptr);
 
   //! @brief 指定した時刻のデータを読む（詳細は Subscriber<T> 本体のコメントを参照）
   const std::vector<T> &subscribeAt(const TimeQuery &query, SearchStatus *status, SampleInfo *info = nullptr);
@@ -475,9 +475,24 @@ Subscriber<std::vector<T>>::subscribe(bool *is_success, SampleInfo *info)
 
 template <typename T>
 const std::vector<T> &
-Subscriber<std::vector<T>>::subscribeAlignedTo(const SampleInfo &reference, SearchStatus *status, SampleInfo *info,
-                                               uint64_t max_skew_us)
+Subscriber<std::vector<T>>::subscribeAlignedTo(const SampleInfo &reference, SearchStatus *status, uint64_t max_skew_us, SampleInfo *info)
 {
+  // 基準が有効でなければ、時刻 0 に対する検索になってしまう。
+  // subscribe() が失敗したときの SampleInfo は全ゼロなので、
+  // それをそのまま渡す誤りが起きやすい（R04-F14）。
+  if (reference.sequence == 0)
+  {
+    if (status != nullptr)
+    {
+      *status = SearchStatus::InvalidReference;
+    }
+    if (info != nullptr)
+    {
+      *info = SampleInfo{};
+    }
+    return return_buffers_[return_index_];
+  }
+
   SampleInfo   found{};
   SearchStatus local_status = SearchStatus::Empty;
   const std::vector<T> &value =

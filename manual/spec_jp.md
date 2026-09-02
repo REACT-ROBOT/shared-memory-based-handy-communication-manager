@@ -605,6 +605,12 @@ const Scan &scan = scan_sub.subscribeAlignedTo(odom_info, &status, nullptr, 5000
 `Contended` は「今は読めないだけ」なので再試行の価値がある。
 `Empty`（まだ publish されていない）と混同しないこと。
 
+**`Nearest` は有効なサンプルが 1 つでもあれば必ず「最も近いもの」を返す。**
+どれだけ離れていても `TooOld` / `TooNew` にはならない。ずれの上限は
+`subscribeAlignedTo()` の `max_skew_us` で示すこと（**必須引数**）。
+`subscribe()` が失敗したときの `SampleInfo` は全ゼロなので、それを基準に渡すと
+時刻 0 に対する検索になる。これは `InvalidReference` で弾かれる。
+
 保持できる履歴の長さは `buf_num ÷ 発行レート` である。10Hz のセンサを
 `buf_num = 3` で持つと履歴は 300ms しかない。実際に保持している時間幅は
 `getRetentionWindow()` か `shm_tool doctor` で確認できる。

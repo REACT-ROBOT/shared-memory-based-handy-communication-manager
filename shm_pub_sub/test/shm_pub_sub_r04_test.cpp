@@ -31,7 +31,7 @@ protected:
   void cleanupAll()
   {
     for (const char *t : { "r04_unlink_pub", "r04_unlink_sub", "r04_cap", "r04_deadreader", "r04_contend",
-                           "r04_heldslot", "r04_abi" })
+                           "r04_heldslot", "r04_abi", "r04_align" })
     {
       try
       {
@@ -399,4 +399,72 @@ TEST_F(SHMR04Test, APermanentMismatchFailsFastAndSaysHowToRecover)
   EXPECT_FALSE(ok);
   EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count(),
             100);
+}
+
+// -----------------------------------------------------------------------------
+// R04-F14: 無効な基準サンプルで整列を求められたら、黙って最も近い値を返さない
+//
+// subscribe() が失敗したときの SampleInfo は全ゼロである。それをそのまま
+// subscribeAlignedTo() に渡すと「時刻 0 に対する Nearest 検索」になり、
+// Nearest は有効なサンプルが 1 つでもあれば必ず何かを返すので、
+// **数十年ずれた値を Success として受け取る**ことになっていた。
+// これはこのライブラリの主用途（オドメトリにスキャンを合わせる）そのものである。
+// -----------------------------------------------------------------------------
+TEST_F(SHMR04Test, AligningToAnInvalidReferenceIsRejected)
+{
+  const std::string topic = "r04_align";
+
+  Publisher<Msg> pub(topic, 4);
+  pub.publish(Msg{ 1 });
+
+  Subscriber<Msg> sub(topic);
+  sub.setDataExpiryTime_us(0);
+
+  // 一度も成功していない購読の SampleInfo（全ゼロ）
+  Subscriber<Msg> never_read("r04_align_missing");
+  bool            ok = false;
+  SampleInfo      invalid{};
+  never_read.subscribe(&ok, &invalid);
+  ASSERT_FALSE(ok);
+  ASSERT_EQ(invalid.sequence, 0u) << "前提: 失敗時の SampleInfo は全ゼロ";
+
+  SearchStatus status = SearchStatus::Success;
+  sub.subscribeAlignedTo(invalid, &status, 0);
+  EXPECT_EQ(status, SearchStatus::InvalidReference)
+      << "無効な基準に対して整列済みとして値を返した。実際の status=" << static_cast<int>(status);
+}
+
+// -----------------------------------------------------------------------------
+// R04-F14: ずれの上限を超えたら Success にしない
+//
+// Nearest は有効なサンプルがあれば必ず「最も近いもの」を返し、
+// どれだけ離れていても TooOld / TooNew にはならない。上限は呼び出し側が示す。
+// -----------------------------------------------------------------------------
+TEST_F(SHMR04Test, AlignmentBeyondTheAllowedSkewIsNotSuccess)
+{
+  const std::string topic = "r04_align";
+
+  Publisher<Msg> pub(topic, 4);
+  pub.publish(Msg{ 1 });
+
+  Subscriber<Msg> sub(topic);
+  sub.setDataExpiryTime_us(0);
+  bool       ok = false;
+  SampleInfo published{};
+  sub.subscribe(&ok, &published);
+  ASSERT_TRUE(ok);
+
+  // 実際のサンプルより十分に新しい時刻を基準にする
+  SampleInfo reference    = published;
+  reference.capture_monotonic_us = published.capture_monotonic_us + 500000;  // 500ms 後
+
+  SearchStatus status = SearchStatus::Success;
+  sub.subscribeAlignedTo(reference, &status, 10000);  // 許容 10ms
+  EXPECT_EQ(status, SearchStatus::TooOld)
+      << "500ms ずれているのに整列済みとして返した。実際の status=" << static_cast<int>(status);
+
+  // 上限を広げれば通る
+  status = SearchStatus::Empty;
+  sub.subscribeAlignedTo(reference, &status, 1000000);
+  EXPECT_EQ(status, SearchStatus::Success);
 }

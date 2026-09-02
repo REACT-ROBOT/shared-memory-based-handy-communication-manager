@@ -380,7 +380,7 @@ TEST_F(SHMTimeMachineTest, AlignsAScanToTheOdometryUpdateTime)
 
   SampleInfo   scan_info{};
   SearchStatus st = SearchStatus::Empty;
-  const Msg   &scan = scan_sub.subscribeAlignedTo(odom_info, &st, &scan_info);
+  const Msg   &scan = scan_sub.subscribeAlignedTo(odom_info, &st, 0, &scan_info);
   ASSERT_EQ(st, SearchStatus::Success);
   EXPECT_EQ(scan.value, scan.pad[0]) << "torn read";
 
@@ -426,15 +426,15 @@ TEST_F(SHMTimeMachineTest, RejectsAlignmentThatIsTooFarApart)
   odom_info.capture_monotonic_us = scan_info.capture_monotonic_us + 200000;
 
   SearchStatus st = SearchStatus::Empty;
-  scan_sub.subscribeAlignedTo(odom_info, &st, nullptr, 20000);  // 許容 20 ms
+  scan_sub.subscribeAlignedTo(odom_info, &st, 20000);  // 許容 20 ms
   EXPECT_EQ(st, SearchStatus::TooOld) << "20 ms 許容に対して 200 ms ずれた値を返した";
 
   // 許容を広げれば取れる
-  scan_sub.subscribeAlignedTo(odom_info, &st, nullptr, 500000);
+  scan_sub.subscribeAlignedTo(odom_info, &st, 500000);
   EXPECT_EQ(st, SearchStatus::Success);
 
   // 0 は無制限
-  scan_sub.subscribeAlignedTo(odom_info, &st, nullptr, 0);
+  scan_sub.subscribeAlignedTo(odom_info, &st, 0);
   EXPECT_EQ(st, SearchStatus::Success);
 
   try

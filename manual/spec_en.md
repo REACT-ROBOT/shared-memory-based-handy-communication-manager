@@ -509,6 +509,12 @@ Built for "fetch the scan closest in time to this odometry update".
 **Only `CLOCK_MONOTONIC_RAW` is used for searching.** The wall clock is recorded but never
 searched, because NTP steps make it unusable as a reference.
 
+**`Nearest` always returns the closest existing sample**, however far away it is, so it
+never reports `TooOld`/`TooNew` by itself. State the bound through
+`subscribeAlignedTo()`'s `max_skew_us` (a **required** argument). The `SampleInfo` from a
+failed `subscribe()` is all zeros; passing it as the reference is rejected with
+`InvalidReference` instead of silently searching for time 0.
+
 History depth is `buf_num ÷ publish rate`. A 10 Hz sensor with `buf_num = 3` holds only
 300 ms. `getRetentionWindow()` and `shm_tool doctor` report what is actually held.
 

@@ -221,14 +221,18 @@ public:
    * @param [in]  reference    合わせる相手のサンプル（時刻だけを使う）
    * @param [out] status       結果の状態
    * @param [out] info         取得したサンプルの素性（不要なら nullptr）
-   * @param [in]  max_skew_us  許容する時刻のずれ[usec]。0 なら無制限。
+   * @param [in]  max_skew_us  許容する時刻のずれ[usec]。**必須**。
    *                           これを超えていたら、相手より古ければ TooOld、
    *                           新しければ TooNew を返す（融合してはいけない値を
-   *                           黙って返さないため）
+   *                           黙って返さないため）。
+   *                           0 は「無制限」だが、**既定にはしない**。
+   *                           Nearest は有効なサンプルがあれば必ず何かを返すので、
+   *                           上限を書き忘れると数百 ms ずれた値を Success として
+   *                           受け取ることになる。センサの周期から決めて明示すること
+   *                           （R04-F14）。
    * @return const T& 取得したデータ。status が Success 以外のときの内容は不定
    */
-  const T &subscribeAlignedTo(const SampleInfo &reference, SearchStatus *status, SampleInfo *info = nullptr,
-                              uint64_t max_skew_us = 0);
+  const T &subscribeAlignedTo(const SampleInfo &reference, SearchStatus *status, uint64_t max_skew_us, SampleInfo *info = nullptr);
 
   /*!
    * \~japanese-en 指定した時刻のデータを読む（タイムマシン）．
@@ -679,9 +683,24 @@ Subscriber<T>::subscribe(bool *state, SampleInfo *info)
 //! @details 宣言側のコメントを参照．
 template <typename T>
 const T &
-Subscriber<T>::subscribeAlignedTo(const SampleInfo &reference, SearchStatus *status, SampleInfo *info,
-                                  uint64_t max_skew_us)
+Subscriber<T>::subscribeAlignedTo(const SampleInfo &reference, SearchStatus *status, uint64_t max_skew_us, SampleInfo *info)
 {
+  // 基準が有効でなければ、時刻 0 に対する検索になってしまう。
+  // subscribe() が失敗したときの SampleInfo は全ゼロなので、
+  // それをそのまま渡す誤りが起きやすい（R04-F14）。
+  if (reference.sequence == 0)
+  {
+    if (status != nullptr)
+    {
+      *status = SearchStatus::InvalidReference;
+    }
+    if (info != nullptr)
+    {
+      *info = SampleInfo{};
+    }
+    return return_buffers_[return_index_];
+  }
+
   SampleInfo   found{};
   SearchStatus local_status = SearchStatus::Empty;
   const T     &value =
