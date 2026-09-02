@@ -14,13 +14,22 @@
 ### 1. 環境構築（30秒）
 
 ```bash
-# プロジェクトディレクトリに移動
 cd /path/to/shared-memory-based-handy-communication-manager
 
-# ビルド
-mkdir build && cd build
-cmake ..
-make
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=$HOME/.local
+cmake --build build -j$(nproc)
+cmake --install build
+```
+
+作られるのは次の 5 つである。**共有ライブラリに `lib` の接頭辞は付かない**
+（`PREFIX ""` を指定しているため）。`-lshm_pub_sub` は使えない。
+
+```
+$HOME/.local/lib/shm_base.so
+$HOME/.local/lib/shm_pub_sub.so
+$HOME/.local/include/shm_base.hpp, shm_pub_sub.hpp, shm_pub_sub_vector.hpp
+$HOME/.local/bin/shm_tool
 ```
 
 ### 2. 送信プログラムの作成（1分）
@@ -86,18 +95,63 @@ int main() {
 
 ### 4. コンパイル・実行（1分）
 
-```bash
-# コンパイル
-g++ -std=c++17 -I../include sender.cpp -L. -lshm_pub_sub -o sender
-g++ -std=c++17 -I../include receiver.cpp -L. -lshm_pub_sub -o receiver
+**CMake から使う場合（推奨）**
 
-# 実行（2つのターミナルで）
+```cmake
+cmake_minimum_required(VERSION 3.16)
+project(my_app CXX)
+set(CMAKE_CXX_STANDARD 17)
+
+# shm_base を先に見つけること。shm_pub_sub のエクスポートは
+# ターゲット shm_base を名前で参照しており、find_dependency() を持たない。
+# 順序を逆にすると find_package(shm_pub_sub) が失敗する。
+find_package(shm_base    REQUIRED)
+find_package(shm_pub_sub REQUIRED)
+
+add_executable(sender sender.cpp)
+target_link_libraries(sender shm_pub_sub)   # インクルードパスも一緒に付く
+```
+
+```bash
+cmake -S . -B build -DCMAKE_PREFIX_PATH=$HOME/.local
+cmake --build build
+```
+
+**g++ を直接使う場合**
+
+インクルードパスは **2 つ**要る（`shm_pub_sub.hpp` が `shm_base.hpp` を取り込む）。
+リンクは `lib` 接頭辞が無いため `-l:` 形式で指定する。
+
+```bash
+SHM=$HOME/.local
+g++ -std=c++17 -I$SHM/include sender.cpp \
+    -L$SHM/lib -l:shm_pub_sub.so -l:shm_base.so -lrt -pthread -o sender
+g++ -std=c++17 -I$SHM/include receiver.cpp \
+    -L$SHM/lib -l:shm_pub_sub.so -l:shm_base.so -lrt -pthread -o receiver
+```
+
+（インストールせずビルドツリーを直接使う場合は
+`-I<repo>/shm_base/include -I<repo>/shm_pub_sub/include -L<repo>/build/lib`）
+
+**実行（2 つのターミナルで）**
+
+```bash
+export LD_LIBRARY_PATH=$HOME/.local/lib   # 両方のターミナルで
+
 # ターミナル1
 ./receiver
-
 # ターミナル2
 ./sender
 ```
+
+> `shm_pub_sub.so` の `DT_NEEDED` は `shm_base.so` という**素の名前**で、
+> `RUNPATH` を持たない。したがって `LD_LIBRARY_PATH` の**先頭にあるものが勝つ**。
+> 別のビルドツリーがパスに残っていると、そちらの古い `shm_base.so` を掴む。
+> `ldd ./receiver | grep shm` で解決先を必ず確認すること。
+
+> `subscribe()` は**キューではない**。最新のサンプルを返し、次が来るまで
+> **同じ値を返し続ける**（既定 2 秒で期限切れ、`setDataExpiryTime_us()` で変更可）。
+> 上の受信側が 100ms 周期なら、10 回の送信に対して受信は 10 行にはならない。
 
 ### 🎉 結果
 

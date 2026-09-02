@@ -23,21 +23,29 @@ free -h           # Check available memory
 
 ## 🔧 Installation (2 minutes)
 
-### Method 1: Quick CMake Build
 ```bash
-# Clone and build
 git clone <repository-url>
 cd shared-memory-based-handy-communication-manager
-mkdir build && cd build
-cmake ..
-make -j$(nproc)
+
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=$HOME/.local
+cmake --build build -j$(nproc)
+cmake --install build
 ```
 
-### Method 2: Header-Only Integration
-```bash
-# Copy headers to your project
-cp -r include/shm_pub_sub.hpp /your/project/include/
+This installs five things. **The shared libraries carry no `lib` prefix** (the build sets
+`PREFIX ""`), so `-lshm_pub_sub` will not link.
+
 ```
+$HOME/.local/lib/shm_base.so
+$HOME/.local/lib/shm_pub_sub.so
+$HOME/.local/include/shm_base.hpp, shm_pub_sub.hpp, shm_pub_sub_vector.hpp
+$HOME/.local/bin/shm_tool
+```
+
+> There is no header-only mode. `shm_base.so` holds the segment, ring-buffer and
+> generation logic, and `shm_pub_sub.so` the Python binding; copying the headers alone
+> will not build.
 
 ## 🌡️ Your First Communication (3 minutes)
 
@@ -116,18 +124,63 @@ int main() {
 ```
 
 ### Step 3: Build and Run
-```bash
-# Compile
-g++ -std=c++17 -pthread sensor.cpp -o sensor
-g++ -std=c++17 -pthread monitor.cpp -o monitor
 
-# Run in separate terminals
+**From CMake (recommended)**
+
+```cmake
+cmake_minimum_required(VERSION 3.16)
+project(my_app CXX)
+set(CMAKE_CXX_STANDARD 17)
+
+# Find shm_base FIRST. The shm_pub_sub export refers to the target `shm_base`
+# by name and carries no find_dependency(), so the reverse order fails.
+find_package(shm_base    REQUIRED)
+find_package(shm_pub_sub REQUIRED)
+
+add_executable(sensor sensor.cpp)
+target_link_libraries(sensor shm_pub_sub)   # include paths come along
+```
+
+```bash
+cmake -S . -B build -DCMAKE_PREFIX_PATH=$HOME/.local
+cmake --build build
+```
+
+**From g++ directly**
+
+Link with the `-l:` form, because there is no `lib` prefix.
+
+```bash
+SHM=$HOME/.local
+g++ -std=c++17 -I$SHM/include sensor.cpp \
+    -L$SHM/lib -l:shm_pub_sub.so -l:shm_base.so -lrt -pthread -o sensor
+g++ -std=c++17 -I$SHM/include monitor.cpp \
+    -L$SHM/lib -l:shm_pub_sub.so -l:shm_base.so -lrt -pthread -o monitor
+```
+
+(Against an uninstalled build tree, use
+`-I<repo>/shm_base/include -I<repo>/shm_pub_sub/include -L<repo>/build/lib`.)
+
+**Run, in separate terminals**
+
+```bash
+export LD_LIBRARY_PATH=$HOME/.local/lib   # in both terminals
+
 # Terminal 1:
 ./sensor
-
 # Terminal 2:
 ./monitor
 ```
+
+> `shm_pub_sub.so` records `shm_base.so` as a **bare** `DT_NEEDED` name and has no
+> `RUNPATH`, so whichever copy comes first on `LD_LIBRARY_PATH` wins. A leftover build
+> tree on that path silently supplies a stale `shm_base.so`. Check with
+> `ldd ./monitor | grep shm`.
+
+> `subscribe()` is **not a queue**. It returns the newest sample and keeps returning the
+> same one until a newer one arrives (or it expires — 2 seconds by default, adjustable
+> with `setDataExpiryTime_us()`). Polling faster than the publisher does not lose data,
+> but it does repeat it.
 
 ## 🎉 Expected Output
 
@@ -255,14 +308,16 @@ sudo chmod 666 /dev/shm/*
 
 **"Address already in use":**
 ```bash
-# Clean up shared memory
-sudo rm -f /dev/shm/shm_*
+shm_tool list            # see what exists
+shm_tool doctor          # see whether it is healthy
+shm_tool remove <topic>  # remove one topic and all of its generations
 ```
 
 **Compilation errors:**
 ```bash
-# Make sure you have the right compiler flags
-g++ -std=c++17 -pthread -I./include your_file.cpp
+# Both include paths are needed, and the -l: form for the libraries
+g++ -std=c++17 -I$HOME/.local/include your_file.cpp \
+    -L$HOME/.local/lib -l:shm_pub_sub.so -l:shm_base.so -lrt -pthread
 ```
 
 ### Getting Help
