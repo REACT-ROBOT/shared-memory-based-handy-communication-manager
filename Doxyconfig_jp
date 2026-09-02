@@ -1,3 +1,27 @@
+# ============================================================================
+# このファイルは Doxygen の設定ファイルである（doxygen -g の全設定ダンプに
+# 手を入れたもの）。英語版が Doxyconfig、日本語版が Doxyconfig_jp で、
+# 両者の差は次の 5 つだけである。片方だけ直さないこと。
+#
+#     PROJECT_BRIEF / OUTPUT_DIRECTORY / OUTPUT_LANGUAGE /
+#     EXCLUDE_PATTERNS / USE_MDFILE_AS_MAINPAGE
+#
+# 生成と配信は .github/workflows/docs.yml が行う。生成物 docs/ は追跡しない。
+#
+#     doxygen Doxyconfig && doxygen Doxyconfig_jp
+#
+# 変えてはならない設定が 2 つある。
+#
+#   OUTPUT_DIRECTORY  出力を docs/ と docs/docs_jp/ に置くこと。manual/*.md が
+#                     相互に張っている ../md_manual_*.html というリンクが
+#                     この配置を前提にしている。変えると全滅する。
+#
+#   CASE_SENSE_NAMES  NO のままにすること。YES にすると
+#                     classirlab_1_1shm_1_1_ring_buffer.html が
+#                     classirlab_1_1shm_1_1RingBuffer.html に変わり、
+#                     外部から張られたリンクが全部切れる。
+# ============================================================================
+
 # Doxyfile 1.8.17
 
 # This file describes the settings to be used by the documentation system
@@ -913,11 +937,14 @@ RECURSIVE              = YES
 # run.
 
 EXCLUDE                = ../third-party \
-                         ../build \
+                         ./build \
                          ./README.md \
                          ./docs \
+                         ./review \
+                         ./shm_base/test \
                          ./shm_pub_sub/test \
-                         ./shm_pub_sub/samples
+                         ./shm_pub_sub/samples \
+                         ./tools/shm_tool/test
 
 # The EXCLUDE_SYMLINKS tag can be used to select whether or not files or
 # directories that are symbolic links (a Unix file system feature) are excluded
@@ -933,7 +960,9 @@ EXCLUDE_SYMLINKS       = NO
 # Note that the wildcards are matched against the file with absolute path, so to
 # exclude all test directories for example use the pattern */test/*
 
-EXCLUDE_PATTERNS       = *_en.md
+EXCLUDE_PATTERNS       = *_en.md \
+                         */build/* \
+                         */build_*/*
 
 # The EXCLUDE_SYMBOLS tag can be used to specify one or more symbol names
 # (namespaces, classes, functions, etc.) that should be excluded from the

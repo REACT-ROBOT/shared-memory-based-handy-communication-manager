@@ -3,9 +3,9 @@
 #
 # 以前は生成済みの HTML（462 ファイル）を docs/ に直接コミットしていた。
 # 追跡ファイルの 85% が生成物で、manual/*.md を 1 行直すたびに数十ファイルの
-# 差分が乗るうえ、Doxyfile がリポジトリに無いため誰も再生成できなかった。
-# その結果、公開サイトは v2.0.0 で削除した shm_service / shm_action を
-# いつまでも紹介し続けていた。
+# 差分が乗る。そのうえ手で回す運用だったため実際には更新されておらず、
+# 公開サイトは v2.0.0 で削除した shm_service / shm_action をいつまでも
+# 紹介し続けていた（Markdown の原本はとうに直っている）。
 #
 # 生成物は追跡せず、ここで作って Pages へ直接配信する。gh-pages ブランチは
 # 作らない。ブランチを増やすと、そちらに生成物が溜まって同じ問題が場所を
@@ -46,8 +46,8 @@ jobs:
 
       - name: Generate (English and Japanese)
         run: |
-          doxygen Doxyfile    2> doxygen_en.log
-          doxygen Doxyfile.jp 2> doxygen_jp.log
+          doxygen Doxyconfig    2> doxygen_en.log
+          doxygen Doxyconfig_jp 2> doxygen_jp.log
           echo "::group::doxygen warnings (English)"; cat doxygen_en.log; echo "::endgroup::"
           echo "::group::doxygen warnings (Japanese)"; cat doxygen_jp.log; echo "::endgroup::"
 
