@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/REACT-ROBOT/shared-memory-based-handy-communication-manager/workflows/Shared%20Memory%20Communication%20Manager%20CI/badge.svg)](https://github.com/REACT-ROBOT/shared-memory-based-handy-communication-manager/actions)
 [![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/hijimasa/0de6c8879fb6085dd4e0fdbc3b4cf451/raw/shm_coverage.json)](https://github.com/REACT-ROBOT/shared-memory-based-handy-communication-manager/actions "Live coverage from CI")
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 ## Abstruct
 
@@ -58,9 +58,25 @@ Below is how to introduce and build SHM.
 
 2. build programs.
    ```
-   $ cd <Your_cmake_ws>/build
-   $ cmake ..
-   $ make
+   $ cd <Your_cmake_ws>
+   $ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+   $ cmake --build build -j$(nproc)
+   ```
+
+   If you add this as a subdirectory, put `enable_testing()` in your **top-level**
+   `CMakeLists.txt`, before `add_subdirectory(...)`. CTest only registers tests
+   for the directory tree below the `enable_testing()` call, so without it
+   `ctest` in your build directory reports "No tests were found".
+
+   Note that the shared libraries are built with `PREFIX ""`, so the artifacts are
+   `shm_base.so` and `shm_pub_sub.so` — **without** the usual `lib` prefix.
+   `-lshm_pub_sub` will not link; use `-l:shm_pub_sub.so`, or link the CMake
+   target, which is what the installed package export gives you:
+
+   ```cmake
+   find_package(shm_base    REQUIRED)   # must come first
+   find_package(shm_pub_sub REQUIRED)
+   target_link_libraries(your_target shm_pub_sub)
    ```
 
 ### Building with Coverage
@@ -85,15 +101,23 @@ The coverage report includes:
 
 ### Build Options
 
+| Option | Default | What it does |
+|---|---|---|
+| `BUILD_TESTS` | `OFF` | Build the test programs. Also forces `SHM_ENABLE_TEST_HOOKS=ON`. |
+| `BUILD_EXAMPLES` | `OFF` | Build `shm_pub_sub/samples`. |
+| `DEBUG` | `OFF` | Debug symbols. |
+| `ENABLE_COVERAGE` | `OFF` | Coverage instrumentation (implies debug symbols). |
+| `SHM_STRICT_TYPE_CHECK` | `ON` | Require trivially-copyable payload types at compile time. |
+| `SHM_REQUIRE_LAYOUT` | `OFF` | Require every payload type to declare its wire format with `SHM_DECLARE_LAYOUT` / `SHM_DECLARE_SERIALIZED_FORMAT`. Turn on per package while migrating; `shm_tool doctor` lists which topics are still undeclared. |
+| `SHM_ENABLE_TEST_HOOKS` | `OFF` | Hooks that let tests interleave a generation cut-over with a publish. Nothing remains in a release build. |
+| `SANITIZER` | `none` | `address` / `thread` / `undefined`. `thread` is the one that matters here; `undefined` is worth running with alignment checking. |
+
 ```bash
-# Build with tests
-cmake -DBUILD_TESTING=ON ..
+# Build with tests  (the option is BUILD_TESTS, not CMake's BUILD_TESTING)
+cmake -S . -B build -DBUILD_TESTS=ON
 
-# Build with debug symbols
-cmake -DDEBUG=ON ..
-
-# Build with coverage (automatically includes debug symbols)
-cmake -DENABLE_COVERAGE=ON ..
+# Chase data races
+cmake -S . -B build -DBUILD_TESTS=ON -DSANITIZER=thread
 ```
 
 ## Testing
@@ -101,23 +125,34 @@ cmake -DENABLE_COVERAGE=ON ..
 ### Running Tests
 
 ```bash
-# Run all tests
-cd build
-ctest --output-on-failure
+cmake -S . -B build -DBUILD_TESTS=ON
+cmake --build build -j$(nproc)
+cd build && ctest --output-on-failure
 
-# Run specific test suites
+# A specific suite
 ctest --output-on-failure -R "SHMPubSubTest"
-ctest --output-on-failure -R "SharedMemoryPosixTest"
+```
+
+The tests share `/dev/shm`, so they are serialized through a CTest resource lock
+(`RESOURCE_LOCK dev_shm`) and `ctest -j<N>` will not actually overlap them. To run
+several builds at once, or to keep a test run from touching the machine's real
+segments, give each one its own `/dev/shm` in a mount namespace:
+
+```bash
+unshare -rm --propagation private bash -c \
+  "mount -t tmpfs tmpfs /dev/shm && cd build && ctest --output-on-failure"
 ```
 
 ### Test Coverage
 
 The project maintains comprehensive test coverage with automated CI testing:
 
-- **Line Coverage**: High coverage across all modules
-- **Function Coverage**: ~99%
-- **Integration Tests**: Publisher/Subscriber patterns
-- **Performance Tests**: Throughput and latency validation
+- **Integration tests**: Publisher/Subscriber patterns, including the vector
+  specialization and the Python binding
+- **Regression tests**: every finding from the five review rounds has a test that was
+  verified to fail when its fix is reverted (see [`review/`](review/))
+- **Fault injection**: corrupted headers, killed writers, and generation cut-overs
+  interleaved with a publish
 
 **Note**: Performance tests may occasionally fail in CI environments due to timing constraints, but this does not affect the core functionality or coverage reporting.
 
