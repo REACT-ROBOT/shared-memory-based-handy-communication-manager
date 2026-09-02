@@ -506,6 +506,13 @@ layout_covers_type(uint64_t type_size, uint64_t type_align, const LayoutField (&
     {
       return false;  // 宣言順がオフセット順と違う、または重なっている
     }
+    // NOTE: この検査は「無くても結果が変わらない」。下の隙間検査が
+    //       `fields[i].offset - previous_end` を**符号なし**で計算するため、
+    //       逆順や重なりでは 2^64 近い値になり、必ず allowed_gap 以上になるからである
+    //       （allowed_gap は type_align で頭打ちなので小さい）。
+    //       したがってどんな入力を与えてもこの行を単独で守るテストは書けない。
+    //       それでも残してあるのは、意図を「アンダーフローという副作用」に
+    //       頼らせないためである。消すと、逆順を弾いている理由がコードから消える。
     // 許される隙間は「そのオフセットに載るために必要だった調整」までである。
     //
     // `alignof(decltype(T::m))` を使ってはならない。`decltype` は素の型を返すので

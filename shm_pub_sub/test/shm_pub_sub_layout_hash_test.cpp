@@ -266,9 +266,29 @@ TEST_F(SHMLayoutHashTest, MissingOrMisorderedMembersAreRejected)
   constexpr LayoutField no_middle[] = { { 0, 4, 4 }, { 16, 4, 4 } };
   static_assert(!layout_covers_type(24, 8, no_middle), "途中の書き漏らしを検出できていない");
 
-  // 宣言順と違う順で並べた
+  // 宣言順と違う順で並べた（先頭が 0 でないので「先頭の書き漏らし」の枝で弾かれる）
   constexpr LayoutField wrong_order[] = { { 8, 8, 8 }, { 0, 4, 4 } };
   static_assert(!layout_covers_type(16, 8, wrong_order), "並べ間違いを検出できていない");
+
+  // 上の wrong_order は fields[0].offset != 0 の枝で弾かれるため、
+  // 「宣言順がオフセット順と違う／重なっている」を見る枝
+  // （shm_base.hpp の fields[i].offset < previous_end）には**到達しない**。
+  // 実際、その枝を削除しても 145 件すべてが緑のままだった。
+  // 先頭を 0 に保ったまま、その枝に到達するケースを置く。
+
+  // 2 番目と 3 番目が入れ替わっている: struct { uint32_t a; double b; uint32_t c; }
+  // を a, c, b の順に並べてしまった場合
+  constexpr LayoutField out_of_order[] = { { 0, 4, 4 }, { 16, 4, 4 }, { 8, 8, 8 } };
+  static_assert(!layout_covers_type(24, 8, out_of_order), "オフセット順でない並びを検出できていない");
+
+  // 重なっている: 同じ領域を 2 つのメンバとして書いてしまった場合
+  // （共用体のメンバを両方並べるとこうなる）
+  constexpr LayoutField overlapping[] = { { 0, 8, 8 }, { 4, 4, 4 } };
+  static_assert(!layout_covers_type(8, 8, overlapping), "重なりを検出できていない");
+
+  // 完全に同じオフセットを 2 回書いた場合も重なりである
+  constexpr LayoutField duplicated[] = { { 0, 4, 4 }, { 0, 4, 4 } };
+  static_assert(!layout_covers_type(4, 4, duplicated), "同一オフセットの重複を検出できていない");
 
   // 配列メンバと単一メンバも通ること
   constexpr LayoutField with_array[] = { { 0, 4, 4 }, { 4, 4324, 4 } };

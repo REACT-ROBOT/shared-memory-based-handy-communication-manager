@@ -595,3 +595,63 @@ TEST_F(SHMPubSubRaceTest, FailedSubscribeMustNotCorruptPreviousValue) {
     EXPECT_EQ(m.firstInconsistentWord(), -1);
   }
 }
+
+// -----------------------------------------------------------------------------
+// 上のテストは、実は返り値ダブルバッファを守れていなかった。
+//
+// 外からスロットの mutex を保持すると readSample() は冒頭の lockSlotWithin() で
+// 失敗して返るので、**dst への memcpy に一度も到達しない**。返り値バッファは
+// 書かれようがないため、ダブルバッファを丸ごと取り消しても 145 件すべてが
+// 緑のままだった（実測）。
+//
+// 元のバグは「コピーしてから検証に失敗する」形である。その経路は今も存在し、
+// readSlotInto() の payload_size 検査（R02-F01）がそれにあたる。
+//   readSample()      payload_size <= dst_size なので memcpy して true を返す
+//   readSlotInto()    payload_size != sizeof(T) なので false を返す ← コピー済み
+// ここを決定的に作って、直前に返した値が生き残ることを検査する。
+// -----------------------------------------------------------------------------
+TEST_F(SHMPubSubRaceTest, AFailureAfterTheCopyMustNotCorruptPreviousValue) {
+  const std::string topic = "race_post_copy_failure";
+
+  irlab::shm::Publisher<BigMsg> pub(topic, 1);
+  BigMsg good;
+  good.fill(0xA5A5A5A5u);
+  pub.publish(good);
+
+  irlab::shm::Subscriber<BigMsg> sub(topic);
+  sub.setDataExpiryTime_us(0);
+
+  // 直前の成功値への参照を保持する。これが壊れないことを見る。
+  bool          success = false;
+  const BigMsg& held    = sub.subscribe(&success);
+  ASSERT_TRUE(success) << "前提: 競合が無ければ読めること";
+  ASSERT_EQ(held.words[0], 0xA5A5A5A5u);
+  ASSERT_EQ(held.firstInconsistentWord(), -1);
+
+  // スロットの payload を別の値で埋め、payload_size だけを sizeof(T) より
+  // 小さくして commit する。readSample() は通り（コピーが起きる）、
+  // readSlotInto() の型サイズ検査で落ちる。
+  irlab::shm::SharedMemoryPosix shm(topic, O_RDWR, static_cast<irlab::shm::PERM>(0));
+  ASSERT_TRUE(shm.connect());
+  unsigned char*               ptr    = shm.getPtr();
+  const irlab::shm::ShmHeader* header = reinterpret_cast<const irlab::shm::ShmHeader*>(ptr);
+  ASSERT_EQ(header->buf_num, 1u) << "前提: 1 スロットなので書き換える先は 1 つ";
+  irlab::shm::SlotRecord* slot = reinterpret_cast<irlab::shm::SlotRecord*>(ptr + header->slot_offset);
+  unsigned char*          data = ptr + header->data_offset;
+
+  ASSERT_EQ(pthread_mutex_lock(&slot->owner), 0);
+  std::memset(data, 0x5A, sizeof(BigMsg));                 // 直前の値とは別の内容
+  slot->payload_size.store(sizeof(BigMsg) / 2);            // 型サイズと食い違わせる
+  slot->sequence.fetch_add(1);                             // 最新として選ばせる
+  ASSERT_EQ(pthread_mutex_unlock(&slot->owner), 0);
+
+  // この subscribe() は「コピーしてから失敗する」
+  bool          second_ok = true;
+  const BigMsg& returned  = sub.subscribe(&second_ok);
+  EXPECT_FALSE(second_ok) << "payload_size が型と食い違うのに成功を返した";
+
+  // 直前に返した参照が生きていること。ダブルバッファが無いと 0x5A5A5A5A になる。
+  EXPECT_EQ(held.words[0], 0xA5A5A5A5u) << "失敗した subscribe() が直前の成功値を書き換えた";
+  EXPECT_EQ(held.firstInconsistentWord(), -1) << "直前の成功値が部分的に書き換わった";
+  EXPECT_EQ(&held, &returned) << "前提: 失敗時は同じバッファを返す";
+}
