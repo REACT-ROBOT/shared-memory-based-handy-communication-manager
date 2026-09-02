@@ -27,6 +27,7 @@
 
 ### 詳細仕様書
 - [📋 API仕様書](spec_jp.md)
+- [⚠️ よく踏む落とし穴](pitfalls_jp.md)
 - [🐛 トラブルシューティング](troubleshooting_jp.md)
 
 ### 参考資料

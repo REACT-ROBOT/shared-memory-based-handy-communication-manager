@@ -29,6 +29,7 @@
 ### Detailed Specifications
 - [📋 API Specifications](spec_en.md)
 - [🔧 Build options and operations](spec_en.md)
+- [⚠️ Common Pitfalls](pitfalls_en.md)
 - [🐛 Troubleshooting](troubleshooting_en.md)
 
 ### References
