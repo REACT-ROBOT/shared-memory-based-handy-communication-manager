@@ -7,6 +7,14 @@
 
 ## 基本的な使用例
 
+> **第 2 引数は「見本の値」であり、トピックが運ぶ型を決める。**
+> `False` を渡せば bool、`0` なら int、`0.0` なら float のトピックになる。
+> 型ごとのクラス（`PublisherBool` / `PublisherInt` / `PublisherFloat` と
+> 対応する Subscriber）を直接使ってもよい。
+> 対応していない型を渡すと `TypeError` になる（黙って別の型として扱わない）。
+> 独自の構造体を扱いたい場合は C++ 側で特殊化を書くこと
+> （`cv::Mat` / `Lidar2dScanData` が実例）。
+
 ### 1. 基本的なPublisher（送信側）
 
 ```python

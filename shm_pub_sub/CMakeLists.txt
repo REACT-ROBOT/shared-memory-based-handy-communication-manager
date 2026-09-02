@@ -332,6 +332,22 @@ if(BUILD_TESTS)
     gtest_add_tests(TARGET shm_pub_sub_cutover_test TEST_LIST shm_pub_sub_cutover_test_cases)
   set_tests_properties(${shm_pub_sub_cutover_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT} RESOURCE_LOCK dev_shm)
 
+    # Python バインディングの回帰テスト（R04-F16）
+    #
+    # サニタイザ構成では動かせない。python3 本体がサニタイザ付きで
+    # ビルドされていないため、サニタイズされた .so を後から読み込むと
+    # 「ASan runtime does not come first」で拒否される。
+    # LD_PRELOAD で回避はできるが、Python 本体のリークまで報告されて
+    # 実用にならないので、その構成では登録しない。
+    if(SANITIZER STREQUAL "none")
+    add_test(NAME PythonBindingTest
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/python_binding_test.py)
+    set_tests_properties(PythonBindingTest PROPERTIES
+        TIMEOUT ${SHM_TEST_TIMEOUT}
+        RESOURCE_LOCK dev_shm
+        ENVIRONMENT "PYTHONPATH=$<TARGET_FILE_DIR:shm_pub_sub>;LD_LIBRARY_PATH=$<TARGET_FILE_DIR:shm_base>")
+    endif()
+
     # 時刻指定読み出し（タイムマシン）の回帰テスト
     add_executable(shm_pub_sub_timemachine_test
         test/shm_pub_sub_timemachine_test.cpp

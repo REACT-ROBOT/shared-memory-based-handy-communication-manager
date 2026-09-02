@@ -7,6 +7,13 @@ This tutorial explains how to implement the Publisher/Subscriber model using the
 
 ## Basic Usage Examples
 
+> **The second argument is a sample value: it selects the payload type of the topic.**
+> Pass `False` for a bool topic, `0` for int, `0.0` for float. The per-type classes
+> (`PublisherBool` / `PublisherInt` / `PublisherFloat` and the matching subscribers) can
+> also be used directly. An unsupported type raises `TypeError` rather than being
+> silently treated as something else. For your own structures, write a specialization in
+> C++ (see `cv::Mat` / `Lidar2dScanData`).
+
 ### 1. Basic Publisher (Sender)
 
 ```python
