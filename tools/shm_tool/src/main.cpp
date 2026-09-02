@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cinttypes>
 #include <cstdio>
+#include <cstring>
 #include <iostream>
 #include <regex>
 #include <stdexcept>

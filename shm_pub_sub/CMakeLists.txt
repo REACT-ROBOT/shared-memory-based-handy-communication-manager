@@ -332,6 +332,15 @@ if(BUILD_TESTS)
     gtest_add_tests(TARGET shm_pub_sub_double_include_test TEST_LIST shm_pub_sub_double_include_test_cases)
   set_tests_properties(${shm_pub_sub_double_include_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT} RESOURCE_LOCK dev_shm)
 
+    # 書式の宣言の置き場所を静的に検査する（R04 / Pi4 のビルドで露見）。
+    # 「暗黙実体化の後に特殊化を宣言した」はコンパイラの版によって通ってしまうため、
+    # コンパイルに頼らずここで弾く。共有メモリを触らないので直列化は要らない。
+    add_test(NAME FormatDeclarationPlacement
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/test/check_format_declaration_placement.py
+                ${CMAKE_CURRENT_SOURCE_DIR}/..)
+    set_tests_properties(FormatDeclarationPlacement PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT})
+
     # 世代切替と publish の競合を決定的に検査する（R04-F24）
     add_executable(shm_pub_sub_cutover_test
         test/shm_pub_sub_cutover_test.cpp
