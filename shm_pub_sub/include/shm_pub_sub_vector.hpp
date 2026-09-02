@@ -55,6 +55,15 @@ public:
   Publisher(std::string name = "", int buffer_num = 3, PERM perm = DEFAULT_PERM);
   ~Publisher() = default;
 
+  // コピーは禁止。同じ接続を二重に所有することになる。
+  Publisher(const Publisher &)            = delete;
+  Publisher &operator=(const Publisher &) = delete;
+
+  // ムーブは許す。scalar 版には入っていたが vector 版に無く、
+  // std::vector<Publisher<T>> に入れられるかどうかが型で違っていた（R04-F20）。
+  Publisher(Publisher &&other) noexcept            = default;
+  Publisher &operator=(Publisher &&other) noexcept = default;
+
   void publish(const std::vector<T> &data);
   void _publish(const std::vector<T> data);
 
@@ -103,6 +112,12 @@ public:
   Subscriber(std::string name = "");
   ~Subscriber() = default;
 
+  // コピーは禁止。ムーブは許す（scalar 版と揃える。R04-F20）
+  Subscriber(const Subscriber &)            = delete;
+  Subscriber &operator=(const Subscriber &) = delete;
+  Subscriber(Subscriber &&other) noexcept            = default;
+  Subscriber &operator=(Subscriber &&other) noexcept = default;
+
   const std::vector<T> &subscribe(bool *is_success);
   //! @brief 最新のデータを読み、素性も受け取る（詳細は Subscriber<T> 本体のコメントを参照）
   const std::vector<T> &subscribe(bool *is_success, SampleInfo *info);
@@ -114,6 +129,8 @@ public:
   const std::vector<T> &subscribeAt(const TimeQuery &query, SearchStatus *status, SampleInfo *info = nullptr);
   //! @brief 現在保持している範囲（引ける時刻の範囲）
   RetentionWindow getRetentionWindow();
+  //! @brief publisher 側の共有メモリが存在するか（scalar 版と揃える。R04-F20）
+  bool existsPublisherMemory();
 
   bool                  waitFor(uint64_t timeout_usec);
   void                  setDataExpiryTime_us(uint64_t time_us);
@@ -606,6 +623,17 @@ Subscriber<std::vector<T>>::setDataExpiryTime_us(uint64_t time_us)
   {
     topic->ring()->setDataExpiryTime_us(data_expiry_time_us);
   }
+}
+
+
+//! @brief publisher 側の共有メモリが存在するか
+//! @details トピックが作られているかを見るだけで、有効なデータがあるかは見ない。
+template <typename T>
+bool
+Subscriber<std::vector<T>>::existsPublisherMemory()
+{
+  RingBuffer::TopicContract contract = contractOf();
+  return topic->follow(&contract);
 }
 
 }  // namespace shm

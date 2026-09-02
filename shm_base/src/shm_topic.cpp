@@ -79,10 +79,36 @@ parseGenerationSuffix(const std::string &entry, const std::string &prefix, uint6
   {
     return false;
   }
+  const std::string generation_text = suffix.substr(0, dash);
+  const std::string nonce_text       = suffix.substr(dash + 1);
+
+  // std::stoull は末尾のゴミを黙って無視するので、全部使い切ったことを確かめる。
+  // これをしないと "3-abcXYZ" のような名前を正当な世代名とみなしてしまう（R04-F19）。
+  auto all_digits = [](const std::string &text, int base) {
+    if (text.empty())
+    {
+      return false;
+    }
+    for (char c : text)
+    {
+      const bool decimal = (c >= '0' && c <= '9');
+      const bool hex     = decimal || (c >= 'a' && c <= 'f');
+      if (!(base == 16 ? hex : decimal))
+      {
+        return false;
+      }
+    }
+    return true;
+  };
+  if (!all_digits(generation_text, 10) || !all_digits(nonce_text, 16))
+  {
+    return false;
+  }
+
   try
   {
-    const uint64_t generation = std::stoull(suffix.substr(0, dash), nullptr, 10);
-    const uint64_t nonce      = std::stoull(suffix.substr(dash + 1), nullptr, 16);
+    const uint64_t generation = std::stoull(generation_text, nullptr, 10);
+    const uint64_t nonce      = std::stoull(nonce_text, nullptr, 16);
     if (generation < 2 || generation > MAX_GENERATION || nonce > 0x0000FFFFFFFFFFFFULL)
     {
       return false;
@@ -102,7 +128,7 @@ parseGenerationSuffix(const std::string &entry, const std::string &prefix, uint6
 int
 ShmTopic::removeAllGenerations(const std::string &name)
 {
-  validateShmName(name, "shm::ShmTopic::removeAllGenerations()");
+  validateTopicName(name, "shm::ShmTopic::removeAllGenerations()");
 
   std::string base = name;
   if (!base.empty() && base[0] == '/')
@@ -155,7 +181,7 @@ ShmTopic::ShmTopic(std::string name, PERM perm, bool create)
   , ring_(nullptr)
   , current_tag_(0)
 {
-  validateShmName(name_, "shm::ShmTopic()");
+  validateTopicName(name_, "shm::ShmTopic()");
   (void)create;
 }
 

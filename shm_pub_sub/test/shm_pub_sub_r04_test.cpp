@@ -5,8 +5,10 @@
 #include <atomic>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <vector>
 #include <csignal>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -31,7 +33,8 @@ protected:
   void cleanupAll()
   {
     for (const char *t : { "r04_unlink_pub", "r04_unlink_sub", "r04_cap", "r04_deadreader", "r04_contend",
-                           "r04_heldslot", "r04_abi", "r04_align" })
+                           "r04_heldslot", "r04_abi", "r04_align", "r04_suffix",
+                           "r04_ordinary_name", "r04_shape" })
     {
       try
       {
@@ -467,4 +470,109 @@ TEST_F(SHMR04Test, AlignmentBeyondTheAllowedSkewIsNotSuccess)
   status = SearchStatus::Empty;
   sub.subscribeAlignedTo(reference, &status, 1000000);
   EXPECT_EQ(status, SearchStatus::Success);
+}
+
+// -----------------------------------------------------------------------------
+// R04-F19: トピック名に '#' を許すと、別トピックのセグメントを消せてしまう
+//
+// '#' は世代セグメント名の予約文字である（/shm_<topic>#<世代>-<ノンス>）。
+// トピック名に含められると、そのトピックが別トピックの世代セグメントに見え、
+// 世代の後始末（unlinkStaleGenerations）で無関係なセグメントが消される。
+// 実際に "topic#2-0000deadbeef" を作ると、別トピック "topic" が世代 3 へ
+// 進んだときに古い世代の残骸とみなされて unlink された。
+// -----------------------------------------------------------------------------
+TEST_F(SHMR04Test, ATopicNameMustNotLookLikeAGenerationSegment)
+{
+  EXPECT_THROW(Publisher<Msg>("r04_evil#2-0000deadbeef", 3), std::invalid_argument);
+  EXPECT_THROW(Subscriber<Msg>("r04_evil#2-0000deadbeef"), std::invalid_argument);
+  EXPECT_THROW(disconnectTopic("r04_evil#2-0000deadbeef"), std::invalid_argument);
+
+  // '#' が 1 つでも入っていれば拒む
+  EXPECT_THROW(Publisher<Msg>("r04#evil", 3), std::invalid_argument);
+
+  // 普通の名前は通ること
+  EXPECT_NO_THROW(Publisher<Msg>("r04_ordinary_name", 3));
+  disconnectTopic("r04_ordinary_name");
+}
+
+// -----------------------------------------------------------------------------
+// R04-F19: 世代セグメント名の解釈は厳密でなければならない
+//
+// std::stoull は末尾のゴミを黙って無視するので、"3-abcXYZ" のような名前を
+// 正当な世代名とみなして消しに行ってしまう。
+// -----------------------------------------------------------------------------
+TEST_F(SHMR04Test, MalformedGenerationSuffixesAreNotTreatedAsGenerations)
+{
+  const std::string topic = "r04_suffix";
+  {
+    Publisher<std::vector<uint32_t>> pub(topic, 3);
+    pub.publish(std::vector<uint32_t>(8, 1));
+    pub.publish(std::vector<uint32_t>(40000, 2));  // 世代を進める
+  }
+
+  // 世代名に見せかけた、書式の壊れたセグメントを置く
+  const char *malformed[] = {
+    "shm_r04_suffix#3-abcXYZ",     // 16 進でない文字が混ざる
+    "shm_r04_suffix#3x-000000000001",  // 10 進でない文字が混ざる
+    "shm_r04_suffix#-000000000001",    // 世代番号が無い
+    "shm_r04_suffix#3-",               // ノンスが無い
+  };
+  for (const char *name : malformed)
+  {
+    const int fd = ::shm_open((std::string("/") + name).c_str(), O_RDWR | O_CREAT | O_EXCL, 0660);
+    ASSERT_GE(fd, 0) << name;
+    ASSERT_EQ(::ftruncate(fd, 4096), 0);
+    ::close(fd);
+  }
+
+  // トピックを消しても、書式の壊れたものには触れないこと
+  disconnectTopic(topic);
+
+  for (const char *name : malformed)
+  {
+    struct stat st;
+    EXPECT_EQ(::stat((std::string("/dev/shm/") + name).c_str(), &st), 0)
+        << name << " を世代セグメントと誤認して消した";
+    ::shm_unlink((std::string("/") + name).c_str());
+  }
+}
+
+// -----------------------------------------------------------------------------
+// R04-F20: scalar と vector で公開 API が揃っていること
+//
+// 以前は vector 版だけ move 構築できず、std::vector<Publisher<...>> に
+// 入れられるかどうかが型によって違った。利用者に説明できない差である。
+// existsPublisherMemory() も scalar にしか無かった。
+// -----------------------------------------------------------------------------
+TEST_F(SHMR04Test, ScalarAndVectorExposeTheSameShape)
+{
+  // コピーは両方とも禁止（同じ接続を二重に所有させない）
+  static_assert(!std::is_copy_constructible<Publisher<Msg>>::value, "scalar Publisher がコピーできる");
+  static_assert(!std::is_copy_constructible<Publisher<std::vector<uint32_t>>>::value,
+                "vector Publisher がコピーできる");
+  static_assert(!std::is_copy_constructible<Subscriber<Msg>>::value, "scalar Subscriber がコピーできる");
+  static_assert(!std::is_copy_constructible<Subscriber<std::vector<uint32_t>>>::value,
+                "vector Subscriber がコピーできる");
+
+  // ムーブは両方とも可能（コンテナに入れられる）
+  static_assert(std::is_move_constructible<Publisher<Msg>>::value, "scalar Publisher がムーブできない");
+  static_assert(std::is_move_constructible<Publisher<std::vector<uint32_t>>>::value,
+                "vector Publisher がムーブできない");
+  static_assert(std::is_move_constructible<Subscriber<Msg>>::value, "scalar Subscriber がムーブできない");
+  static_assert(std::is_move_constructible<Subscriber<std::vector<uint32_t>>>::value,
+                "vector Subscriber がムーブできない");
+
+  // 実際にコンテナへ入れて使えること
+  std::vector<Publisher<std::vector<uint32_t>>> publishers;
+  publishers.emplace_back("r04_shape", 3);
+  publishers[0].publish(std::vector<uint32_t>(4, 5));
+
+  Subscriber<std::vector<uint32_t>> sub("r04_shape");
+  EXPECT_TRUE(sub.existsPublisherMemory()) << "vector 版に existsPublisherMemory が無い、または動かない";
+
+  bool                         ok = false;
+  const std::vector<uint32_t> &v  = sub.subscribe(&ok);
+  ASSERT_TRUE(ok);
+  EXPECT_EQ(v.size(), 4u);
+  EXPECT_EQ(v[0], 5u);
 }

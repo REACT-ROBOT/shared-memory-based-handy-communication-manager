@@ -61,6 +61,28 @@ validateShmName(const std::string &name, const char *context)
   }
 }
 
+//! @brief トピック名として使えるかを検証する
+//! @details 共有メモリ名としての検証に加えて、**トピック名だけに課す制約**を見る。
+//!          世代セグメント名（/shm_<topic>#<世代>-<ノンス>）はライブラリが
+//!          内部で作るので、そちらは validateShmName() だけを通す。
+void
+validateTopicName(const std::string &name, const char *context)
+{
+  validateShmName(name, context);
+
+  // '#' は世代セグメント名の予約文字である。トピック名に含められると、
+  // そのトピックが別トピックの世代セグメントに見えてしまい、世代の後始末で
+  // **無関係なセグメントを消せる**（R04-F19）。実際に
+  // "topic#2-0000deadbeef" というトピックを作ると、別トピック "topic" が
+  // 世代 3 へ進んだときに古い世代の残骸とみなされて unlink された。
+  if (name.find('#') != std::string::npos)
+  {
+    throw std::invalid_argument(std::string(context) +
+                                ": topic name must not contain '#'; it is reserved for layout generation "
+                                "segments (/shm_<topic>#<generation>-<nonce>)");
+  }
+}
+
 //! @brief 共有メモリを破棄する(POSIX版)
 //! @param [in] name 共有メモリ名
 //! @return なし

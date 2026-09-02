@@ -228,6 +228,9 @@ int      disconnectTopic(const std::string &name);
 uint64_t getCurrentTimeUSec();
 void     validateShmName(const std::string &name, const char *context);
 
+//! @brief トピック名として使えるかを検証する（'#' はトピック名に使えない）
+void validateTopicName(const std::string &name, const char *context);
+
 
 // ****************************************************************************
 //! @class SharedMemory
