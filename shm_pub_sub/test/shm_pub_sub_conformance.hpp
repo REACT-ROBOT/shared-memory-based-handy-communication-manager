@@ -27,9 +27,22 @@
 //!
 //! ## 使い方
 //!
+//! CMake からは、ヘッダオンリーの INTERFACE ターゲットを link するだけでよい。
+//!
+//! @code
+//! target_link_libraries(<自分のテスト> PRIVATE shm_pub_sub_conformance)
+//! @endcode
+//!
+//! **`using namespace irlab::shm;` を書いてから実体化すること。**
+//! `INSTANTIATE_TYPED_TEST_SUITE_P` はスイート名を識別子に連結するマクロなので、
+//! `irlab::shm::SHMSpecializationConformance` のような修飾名を渡すと
+//! `'gtest_suite_irlab' was not declared` という分かりにくいエラーになる。
+//!
 //! @code
 //! #include "shm_pub_sub_conformance.hpp"
 //! #include "shm_pub_sub_my_type.hpp"
+//!
+//! using namespace irlab::shm;
 //!
 //! struct MyTypeTraits
 //! {

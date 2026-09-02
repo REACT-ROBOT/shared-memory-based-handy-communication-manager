@@ -82,6 +82,28 @@ install(TARGETS shm_pub_sub EXPORT shm_pub_subExport
 install(FILES ${PROJECT_SOURCE_DIR}/include/shm_pub_sub_vector.hpp
 	DESTINATION include
 )
+
+# ----------------------------------------------------------------------------
+# 適合性スイート（test/shm_pub_sub_conformance.hpp）を外部へ公開する
+#
+# Publisher<T> / Subscriber<T> の特殊化は 5 つあり、うち 3 つは別リポジトリに
+# ある（react_cv / sensor_daemons）。型に依存しない約 150 行が 5 箇所に
+# コピーされているため、片方だけ直す漏れが実際に起きた（R04-F12）。
+#
+# 契約を 1 箇所に書いたヘッダをここで公開しておけば、外部の特殊化は
+#     target_link_libraries(<自分のテスト> PRIVATE shm_pub_sub_conformance)
+# と書くだけで同じ検査を受けられる。ヘッダオンリーなのでリンクは発生しない。
+# ----------------------------------------------------------------------------
+add_library(shm_pub_sub_conformance INTERFACE)
+target_include_directories(shm_pub_sub_conformance INTERFACE
+	$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/test>
+	$<INSTALL_INTERFACE:include>
+)
+target_link_libraries(shm_pub_sub_conformance INTERFACE shm_pub_sub)
+install(FILES ${PROJECT_SOURCE_DIR}/test/shm_pub_sub_conformance.hpp
+	DESTINATION include
+)
+install(TARGETS shm_pub_sub_conformance EXPORT shm_pub_subExport)
 # 参照側が find_package(shm_pub_sub <version>) でバージョンを確認できるようにする
 include(CMakePackageConfigHelpers)
 write_basic_package_version_file(
