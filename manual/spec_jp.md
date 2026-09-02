@@ -936,33 +936,109 @@ sequenceDiagram
 
 ## 新しいデータ型の追加
 
-@htmlonly
-<div class="mermaid">
-flowchart TD
-    Start([新しい型Tを追加]) --> CheckPOD{POD型?}
-    CheckPOD -->|Yes| UseTemplate[既存テンプレートを使用]
-    CheckPOD -->|No| Specialize[テンプレート特殊化]
-    
-    UseTemplate --> InstantiateC["C++でPublisherT,<br/>SubscriberTをインスタンス化"]
-    Specialize --> CustomImpl["カスタム実装<br/>・シリアライゼーション<br/>・デシリアライゼーション"]
-    
-    CustomImpl --> InstantiateC
-    InstantiateC --> PythonNeeded{Python対応必要?}
-    
-    PythonNeeded -->|Yes| CreateWrapper["Boost.Pythonラッパー作成<br/>・PublisherT<br/>・SubscriberT"]
-    PythonNeeded -->|No| TestC[C++テスト実装]
-    
-    CreateWrapper --> UpdateModule[BOOST_PYTHON_MODULEに追加]
-    UpdateModule --> TestPy[Pythonテスト実装]
-    TestPy --> TestC
-    TestC --> Document[ドキュメント更新]
-    Document --> End([完了])
-</div>
-<script type="module">
-  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
-  mermaid.initialize({ startOnLoad: true });
-</script>
-@endhtmlonly
+型の性質によって手順が 3 つに分かれる。**どれを選んでも、書式の宣言は必須である。**
+
+| 型 | 何をするか |
+|---|---|
+| 固定長の POD | `SHM_DECLARE_LAYOUT()` を書くだけ。`Publisher<T>` がそのまま使える |
+| `std::vector<T>` | `shm_pub_sub_vector.hpp` を取り込む。要素型に `SHM_DECLARE_LAYOUT()` |
+| 可変長・非 POD | `Publisher<T>` / `Subscriber<T>` を特殊化し、`SHM_DECLARE_SERIALIZED_FORMAT()` |
+
+### 1. 固定長の POD
+
+```cpp
+// my_types.hpp
+#ifndef MY_TYPES_HPP
+#define MY_TYPES_HPP
+#include "shm_pub_sub.hpp"
+
+struct Pose { double x, y, theta; };
+SHM_DECLARE_LAYOUT(Pose, x, y, theta);   // 名前空間の外、インクルードガードの内側
+
+#endif
+```
+
+これだけで使える。
+
+```cpp
+irlab::shm::Publisher<Pose>  pub("pose", 8);
+irlab::shm::Subscriber<Pose> sub("pose");
+```
+
+メンバを 1 つでも書き漏らすとコンパイルエラーになる（`layout_covers_type()` が
+`offsetof` と `sizeof` の隙間を見て検出する）。宣言順に全部並べること。
+
+入れ子の型は**外側より前に**宣言する。外側の宣言が入れ子の版を畳み込むため、
+逆順だと「暗黙実体化の後に特殊化を宣言した」ことになり ill-formed である。
+
+```cpp
+struct Vec2 { double x, y; };
+struct Path { Vec2 a; Vec2 b; };
+SHM_DECLARE_LAYOUT(Vec2, x, y);      // 先
+SHM_DECLARE_LAYOUT(Path, a, b);      // 後
+```
+
+レイアウトは変えずに**意味だけ**変えたとき（`float range` の単位を m から mm へ、
+など）は自動ハッシュでは検出できない。この場合だけ版を手で上げる。
+
+```cpp
+SHM_DECLARE_LAYOUT_REV(Scan, 2, range, intensity);
+```
+
+### 2. `std::vector<T>`
+
+要素型に `SHM_DECLARE_LAYOUT()` を書き、`shm_pub_sub_vector.hpp` を取り込む。
+長さが変わると内部で世代交代（新しいセグメントの確保）が起きるので、
+長さが固定なら固定長配列を持つ POD のほうが速い。
+
+### 3. 可変長・非 POD（`cv::Mat` のような型）
+
+ワイヤ形式が構造体のメモリレイアウトではなく `serialize()` の実装で決まるため、
+レイアウトからは導出できない。版を手で持つ。
+
+```cpp
+// shm_pub_sub_my_scan.hpp
+#ifndef SHM_PUB_SUB_MY_SCAN_HPP
+#define SHM_PUB_SUB_MY_SCAN_HPP
+#include "shm_pub_sub.hpp"
+#include "my_scan.hpp"
+
+// (1) インクルードガードの内側で、(2) 下の特殊化より前に置くこと
+SHM_DECLARE_SERIALIZED_FORMAT(MyScan, 1);   // serialize() を変えたら 2 へ
+
+namespace irlab { namespace shm {
+
+template <> class Publisher<MyScan>  { /* ... */ };
+template <> class Subscriber<MyScan> { /* ... */ };
+
+}}  // namespace
+#endif
+```
+
+**置き場所の 2 つの制約は、どちらも x86 の gcc 11 では通ってしまう。**
+Raspberry Pi 4（gcc 12）のビルドで初めて落ちるので、必ず守ること。
+
+1. **インクルードガードの内側。** 外に出すと、同じヘッダを推移的に 2 回
+   取り込んだ翻訳単位でマクロが再展開され、`shm_schema<T>` が二重定義になる。
+2. **`Publisher` / `Subscriber` の特殊化より前。** それらの `contractOf()` が
+   `schema_version_of<T>()` を呼ぶので、後ろに置くと ill-formed である。
+   実体化の時点はコンパイラの版で変わる。
+
+`shm_pub_sub/test/check_format_declaration_placement.py` が両方を機械的に検査する。
+
+### 移行
+
+`-DSHM_REQUIRE_LAYOUT=ON` でビルドすると、未宣言の型を publish / subscribe した
+時点でコンパイルエラーになる。既定は OFF（workspace に 90 種類以上のペイロード型が
+あり、一斉に必須化すると複数リポジトリのビルドが同時に止まるため）。
+パッケージ単位で ON にして潰していくこと。稼働中のどのトピックが未宣言かは
+`shm_tool doctor` が「未宣言」と表示する。
+
+### Python 対応
+
+Python バインディングは `bool` / `int` / `float` のみで、独自型には対応していない。
+必要なら `shm_pub_sub_python.cpp` にラッパーを足し、`BOOST_PYTHON_MODULE` に
+登録する。詳しくは「Python バインディング設計」を参照。
 
 # 参照
 ## man shm_overview

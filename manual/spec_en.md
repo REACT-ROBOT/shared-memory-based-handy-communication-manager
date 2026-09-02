@@ -807,33 +807,113 @@ sequenceDiagram
 
 ## Adding New Data Types
 
-@htmlonly
-<div class="mermaid">
-flowchart TD
-    Start([Add new type T]) --> CheckPOD{POD type?}
-    CheckPOD -->|Yes| UseTemplate[Use existing templates]
-    CheckPOD -->|No| Specialize[Template specialization]
-    
-    UseTemplate --> InstantiateC["Instantiate PublisherT,<br/>SubscriberT in C++"]
-    Specialize --> CustomImpl["Custom implementation<br/>・Serialization<br/>・Deserialization"]
-    
-    CustomImpl --> InstantiateC
-    InstantiateC --> PythonNeeded{Python support needed?}
-    
-    PythonNeeded -->|Yes| CreateWrapper["Create Boost.Python wrapper<br/>・PublisherT<br/>・SubscriberT"]
-    PythonNeeded -->|No| TestC[Implement C++ tests]
-    
-    CreateWrapper --> UpdateModule[Add to BOOST_PYTHON_MODULE]
-    UpdateModule --> TestPy[Implement Python tests]
-    TestPy --> TestC
-    TestC --> Document[Update documentation]
-    Document --> End([Complete])
-</div>
-<script type="module">
-  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
-  mermaid.initialize({ startOnLoad: true });
-</script>
-@endhtmlonly
+Which of three paths you take depends on the type. **All three require a format
+declaration.**
+
+| Type | What to do |
+|---|---|
+| fixed-size POD | write `SHM_DECLARE_LAYOUT()`; `Publisher<T>` works as is |
+| `std::vector<T>` | include `shm_pub_sub_vector.hpp`; declare the element type |
+| variable-size / non-POD | specialize `Publisher<T>` / `Subscriber<T>` and use `SHM_DECLARE_SERIALIZED_FORMAT()` |
+
+### 1. Fixed-size POD
+
+```cpp
+// my_types.hpp
+#ifndef MY_TYPES_HPP
+#define MY_TYPES_HPP
+#include "shm_pub_sub.hpp"
+
+struct Pose { double x, y, theta; };
+SHM_DECLARE_LAYOUT(Pose, x, y, theta);   // global scope, inside the include guard
+
+#endif
+```
+
+That is all:
+
+```cpp
+irlab::shm::Publisher<Pose>  pub("pose", 8);
+irlab::shm::Subscriber<Pose> sub("pose");
+```
+
+Omitting even one member is a compile error — `layout_covers_type()` spots the gap
+between `offsetof` and `sizeof`. List every member, in declaration order.
+
+Declare a nested type **before** the type that contains it; the outer declaration folds
+in the inner one's version, so the reverse order is "specialization after instantiation",
+which is ill-formed.
+
+```cpp
+struct Vec2 { double x, y; };
+struct Path { Vec2 a; Vec2 b; };
+SHM_DECLARE_LAYOUT(Vec2, x, y);      // first
+SHM_DECLARE_LAYOUT(Path, a, b);      // second
+```
+
+A change that keeps the layout and alters only the **meaning** (say `float range` moving
+from metres to millimetres) cannot be detected by the automatic hash. That is the one
+case where you bump a revision by hand:
+
+```cpp
+SHM_DECLARE_LAYOUT_REV(Scan, 2, range, intensity);
+```
+
+### 2. `std::vector<T>`
+
+Declare the element type with `SHM_DECLARE_LAYOUT()` and include
+`shm_pub_sub_vector.hpp`. A change in length triggers a generation cut-over (a new
+segment is allocated), so a POD holding a fixed-size array is faster when the length is
+in fact fixed.
+
+### 3. Variable-size / non-POD (a `cv::Mat`-like type)
+
+Here the wire format is decided by `serialize()`, not by the struct's memory layout, so
+nothing can be derived from the layout and the revision is carried by hand.
+
+```cpp
+// shm_pub_sub_my_scan.hpp
+#ifndef SHM_PUB_SUB_MY_SCAN_HPP
+#define SHM_PUB_SUB_MY_SCAN_HPP
+#include "shm_pub_sub.hpp"
+#include "my_scan.hpp"
+
+// (1) inside the include guard, and (2) before the specializations below
+SHM_DECLARE_SERIALIZED_FORMAT(MyScan, 1);   // bump to 2 when serialize() changes
+
+namespace irlab { namespace shm {
+
+template <> class Publisher<MyScan>  { /* ... */ };
+template <> class Subscriber<MyScan> { /* ... */ };
+
+}}  // namespace
+#endif
+```
+
+**Both placement constraints are accepted by gcc 11 on x86** and only fail when you build
+on a Raspberry Pi 4 (gcc 12), so follow them deliberately:
+
+1. **Inside the include guard.** Outside it, a translation unit that pulls the header in
+   twice transitively re-expands the macro and redefines `shm_schema<T>`.
+2. **Before the `Publisher` / `Subscriber` specializations**, whose `contractOf()` calls
+   `schema_version_of<T>()`. A declaration after them is ill-formed, and when
+   instantiation happens varies by compiler version.
+
+`shm_pub_sub/test/check_format_declaration_placement.py` checks both mechanically.
+
+### Migration
+
+Building with `-DSHM_REQUIRE_LAYOUT=ON` turns publishing or subscribing an undeclared
+type into a compile error. The default is OFF, because the workspace holds more than 90
+payload types and requiring them all at once would stop several repositories from
+building simultaneously. Turn it on one package at a time. `shm_tool doctor` marks which
+live topics are still undeclared.
+
+### Python support
+
+The Python binding covers `bool`, `int` and `float` only; custom types are not supported.
+If you need one, add a wrapper to `shm_pub_sub_python.cpp` and register it in
+`BOOST_PYTHON_MODULE`. See "Python Binding Design" above.
 
 # 📚 References
 
