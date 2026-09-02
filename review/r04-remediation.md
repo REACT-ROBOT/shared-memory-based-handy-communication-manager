@@ -5,7 +5,7 @@
 - 結果: **指摘 29 件すべて対応**。対応中に自分で見つけた 2 件も併せて修正。
   回帰テスト 28 本を追加し、Release / 負荷下 / ASan / UBSan / TSan の全構成で **138/138 PASS**
   （サニタイザ構成は Python テストを除く 137/137）。
-  Raspberry Pi 4 でのワークスペース全体のビルドも確認済み（2026-09-02）
+  **Raspberry Pi 4（aarch64）でもビルドとテスト 138/138 PASS を確認済み（2026-09-02）**
 - 版: `SHM_VERSION` を 4.0.0 → **5.0.0**（ABI は R03 で 4 に上がっていたが版が据え置きだった）
 
 ## 総括
@@ -266,14 +266,23 @@ G2 以外はカバーできた。G2 が拾うはずだったケースは publish
 
 ## 未実施
 
-- **Raspberry Pi 4（aarch64）でのテスト実行**。
-  **ワークスペース全体のビルドは 2026-09-02 に成功を確認した**
-  （`static assertion 0 件 / error 0 件`）。その過程で上記 3 件を修正している。
-  実行はこれから。次の点は実機で確かめる価値がある。
-  - `ShmHeader` 192 バイトの `static_assert`（クロスコンパイル + qemu では検証済み）
-  - `pthread_mutex_clocklock` の可用性（aarch64 の glibc 版に依存。2.30 未満ならスピンに落ちる）。
-    ビルドが通ったので構文上の問題は無いが、どちらの経路が選ばれたかは実行時にしか分からない
-  - `PTHREAD_PRIO_INHERIT` と SCHED_FIFO の組み合わせ
+- ~~**Raspberry Pi 4（aarch64）での検証**~~ → **2026-09-02 に完了**。
+  ワークスペース全体のビルド（`static assertion 0 件 / error 0 件`）と
+  **テスト 138/138 PASS** を確認した。その過程で上記 3 件を修正している。
+  - `ShmHeader` 192 バイトのレイアウトは実機でも一致
+  - glibc 2.36 なので `pthread_mutex_clocklock` の経路が使われる
+    （2.30 未満のスピン待ちへのフォールバックは実機では発生しない）
+  - robust mutex の `EOWNERDEAD` と `PTHREAD_PRIO_INHERIT` も aarch64 で動作
+
+  なお、ワークスペースのトップレベル (`shm_ws/CMakeLists.txt`) では
+  `enable_testing()` を呼んでいないため、ビルドルートから `ctest` すると
+  `No tests were found!!!` になる。当面は
+
+  ```
+  ctest --test-dir src/shared-memory-based-handy-communication-manager -j1
+  ```
+
+  で実行する。トップレベルに `enable_testing()` を 1 行足せばルートからも実行できる。
 - **実センサでの通し確認**。ABI が 4 に上がったので、入れ替え前に
   `shm_tool remove` で既存セグメントを消し、そのトピックを使う全プロセスを
   同時に起動し直すこと。対象は `shm_tool doctor` で一覧できる。
