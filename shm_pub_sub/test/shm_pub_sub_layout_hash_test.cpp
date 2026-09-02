@@ -10,6 +10,10 @@
 #include <string>
 
 #include "shm_pub_sub.hpp"
+// 二重インクルードで書式の宣言が再展開されないこと（Pi4 の全体ビルドで露見した）。
+// 宣言をインクルードガードの外に置くと、推移的に 2 回取り込んだ翻訳単位で
+// shm_schema<T> の特殊化が二重定義になる。
+#include "shm_pub_sub.hpp"
 
 // --- 同じサイズ・同じメンバ、並びだけ違う 2 つの型 ---
 struct LayoutA

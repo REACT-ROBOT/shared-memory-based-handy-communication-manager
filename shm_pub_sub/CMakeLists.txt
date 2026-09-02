@@ -320,6 +320,18 @@ if(BUILD_TESTS)
     gtest_add_tests(TARGET shm_pub_sub_layout_hash_test TEST_LIST shm_pub_sub_layout_hash_test_cases)
   set_tests_properties(${shm_pub_sub_layout_hash_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT} RESOURCE_LOCK dev_shm)
 
+    # 書式の宣言が二重インクルードで壊れないこと（Pi4 の全体ビルドで露見）
+    add_executable(shm_pub_sub_double_include_test
+        test/shm_pub_sub_double_include_test.cpp
+      )
+    target_link_libraries(shm_pub_sub_double_include_test
+        PRIVATE
+        shm_pub_sub
+        ${GTEST_LDFLAGS}
+      )
+    gtest_add_tests(TARGET shm_pub_sub_double_include_test TEST_LIST shm_pub_sub_double_include_test_cases)
+  set_tests_properties(${shm_pub_sub_double_include_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT} RESOURCE_LOCK dev_shm)
+
     # 世代切替と publish の競合を決定的に検査する（R04-F24）
     add_executable(shm_pub_sub_cutover_test
         test/shm_pub_sub_cutover_test.cpp
