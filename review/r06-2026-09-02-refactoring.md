@@ -91,23 +91,80 @@ R03・R05 に続く 3 例目である。「修正を巻き戻すと落ちる」�
 
 ---
 
-## 未着手 — 構造的な根本原因
+## 構造的な根本原因への第一歩 — 適合性スイート
 
-`subscribeAlignedTo` / `subscribeAt` / `waitFor` / `getRetentionWindow` など、
-**型に一切依存しない約 150 行が 5 箇所にバイト等価でコピーされている**。
+型に一切依存しない約 150 行が 5 箇所にバイト等価でコピーされている件について、
+**共通化の前に「5 つが守るべき契約」を 1 箇所に書いた適合性スイートを用意した**。
+実装は 5 箇所のままだが、次に誰かが片方だけ直したら CI が落ちる。
 
-R01〜R05 の 45 コミットは、これを毎回手で 5 回適用する運用だった。
-今回の R04-F12 漏れはその必然的な帰結であり、次のレビューでも同じことが起きる。
+`shm_pub_sub/test/shm_pub_sub_conformance.hpp` は型パラメータ化テストなので、
+外部リポジトリは Traits を 20 行書いて実体化するだけでよい。
+CMake からは INTERFACE ターゲット `shm_pub_sub_conformance` を link する。
 
-対策の候補は 2 つある。
+固定した契約は 11 件。
 
-1. `shm_base` に型に依存しないヘルパ（例: `findAlignedSlot()`）を置き、
-   5 箇所からそれを呼ぶ形へ寄せる
-2. 実装は 5 箇所のままで、「5 つの特殊化が同じ振る舞いをする」ことを
-   確かめる共通テストを作る
+| テスト | 由来 |
+|---|---|
+| `RoundTripsThePayload` | — |
+| `CaptureTimeIsStampedAtPublishEntry` | R04-F12 |
+| `PayloadAndSampleInfoDescribeTheSameSample` | R02-F03 |
+| `SequenceIsMonotonic` | R01-F05 |
+| `TheReturnedReferenceSurvivesOneMoreSubscribe` | ダブルバッファ |
+| `ExpiryIsHonouredAndZeroDisablesIt` | — |
+| `WaitForTimesOutWithoutAPublish` | — |
+| `RetentionWindowCoversWhatWasPublished` | — |
+| `SubscribeAtFindsAKnownSample` | — |
+| `SubscribeAlignedToHonoursMaxSkew` | R04-F14 |
+| `SubscribeAlignedToRejectsAnInvalidReference` | R04-F14 |
 
-1 は 3 リポジトリを同時に書き換え、`shm_base` のヘッダ互換にも触れる。
-2 はリスクが低く、1 の前段階にもなる。
+### 実際に効くことの確認
+
+capture 時刻の検査は「入口で打ったなら開始側に、commit で打ったなら終了側に
+寄る」を**所要時間で正規化して**見るので、機械の速さに依存しない。
+判定できるほど publish に時間がかからない型では SKIP して理由を報告する。
+
+R04-F12 修正前の実装（`4de827d~1`）を取り出して回すと、決定的に落ちる。
+
+```
+Lidar2D: capture 時刻が publish() の終了側に寄っている。
+publish 所要 1462us に対し、入口からの遅れ 1461us
+```
+
+**45 コミット・5 回のレビューを生き延びた欠陥を、このスイートは捕まえる。**
+
+### 適用状況
+
+| 特殊化 | 結果 |
+|---|---|
+| scalar | 11/11（capture 時刻は判定不能で SKIP。固定長なので正常） |
+| vector | 11/11 |
+| cv::Mat | 11/11 |
+| Lidar2dScanData | 11/11 |
+| PointCloud2DScanData | 11/11 |
+
+### このスイートが早速見つけたもの
+
+**私が同日の `[doc]` コミットで spec に書いた `SearchPolicy` の表が逆だった。**
+`TooOld` / `TooNew` は「指定した時刻が保持範囲に対してどうか」を表すのであって、
+サンプル側から見た向きではない。
+
+- `AtOrBefore` で該当なし = その時刻は既に上書きされた → `TooOld`
+- `AtOrAfter` で該当なし = その時刻はまだ publish されていない → `TooNew`
+
+実装（`findBufferNum`）と enum の定義コメントが正しく、`spec_jp` / `spec_en` を
+直した。契約をテストとして書き下ろす作業が、文書の誤りを 1 件炙り出したことになる。
+
+---
+
+## 未着手 — 共通化そのもの
+
+コピーそのものは残っている。上の適合性スイートは**漏れを検出できる**ように
+しただけで、**漏れが起きなくなった**わけではない。
+
+次の段階は、`shm_base` に型に依存しないヘルパ（例: `findAlignedSlot()`）を置き、
+5 箇所からそれを呼ぶ形へ寄せることである。3 リポジトリを同時に書き換え、
+`shm_base` のヘッダ互換にも触れるので、適合性スイートが緑であることを
+安全網にしながら進めるのがよい。
 
 そのほか、特殊化間に残っているずれ:
 
