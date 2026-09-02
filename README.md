@@ -150,7 +150,7 @@ The project maintains comprehensive test coverage with automated CI testing:
 - **Integration tests**: Publisher/Subscriber patterns, including the vector
   specialization and the Python binding
 - **Regression tests**: every finding from the five review rounds has a test that was
-  verified to fail when its fix is reverted (see [`review/`](review/))
+  verified to fail when its fix is reverted (see [`review/`](https://github.com/REACT-ROBOT/shared-memory-based-handy-communication-manager/tree/main/review))
 - **Fault injection**: corrupted headers, killed writers, and generation cut-overs
   interleaved with a publish
 

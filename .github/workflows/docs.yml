@@ -1,0 +1,112 @@
+# ============================================================================
+# ドキュメントの生成と GitHub Pages への配信
+#
+# 以前は生成済みの HTML（462 ファイル）を docs/ に直接コミットしていた。
+# 追跡ファイルの 85% が生成物で、manual/*.md を 1 行直すたびに数十ファイルの
+# 差分が乗るうえ、Doxyfile がリポジトリに無いため誰も再生成できなかった。
+# その結果、公開サイトは v2.0.0 で削除した shm_service / shm_action を
+# いつまでも紹介し続けていた。
+#
+# 生成物は追跡せず、ここで作って Pages へ直接配信する。gh-pages ブランチは
+# 作らない。ブランチを増やすと、そちらに生成物が溜まって同じ問題が場所を
+# 変えて再発するだけである。
+# ============================================================================
+name: Documentation
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+# Pages への配信に必要な権限。読み取り以外は最小限にしてある。
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 配信は 1 つずつ。実行中のものは走り切らせる（途中で切ると
+# 中途半端な内容が公開され得るため cancel-in-progress は false）。
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04   # doxygen 1.9.1。既存の出力と同じ版に固定する
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install doxygen
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y doxygen
+          doxygen --version
+
+      - name: Generate (English and Japanese)
+        run: |
+          doxygen Doxyfile    2> doxygen_en.log
+          doxygen Doxyfile.jp 2> doxygen_jp.log
+          echo "::group::doxygen warnings (English)"; cat doxygen_en.log; echo "::endgroup::"
+          echo "::group::doxygen warnings (Japanese)"; cat doxygen_jp.log; echo "::endgroup::"
+
+      # 生成物の中で相対リンクが解決できるかを見る。manual/*.md は
+      # ../md_manual_*.html という Doxygen の出力名を直接書いているので、
+      # 入力の与え方を変えるとページ間のリンクが静かに全滅する。
+      - name: Check for broken links
+        run: |
+          python3 - <<'PY'
+          import os, re, html, sys
+          bad = set()
+          for root, _, files in os.walk('docs'):
+              for f in files:
+                  if not f.endswith('.html'):
+                      continue
+                  p = os.path.join(root, f)
+                  text = open(p, encoding='utf-8', errors='replace').read()
+                  for href in re.findall(r'href="([^"]+)"', text):
+                      if href.startswith(('http', '#', 'mailto', 'javascript')):
+                          continue
+                      target = html.unescape(href.split('#')[0])
+                      if target and not os.path.exists(os.path.normpath(os.path.join(root, target))):
+                          bad.add((os.path.relpath(p, 'docs'), target))
+          for a, b in sorted(bad):
+              print(f"broken: {a} -> {b}")
+          print(f"{len(bad)} broken link(s)")
+          sys.exit(1 if bad else 0)
+          PY
+
+      # 主要なページが生成されたことを確認する。Doxygen は入力が
+      # 見つからなくても警告だけで成功するため、存在確認は別に要る。
+      - name: Check that the expected pages exist
+        run: |
+          missing=0
+          for f in index.html \
+                   md_manual_quickstart_en.html \
+                   md_manual_spec_en.html \
+                   md_manual_pitfalls_en.html \
+                   md_manual_troubleshooting_en.html \
+                   docs_jp/index.html \
+                   docs_jp/md_manual_quickstart_jp.html \
+                   docs_jp/md_manual_spec_jp.html \
+                   docs_jp/md_manual_pitfalls_jp.html; do
+            if [ ! -e "docs/$f" ]; then echo "missing: docs/$f"; missing=1; fi
+          done
+          exit $missing
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+  deploy:
+    # PR では生成と検査だけ行い、配信しない
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -816,7 +816,7 @@ Pub/Sub通信をマスターしたら、以下の高度なトピックに挑戦�
 - ✅ **改変可能**: ニーズに合わせてコードを修正・拡張
 - ✅ **再配布可能**: ライセンス表示を保持して再配布
 
-詳細は[LICENSEファイル](../LICENSE)をご確認ください。
+詳細は[LICENSEファイル](https://github.com/REACT-ROBOT/shared-memory-based-handy-communication-manager/blob/main/LICENSE)をご確認ください。
 
 ---
 

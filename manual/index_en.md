@@ -18,7 +18,7 @@
 ### Beginner's Guide
 - [📖 Introduction - Communication Library Fundamentals](introduction_en.md)
 - [🚀 Quick Start Guide](quickstart_en.md)
-- [⚙️ Installation and Configuration](quickstart_en.md#-installation-2-minutes)
+- [⚙️ Installation and Configuration](quickstart_en.md)
 
 ### Tutorials
 - [📝 Basic Tutorials (C++)](tutorials_en.md)
@@ -34,7 +34,7 @@
 
 ### References
 - [📚 References](reference_en.md)
-- [💡 Sample code](../shm_pub_sub/samples/) - in the repository
+- [💡 Sample code](https://github.com/REACT-ROBOT/shared-memory-based-handy-communication-manager/tree/main/shm_pub_sub/samples) - in the repository
 
 ## 🎯 Features
 
@@ -114,7 +114,7 @@ This software is provided as open source under the Apache License 2.0. Commercia
 - ✅ **Redistribution allowed**: Redistribution possible with license notice
 - ✅ **Patent protection**: Contributors' patent rights protected
 
-Please see the [LICENSE file](../LICENSE) for details.
+Please see the [LICENSE file](https://github.com/REACT-ROBOT/shared-memory-based-handy-communication-manager/blob/main/LICENSE) for details.
 
 ---
 

@@ -56,3 +56,7 @@ coverage.json
 
 build_Debug/
 build_Release/
+# Doxygen の生成物。Doxyfile / Doxyfile.jp から作り、
+# GitHub Actions (.github/workflows/docs.yml) が Pages へ配信する。
+# 追跡しないこと（以前は 462 ファイルをコミットしていた）。
+docs/

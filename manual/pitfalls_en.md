@@ -1,5 +1,5 @@
 # ⚠️ Common Pitfalls
-[English | [日本語](../docs_jp/md_manual_pitfalls_jp.html)]
+[English | [日本語](docs_jp/md_manual_pitfalls_jp.html)]
 
 Things that compile, work in isolation, and cause trouble later. Every item here was
 reproduced before it was written down.

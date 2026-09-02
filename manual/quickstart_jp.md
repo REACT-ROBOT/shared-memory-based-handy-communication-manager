@@ -210,7 +210,7 @@ ldd ./your_program | grep shm
 ### さらなるヘルプ
 
 - **[🐛 トラブルシューティング](troubleshooting_jp.md)** - 詳細な解決方法
-- **[📚 サンプルコード](../shm_pub_sub/samples/)** - リポジトリ内の動作確認済みの例
+- **[📚 サンプルコード](https://github.com/REACT-ROBOT/shared-memory-based-handy-communication-manager/tree/main/shm_pub_sub/samples)** - リポジトリ内の動作確認済みの例
 
 ---
 

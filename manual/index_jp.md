@@ -17,7 +17,7 @@
 ### 初心者向けガイド
 - [📖 はじめに - 通信ライブラリの基礎知識](introduction_jp.md)
 - [🚀 クイックスタートガイド](quickstart_jp.md)
-- [⚙️ インストールと環境設定](quickstart_jp.md#-最速体験共有メモリ通信)
+- [⚙️ インストールと環境設定](quickstart_jp.md)
 
 ### チュートリアル
 - [📝 基本チュートリアル(C++)](tutorials_jp.md)
@@ -112,7 +112,7 @@ Copyright 2024 Shared Memory Communication Contributors
 - ✅ **再配布可能**: ライセンス表示を保持して再配布可能
 - ✅ **特許保護**: 貢献者の特許権が保護される
 
-詳細は[LICENSEファイル](../LICENSE)をご確認ください。
+詳細は[LICENSEファイル](https://github.com/REACT-ROBOT/shared-memory-based-handy-communication-manager/blob/main/LICENSE)をご確認ください。
 
 ---
 
