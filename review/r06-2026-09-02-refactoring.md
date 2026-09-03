@@ -310,18 +310,53 @@ lidar / point_cloud の `publish()` が `void` を返していたため、失敗
 
 黙って取りこぼすより落ちて気付いた方がよいので、例外を既定にした。
 
-### daemon 側に残る作業
+### daemon 側への影響 — 最初の調査は誤りだった
 
-`try/catch` が無い箇所は publish 失敗時に `terminate` するようになる。
-ワークスペースを走査した結果、該当は次の 2 ファイルだけで、いずれもツール類である
-（実センサ daemon の発行ループには該当が無い）。
+当初「該当はツール類 2 ファイルだけで、実センサ daemon の発行ループには
+該当が無い」と報告したが、**これは誤りだった**。
+
+`Publisher<Lidar2dScanData>` を**直接**書いているファイルだけを検索していたため、
+3 段の継承を経由する実体を見落としていた。
+
+```
+RplidarDaemon → Lidar2dSensorDaemon → SensorDaemonBase<Lidar2dScanData>
+                                        → data_publisher_->publish(data)
+```
+
+`SensorDaemonBase::publishSensorData()` にも、呼び出し元の `streamingLoop()` /
+`requestResponseLoop()` にも `try/catch` は無かった。しかも `daemonLoop()` の
+catch は**ループの外側にあり再入しない**ので、例外がそこまで飛ぶと
+**daemon スレッドが終了する**。
+
+実測（3 スロットを外から押さえ、250ms 観測）:
+
+| | 押さえている間の取得 | 解放後の復帰 |
+|---|---|---|
+| 修正前 | 1 回で停止 | **しない（0 回）** |
+| 修正後 | 19 回継続 | する（`SensorStatus` も GOOD へ復帰） |
+
+センサ自体は正常でも、購読側が一時的に全スロットを押さえただけで
+センサ daemon が死ぬ状態だった。
+
+**対応**: `publishSensorData()` を `bool` にし、失敗を捕まえて既存の
+`successful_flag_buffer_` に流す。連続して失敗すれば `SensorStatus` が BAD へ
+落ちて外から検知でき、解放されれば自動で復帰する。理由は `publish_failed` として
+bad factor に記録される。取得できても publish に失敗したら「成功」に数えない
+（発行できていないのに健全と報告すると、購読側が黙って古い値を読み続ける）。
+
+回帰テスト `PublishFailureMustNotStopTheLoop` を追加し、修正前のコードでは
+落ちることを確認した。
+
+**影響しないもの**: `imu_daemon` / `joy_daemon` は `SensorDaemonBase<ImuData>` /
+`<JoyData>` で汎用テンプレート（POD）を使うため、元から例外を投げていた。
+`build_log_replay` は 3 箇所とも `try` で覆われている。
+
+**残るツール類 2 ファイル**（いずれも実運用の daemon ではない）:
 
 | ファイル | 箇所 |
 |---|---|
 | `marker_localization/local_control_task_icp/src/sim_test.cpp` | 4 |
 | `sensor_daemons/point_cloud_2D_related/tools/synthetic_line_publisher/src/synthetic_line_publisher.cpp` | 1 |
-
-`build_log_replay` は 3 箇所とも `try` で覆われているため影響しない。
 
 回帰テスト `PublishFailureIsVisibleToTheCaller` を `EXPECT_THROW` に書き換えた。
 core の `publishOrThrow` を「失敗を握り潰す」形に注入すると、外部 2 つの
