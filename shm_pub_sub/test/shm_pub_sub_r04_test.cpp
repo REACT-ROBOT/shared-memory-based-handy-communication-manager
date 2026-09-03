@@ -618,3 +618,121 @@ TEST_F(SHMR04Test, ACorruptedSlotMutexFailsInsteadOfAbortingTheProcess)
     });
   }
 }
+
+// -----------------------------------------------------------------------------
+// R05-L3: ensureCapacity() は bool を返す契約なので、例外を漏らしてはならない
+//
+// RingBuffer::getSize() は上限違反を std::invalid_argument で伝える。
+// openRoot() / createNextGeneration() はその呼び出しを try の外に置いていたため、
+// **bool を返すつもりの経路から invalid_argument がそのまま漏れていた。**
+//
+// element_size 単体の上限（MAX_ELEMENT_SIZE）は ensureCapacity() が事前に
+// 見ているので届かない。届くのは **buf_num を掛けた総量**（MAX_TOTAL_SIZE）で、
+// これはここでしか判らない。
+//
+// 併せて、上限超過は再試行しても直らないので即座に返す。以前は世代の
+// 取り合いに負けた場合と同じ扱いで 8 回まわし、最後に
+// 「publishers are probably requesting incompatible layouts」という
+// 実態と違う説明を返していた。
+// -----------------------------------------------------------------------------
+TEST_F(SHMR04Test, ExceedingTheTotalSizeLimitFailsWithoutLeakingAnException)
+{
+  const size_t element = 8u * 1024u * 1024u;  // 8 MiB（MAX_ELEMENT_SIZE 内）
+  const int    slots   = static_cast<int>(RingBuffer::MAX_BUFFER_NUM);
+  ASSERT_GT(element * static_cast<size_t>(slots), RingBuffer::MAX_TOTAL_SIZE)
+      << "前提: 総量が上限を超える組み合わせであること";
+
+  Publisher<std::vector<uint8_t>> pub("r04_total_limit", slots);
+
+  try
+  {
+    pub.publish(std::vector<uint8_t>(element, 0));
+    FAIL() << "上限を超えているのに publish が成功した";
+  }
+  catch (const std::invalid_argument &e)
+  {
+    FAIL() << "bool を返す契約の経路から invalid_argument が漏れた: " << e.what();
+  }
+  catch (const std::runtime_error &e)
+  {
+    // 期待どおり。理由が具体的であること（取り合いに負けた、ではない）
+    const std::string message = e.what();
+    EXPECT_NE(message.find("exceeds the limit"), std::string::npos)
+        << "上限超過だと分かる説明になっていない: " << message;
+    EXPECT_EQ(message.find("incompatible layouts"), std::string::npos)
+        << "再試行を使い切った扱いになっている（恒久的な失敗のはず）: " << message;
+  }
+
+  try
+  {
+    disconnectTopic("r04_total_limit");
+  }
+  catch (...)
+  {
+  }
+}
+
+// -----------------------------------------------------------------------------
+// R05-L4: 読めなかった更新を既読にしてはならない
+//
+// getNewestBufferNum() は「どのスロットが最新か」を選ぶだけだが、以前はそこで
+// markAsRead() も兼ねていた。そのため subscribe() が全リトライ失敗しても
+// その発行番号が消費済みになり、**waitFor() がその 1 更新を取りこぼす**。
+//
+// スロットを外から押さえて読み出しを確実に失敗させ、その後 waitFor() が
+// 「更新がある」と答えることを見る。
+// -----------------------------------------------------------------------------
+TEST_F(SHMR04Test, AnUpdateThatCouldNotBeReadStaysUnread)
+{
+  const std::string topic = "r05_unread";
+
+  Publisher<Msg>  pub(topic, 1);
+  Subscriber<Msg> sub(topic);
+  sub.setDataExpiryTime_us(0);
+
+  pub.publish(Msg{ 1 });
+  {
+    bool ok = false;
+    ASSERT_TRUE((sub.subscribe(&ok), ok)) << "前提: 競合が無ければ読めること";
+  }
+  // ここまでは既読。更新が無いので waitFor は待ってから偽を返す。
+  ASSERT_FALSE(sub.waitFor(20000)) << "前提: 既読なら更新は無い";
+
+  // 新しい更新を作り、そのスロットを外から押さえて読めなくする
+  pub.publish(Msg{ 2 });
+
+  SharedMemoryPosix shm(topic, O_RDWR, static_cast<PERM>(0));
+  ASSERT_TRUE(shm.connect());
+  unsigned char   *ptr    = shm.getPtr();
+  const ShmHeader *header = reinterpret_cast<const ShmHeader *>(ptr);
+  ASSERT_EQ(header->buf_num, 1u) << "前提: 1 スロットなので押さえる先は 1 つ";
+  SlotRecord *slot = reinterpret_cast<SlotRecord *>(ptr + header->slot_offset);
+  ASSERT_EQ(pthread_mutex_lock(&slot->owner), 0);
+
+  bool read_ok = true;
+  sub.subscribe(&read_ok);
+  EXPECT_FALSE(read_ok) << "前提: 押さえている間は読めないこと";
+
+  ASSERT_EQ(pthread_mutex_unlock(&slot->owner), 0);
+
+  // 読めなかったのだから、更新はまだ残っていなければならない
+  EXPECT_TRUE(sub.waitFor(500000))
+      << "読めなかった更新が既読になり、waitFor が取りこぼした";
+
+  // 実際に読めること
+  bool       ok = false;
+  const Msg &m  = sub.subscribe(&ok);
+  EXPECT_TRUE(ok);
+  if (ok)
+  {
+    EXPECT_EQ(m.v, 2u);
+  }
+
+  try
+  {
+    disconnectTopic(topic);
+  }
+  catch (...)
+  {
+  }
+}

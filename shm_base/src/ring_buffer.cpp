@@ -1268,10 +1268,17 @@ RingBuffer::getNewestBufferNum()
 
   const uint64_t stable_capture = slot(newest)->capture_monotonic_us.load(std::memory_order_relaxed);
   timestamp_us.store(stable_capture, std::memory_order_relaxed);
-  // 「ここまで読んだ」を記録する。v1 では timestamp_us の更新がこの役目を
-  // 兼ねており、getNewestBufferNum() の後は isUpdated() が偽になっていた。
-  // 外部の特殊化もその挙動に依存しているため、意味を保つ。
-  markAsRead(newest_seq);
+
+  // NOTE: ここで markAsRead(newest_seq) を呼んでいたが、外した（R05-L4）。
+  //       この関数は「どのスロットが最新か」を**選ぶ**だけで、呼び出し側が
+  //       そこから実際に読めたかどうかは知らない。読めなくても既読にしてしまうと、
+  //       `isUpdated()` / `waitFor()` がその 1 更新を取りこぼす。
+  //
+  //       v1 では timestamp_us の更新がこの役目を兼ねており、外部の特殊化も
+  //       その挙動に依存していたので意味を保っていた。しかし 5 つの特殊化を
+  //       SubscriberCore に寄せた結果、**この関数を呼ぶ本番経路は
+  //       SubscriberCore::readNewest() だけ**になり、その前提は消えた。
+  //       既読にするのは「実際に読めた」ことを知っている側の仕事である。
 
   const uint64_t expiry_us = data_expiry_time_us.load(std::memory_order_relaxed);
   if (expiry_us == 0)

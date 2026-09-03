@@ -711,6 +711,37 @@ uint64_t getBootIdHash();
  * struct LidarScan { uint32_t count; float ranges[1081]; };
  * SHM_DECLARE_LAYOUT(LidarScan, count, ranges);
  * @endcode
+ *
+ * \~japanese-en **書き漏らしの検出には 2 つの原理的な限界がある。**
+ *               どちらも `offsetof` と `sizeof` だけでは判別できないので、
+ *               検査を強めるのではなくここに明記しておく。
+ *
+ * \~japanese-en 1. 書き漏らしたメンバが「どのみち必要なパディング」に収まる場合。
+ * @code
+ * struct A { uint32_t a;                 double b; };  // a@0 b@8 sizeof 16
+ * struct B { uint32_t a; uint32_t hidden; double b; };  // a@0 b@8 sizeof 16
+ * @endcode
+ *               A と B は listed なメンバから見て完全に同一である。
+ *               通常の型では隙間は最大 `alignof(T)-1` バイトなので、
+ *               入るのは小さなメンバに限られる。
+ *
+ * \~japanese-en 2. **型に `alignas` を付けると、その窓が末尾で広がる**（R05-L6）。
+ * @code
+ * struct alignas(32) Over { uint64_t a; uint64_t hidden; };  // sizeof 32
+ * SHM_DECLARE_LAYOUT(Over, a);   // hidden を書き漏らしても通ってしまう
+ * @endcode
+ *               `sizeof` が 32 の倍数へ切り上がるため、末尾に 31 バイトまでの
+ *               書き漏らしを見逃す。`alignas` を付けた型では、宣言に全メンバが
+ *               並んでいることを目で確かめること。
+ *
+ * \~japanese-en **ビットフィールドを含む型は宣言できない**（R05-L7）。
+ *               `offsetof` も `sizeof` もビットフィールドには使えないため、
+ *               次のような生の診断が出る。
+ * @code
+ * error: attempt to take address of bit-field structure member 'T::a'
+ * @endcode
+ *               ビットフィールドの配置は実装定義でプロセス間の合意にできないので、
+ *               共有メモリに載せる型では使わないこと（固定幅整数とマスクで表す）。
  */
 #define SHM_DECLARE_LAYOUT(T, ...) SHM_DECLARE_LAYOUT_REV(T, 0, __VA_ARGS__)
 
@@ -1265,8 +1296,13 @@ private:
   bool openRoot(bool create, size_t initial_capacity, int buf_num, size_t payload_alignment,
                 const RingBuffer::TopicContract *contract);
   bool attachGeneration(uint64_t tag, const RingBuffer::TopicContract *expected);
+  //! @param [out] permanent 再試行しても直らない失敗なら真を書く（省略可）。
+  //!        レイアウトの取り合いに負けただけなら偽のままなので、呼び出し側は
+  //!        勝者の世代を見に行けばよい。上限超過のような恒久的な失敗で
+  //!        8 回まわしても意味が無いうえ、最後に「取り合いに負けた」という
+  //!        実態と違う説明が残る（R05-L3）。
   bool createNextGeneration(uint64_t from_tag, size_t capacity, int buf_num, size_t payload_alignment,
-                            const RingBuffer::TopicContract &contract);
+                            const RingBuffer::TopicContract &contract, bool *permanent = nullptr);
   //! 現役でないと**確実に言える**世代セグメントだけを削除する（R03-F03）
   void unlinkStaleGenerations(uint64_t live_tag);
   //! 旧世代の有効なサンプルを新世代へ引き継ぐ（履歴を切らさないため）

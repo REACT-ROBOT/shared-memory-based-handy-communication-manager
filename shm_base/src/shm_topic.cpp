@@ -342,8 +342,22 @@ ShmTopic::openRoot(bool create, size_t initial_capacity, int buf_num, size_t pay
   {
     capacity += payload_alignment - (capacity % payload_alignment);
   }
-  const int    slots = (buf_num > 0) ? buf_num : 1;
-  const size_t size  = RingBuffer::getSize(capacity, slots, payload_alignment);
+  const int slots = (buf_num > 0) ? buf_num : 1;
+  // getSize() は上限違反を invalid_argument で伝えるが、ここは bool を返す
+  // 契約の中にある。捕まえて last_error_ に落とさないと、ensureCapacity() を
+  // bool だと思って呼んでいる利用者のところへ例外が漏れる（R05-L3）。
+  // element_size 単体の上限は ensureCapacity() が事前に見ているが、
+  // **buf_num を掛けた総量の上限（MAX_TOTAL_SIZE）はここでしか判らない。**
+  size_t size = 0;
+  try
+  {
+    size = RingBuffer::getSize(capacity, slots, payload_alignment);
+  }
+  catch (const std::invalid_argument &e)
+  {
+    last_error_ = std::string("cannot size the layout: ") + e.what();
+    return false;
+  }
 
   // 作成者を一者に絞る（R02-F02）。
   // O_CREAT だけだと、同時に「無い」と判断した複数の Publisher がそれぞれ
@@ -531,8 +545,14 @@ ShmTopic::unlinkStaleGenerations(uint64_t live_tag)
 //!          CAS に負けた側は自分の作ったセグメントを消して勝者へ合流する。
 bool
 ShmTopic::createNextGeneration(uint64_t from_tag, size_t capacity, int buf_num, size_t payload_alignment,
-                               const RingBuffer::TopicContract &contract)
+                               const RingBuffer::TopicContract &contract, bool *permanent)
 {
+  auto mark_permanent = [permanent]() {
+    if (permanent != nullptr)
+    {
+      *permanent = true;
+    }
+  };
   const uint64_t next_generation = unpackGeneration(from_tag) + 1;
   if (next_generation > MAX_GENERATION)
   {
@@ -547,7 +567,20 @@ ShmTopic::createNextGeneration(uint64_t from_tag, size_t capacity, int buf_num, 
   {
     capacity += payload_alignment - (capacity % payload_alignment);
   }
-  const size_t size = RingBuffer::getSize(capacity, buf_num, payload_alignment);
+  // openRoot() と同じ理由で捕まえる（R05-L3）。ここも bool を返す契約の中である。
+  size_t size = 0;
+  try
+  {
+    size = RingBuffer::getSize(capacity, buf_num, payload_alignment);
+  }
+  catch (const std::invalid_argument &e)
+  {
+    // 上限違反は何度やり直しても同じ結果になる。
+    last_error_ = std::string("cannot size the layout for generation ") + std::to_string(next_generation) + ": " +
+                  e.what();
+    mark_permanent();
+    return false;
+  }
 
   SharedMemoryPosix probe(next_name, O_RDWR | O_CREAT | O_EXCL, perm_);
   if (!probe.connect(size))
@@ -622,14 +655,31 @@ ShmTopic::createNextGeneration(uint64_t from_tag, size_t capacity, int buf_num, 
   //          埋まっている。それでも「拾った最大の発行番号」だけは進めていたので、
   //          取りこぼしが静かに確定していた。
   //
-  //       2. **そもそも重複している。** 拾うはずだったのは「移行のスナップショットと
-  //          CAS の間に旧世代へ commit された分」だが、その writer 自身が
-  //          publish 後の世代確認で気づいて新世代へ発行し直す。CAS はその確認より
-  //          前に完了しているためである。
+  //       2. **拾えたぶんは writer 自身が発行し直すので二重になる。**
+  //          CAS が見えた後に世代確認をした writer は新世代へ発行し直すが、
+  //          その旧世代側のサンプルも「スナップショットより後」なのでドレインが
+  //          拾ってしまう。同じ測定値が 2 つの発行番号・2 つの時刻で二重に現れ、
+  //          タイムマシンから見ると「同じ測定が別時刻に 2 回起きた」ことになる
+  //          （R04-F12）。
   //
-  //       むしろ両方が成立すると、同じ測定値が 2 つの発行番号・2 つの時刻で
-  //       二重に現れる（R04-F12）。履歴とタイムマシンから見ると「同じ測定が
-  //       別時刻に 2 回起きた」ように見えるので、有害ですらあった。
+  // **残る限界（R05-L2）**: 上の 2 番目は当初「CAS はその確認より前に完了して
+  // いるため writer が必ず気づく」と書いていたが、**それは成り立たない**。
+  // 次の順序では取りこぼす。
+  //
+  //     切替側: migrateHistory のスナップショットを取る
+  //     writer: 旧世代へ commit する
+  //     writer: 世代を確認する → まだ切り替わっていないので再発行しない
+  //     切替側: CAS で世代を進める
+  //
+  // このサンプルはスナップショットにも入らず、再発行もされない。安価には塞げない。
+  //   - CAS の後にドレインし直す  → 上の 2 番目の重複が復活する
+  //   - スナップショットを取り直す → adoptSample は空きスロットにしか書けず、
+  //                                  1 巡目で埋まっているので入らない（1 番目）
+  //   - CAS を先に済ませる         → 公開直後の履歴が空になる
+  //
+  // 条件は「**同じトピックに publisher が 2 つ以上あり、かつ容量拡張が起きる**」
+  // ことである。publisher が 1 つなら、拡張を起こすのも commit するのも同じ
+  // 呼び出しなので同時には起こらない。manual/pitfalls_*.md に明記してある。
   if (old_ring != nullptr)
   {
     old_ring->releaseOwnedSlots();
@@ -783,8 +833,15 @@ ShmTopic::ensureCapacity(size_t required_capacity, int buf_num, size_t payload_a
     const size_t new_capacity  = growCapacity(ring_->getElementSize(), want, alignment);
     const int    new_buf_num   = static_cast<int>(std::max(ring_->getBufferNum(), static_cast<size_t>(buf_num)));
     const size_t new_alignment = std::max(ring_->getPayloadAlignment(), alignment);
-    if (!createNextGeneration(latest, new_capacity, new_buf_num, new_alignment, contract))
+    bool permanent = false;
+    if (!createNextGeneration(latest, new_capacity, new_buf_num, new_alignment, contract, &permanent))
     {
+      if (permanent)
+      {
+        // 上限超過など、やり直しても同じ結果になる失敗。last_error_ には
+        // 具体的な理由が入っているので、上書きせずそのまま返す（R05-L3）。
+        return false;
+      }
       // 競合に負けた／作成中だった。勝者の世代を見に行く。
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
       continue;
@@ -861,8 +918,18 @@ SubscriberCore::readNewest(const RingBuffer::TopicContract &contract, const Slot
       no_data = true;
       break;
     }
-    if (reader(ring_buffer, newest, info))
+    // 発行番号は既読の記録に要るので、呼び出し側が info を欲しがらなくても取る。
+    SampleInfo sample{};
+    if (reader(ring_buffer, newest, &sample))
     {
+      // **読めたときだけ**既読にする（R05-L4）。選んだ時点で既読にすると、
+      // 全リトライが失敗した更新まで消費済みになり、`waitFor()` が
+      // その 1 更新を取りこぼす。
+      ring_buffer->markAsRead(sample.sequence);
+      if (info != nullptr)
+      {
+        *info = sample;
+      }
       return true;
     }
     // コピー中に上書きされた。選び直して読み直す。

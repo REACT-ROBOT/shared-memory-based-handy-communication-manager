@@ -498,9 +498,19 @@ TEST_F(RingBufferTest, IsUpdated) {
     
     // Should detect update
     EXPECT_TRUE(ring_buffer->isUpdated());
-    
-    // After reading, should not show as updated
-    ring_buffer->getNewestBufferNum();
+
+    // 「どのスロットが最新か」を選ぶだけでは既読にならない（R05-L4）。
+    //
+    // 以前は getNewestBufferNum() が markAsRead() も兼ねており、この行のあとに
+    // isUpdated() が偽になっていた。しかしそれでは、選んだあとに読み出しが
+    // 全リトライ失敗しても既読になってしまい、waitFor() がその 1 更新を
+    // 取りこぼす。既読にするのは「実際に読めた」ことを知っている側の仕事である。
+    const int newest = ring_buffer->getNewestBufferNum();
+    ASSERT_GE(newest, 0);
+    EXPECT_TRUE(ring_buffer->isUpdated()) << "選んだだけで既読になっている";
+
+    // 読めたことを記録して初めて既読になる
+    ring_buffer->markAsRead(ring_buffer->getSequence(newest));
     EXPECT_FALSE(ring_buffer->isUpdated());
 }
 

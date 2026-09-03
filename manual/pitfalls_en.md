@@ -15,6 +15,7 @@ reproduced before it was written down.
 - [9. Getting `shm_tool` onto your PATH](#9-getting-shm_tool-onto-your-path)
 - [10. Picking up a stale `shm_base.so`](#10-picking-up-a-stale-shm_baseso)
 - [11. `publish()` throws when it fails](#11-publish-throws-when-it-fails)
+- [12. With more than one publisher, growing the topic can drop one sample](#12-with-more-than-one-publisher-growing-the-topic-can-drop-one-sample)
 
 ---
 
@@ -148,6 +149,41 @@ SHM_DECLARE_LAYOUT(Pose, x, y, theta);   // at global scope, outside any namespa
 
 Leaving out even one member is a **compile error** — `layout_covers_type()` sees the gap.
 List all of them, in declaration order.
+
+Detection has two hard limits, though. Neither can be decided from `offsetof` and
+`sizeof` alone, so no check can close them.
+
+**Limit 1: the omitted member fits in padding that was needed anyway**
+
+```cpp
+struct A { uint32_t a;                  double b; };  // a@0 b@8 sizeof 16
+struct B { uint32_t a; uint32_t hidden; double b; };  // a@0 b@8 sizeof 16
+```
+
+From the listed members these are identical. For ordinary types the gap is at most
+`alignof(T)-1` bytes, so only a small member can hide there.
+
+**Limit 2: `alignas` on the type widens that window at the tail**
+
+```cpp
+struct alignas(32) Over { uint64_t a; uint64_t hidden; };  // sizeof 32
+SHM_DECLARE_LAYOUT(Over, a);   // omitting `hidden` still compiles
+```
+
+`sizeof` rounds up to a multiple of 32, so **up to 31 bytes of omission at the tail go
+unnoticed**. On a type with `alignas`, check by eye that every member is listed.
+
+**A type with bit-fields cannot be declared**
+
+```cpp
+struct WithBitfield { uint32_t a : 4; uint32_t b : 28; };
+SHM_DECLARE_LAYOUT(WithBitfield, a, b);
+// error: attempt to take address of bit-field structure member 'WithBitfield::a'
+```
+
+Neither `offsetof` nor `sizeof` works on a bit-field, so you get that raw diagnostic.
+Bit-field layout is implementation-defined and cannot be agreed on between processes
+anyway — use fixed-width integers and masks for payloads.
 
 For a type whose wire format is decided by `serialize()` rather than by its memory layout
 (`cv::Mat`, a custom scan type), the layout cannot tell you anything, so the revision is
@@ -335,3 +371,36 @@ while (running) {
 
 If failures persist, raise `buffer_num`, or inspect the topic's retention and contention
 with `shm_tool doctor`.
+
+---
+
+## 12. With more than one publisher, growing the topic can drop one sample
+
+A variable-size topic (`std::vector<T>`, a scan, a point cloud, an image) allocates a
+**new generation segment** when it needs more capacity, and carries the old history over.
+One sample is not carried over if this interleaving happens:
+
+```
+cut-over side:  take a snapshot of the history
+other publisher: write into the old generation
+other publisher: check the generation -> not switched yet, so it does not republish
+cut-over side:  switch the generation
+```
+
+That sample is in neither the snapshot nor the new generation. It shows up as a gap in
+`SampleInfo::sequence`.
+
+**This needs two or more publishers on the same topic and a capacity increase.** With a
+single publisher it cannot happen: the same call both triggers the growth and writes, so
+the two never overlap.
+
+To avoid it, do one of:
+
+- **one publisher per topic** (the most reliable, and clearer as a design)
+- publish the largest expected size once at start-up, so the capacity is already there
+  (capacity only ever grows, so no later cut-over occurs)
+
+It is not closed because every way of removing the window creates a different problem:
+draining again after the switch makes the same measurement appear twice, and re-taking
+the snapshot cannot help because the new generation's slots are already full.
+
