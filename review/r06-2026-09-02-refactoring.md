@@ -351,12 +351,43 @@ bad factor に記録される。取得できても publish に失敗したら「
 `<JoyData>` で汎用テンプレート（POD）を使うため、元から例外を投げていた。
 `build_log_replay` は 3 箇所とも `try` で覆われている。
 
-**残るツール類 2 ファイル**（いずれも実運用の daemon ではない）:
+### 網羅的な再調査（2026-09-03）
 
-| ファイル | 箇所 |
+「2 ファイル 5 箇所」も不正確だった。`Publisher<...>` を保持している変数名を
+すべて集めてから呼び出しを追う形で調べ直した結果が次である。
+
+| 分類 | 箇所 |
 |---|---|
-| `marker_localization/local_control_task_icp/src/sim_test.cpp` | 4 |
-| `sensor_daemons/point_cloud_2D_related/tools/synthetic_line_publisher/src/synthetic_line_publisher.cpp` | 1 |
+| `try` で覆われている | 7 |
+| `try` 無し・`cv::Mat`（**元から例外**、挙動不変） | 5 |
+| `try` 無し・**今回から例外**になる | 3 |
+
+`cv::Mat` を使う 5 箇所（`icp_scan_matcher` / `mcl_runtime` /
+`online_map_builder_v3` / `online_pf_slam_v3` / `find_target_daemon` /
+`trace_human_daemon` / `cv_uvcd`）は以前から例外を投げていたので影響しない。
+`lidar_2D_to_point_cloud_2D_daemon` は既に `try/catch` で正しく処理している。
+
+### 今回から例外が飛ぶ 3 箇所の判断
+
+| 箇所 | 性質 | 判断 |
+|---|---|---|
+| `basic_usage_example.cpp` | サンプル | **そのまま**。「失敗したら例外が飛ぶ」ことを示すのが正しい |
+| `sim_test.cpp`（4 箇所） | 決定論的なオフライン試験 | **そのまま**。publish に失敗したなら結果が無効で、黙って続行する方が有害 |
+| `synthetic_line_publisher.cpp` | **常駐して発行し続けるツール** | **修正した** |
+
+3 つ目だけ性質が違う。`publishLoop()` は `std::thread` で回る無限ループなので、
+例外が抜けると `std::terminate` になり**プロセスごと突然死**する。
+`SensorDaemonBase` と同じ構造の問題だった。
+
+実測（3 スロットを押さえ 300ms 観測）:
+
+| | 結果 |
+|---|---|
+| 修正前 | `terminate` で終了コード 134、プロセス消滅 |
+| 修正後 | 28 件を取りこぼしとして数えつつ継続、解放後は追加 0 |
+
+数えて `std::cerr` に出し続ける形にした（ログが溢れないよう最初の 1 回と
+以後 100 回ごと）。`getDroppedCount()` で呼び出し側から確認できる。
 
 回帰テスト `PublishFailureIsVisibleToTheCaller` を `EXPECT_THROW` に書き換えた。
 core の `publishOrThrow` を「失敗を握り潰す」形に注入すると、外部 2 つの
