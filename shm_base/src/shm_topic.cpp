@@ -1011,6 +1011,153 @@ SubscriberCore::existsPublisherMemory(const RingBuffer::TopicContract &contract)
   return topic_ != nullptr && topic_->follow(&expected);
 }
 
+// ============================================================================
+// PublisherCore
+//
+// Publisher<T> の 5 つの特殊化にコピーされていた、型に依存しない書き込み処理。
+// 型に依存するのは「必要な容量」と「スロットへ書く処理」だけなので、
+// 後者を SlotWriter として呼び戻す。
+//
+// 失敗時の方針（例外か std::cerr か）は Result を返すだけにして持ち込まない。
+// ============================================================================
+
+PublisherCore::PublisherCore(const std::string &name, int buffer_num, PERM perm, const char *who)
+  : who_(who)
+  , buf_num_(buffer_num)
+{
+  if (name.empty())
+  {
+    throw std::runtime_error(who_ + ": Please set name!");
+  }
+  if (buffer_num <= 0 || static_cast<size_t>(buffer_num) > RingBuffer::MAX_BUFFER_NUM)
+  {
+    throw std::runtime_error(who_ + ": buffer_num must be in [1, " + std::to_string(RingBuffer::MAX_BUFFER_NUM) +
+                             "], but got " + std::to_string(buffer_num));
+  }
+  try
+  {
+    topic_ = std::unique_ptr<ShmTopic>(new ShmTopic(name, perm, true));
+  }
+  catch (const std::runtime_error &e)
+  {
+    throw std::runtime_error(who_ + ": " + e.what());
+  }
+}
+
+std::string
+PublisherCore::describe(Result result) const
+{
+  switch (result)
+  {
+    case Result::Ok:
+      return who_ + ": ok";
+    case Result::GenerationChanged:
+      return who_ + ": the layout generation kept changing while publishing";
+    case Result::CapacityUnavailable:
+      return who_ + ": " + (topic_ != nullptr ? topic_->lastError() : std::string("no topic"));
+    case Result::NoWritableSlot:
+      return who_ +
+             ": could not acquire a writable slot; every slot stayed busy. "
+             "Increase buffer_num, or check for a subscriber that holds a sample for too long.";
+    case Result::PayloadRejected:
+      return who_ + ": could not write the payload into the slot";
+  }
+  return who_ + ": unknown result";
+}
+
+PublisherCore::Result
+PublisherCore::publish(size_t required_capacity, size_t payload_alignment, const RingBuffer::TopicContract &contract,
+                       const SlotWriter &writer)
+{
+  // capture 時刻はここで**一度だけ**採り、発行し直しても引き継ぐ。
+  // 採り直すと「同じ測定が別時刻に起きた」ことになり、タイムマシンで
+  // 時刻を合わせる用途では実害になる（R04-F12）。
+  const uint64_t capture_monotonic_us = getCurrentTimeUSec();
+
+  for (int attempt = 0; attempt < MAX_PUBLISH_ATTEMPTS; ++attempt)
+  {
+    const Result result = publishOnce(required_capacity, payload_alignment, contract, writer, capture_monotonic_us);
+    // 世代が切り替わったときだけ発行し直す。それ以外の失敗は再試行しても直らない。
+    if (result != Result::GenerationChanged)
+    {
+      return result;
+    }
+  }
+  return Result::GenerationChanged;
+}
+
+PublisherCore::Result
+PublisherCore::publishOnce(size_t required_capacity, size_t payload_alignment,
+                           const RingBuffer::TopicContract &contract, const SlotWriter &writer,
+                           uint64_t capture_monotonic_us)
+{
+  // 必要な容量を満たす世代へ接続する。足りなければ ShmTopic が新しい世代を
+  // 別セグメントとして作る。稼働中のセグメントは作り直さないので、
+  // 「レイアウト確認と実データアクセスの間」の窓が生じない（R01-F01 の TOCTOU）。
+  if (topic_ == nullptr || !topic_->ensureCapacity(required_capacity, buf_num_, payload_alignment, contract))
+  {
+    return Result::CapacityUnavailable;
+  }
+  RingBuffer *ring_buffer = topic_->ring();
+
+  // コミット後にこの世代がまだ有効かを確かめるため、書く前に控えておく。
+  const uint64_t generation_before = topic_->generationTag();
+
+  // 確保できないままの書き込みは、他の writer が書き込み途中のスロットを
+  // 破壊し購読可能にしてしまうため許されない。確保成功を必須とする。
+  // 古い順に**全スロット**を試すので、どこか 1 つが reader に押さえられていても
+  // 他が空いていれば通る（R04-F08）。1 巡目は待たないので、空きがあれば即決まる。
+  // 全部塞がっていた場合だけ短く待ち、最悪でも数 ms で決着する
+  //（100Hz の制御ループを止めないため）。
+  int slot = -1;
+  for (int attempt = 0; attempt < ALLOCATE_ATTEMPTS; ++attempt)
+  {
+    slot = ring_buffer->acquireWritableSlot();
+    if (slot >= 0)
+    {
+      break;
+    }
+    usleep(1000);  // 1ms
+  }
+  if (slot < 0)
+  {
+    return Result::NoWritableSlot;
+  }
+
+  // スロットの間隔は「容量」であって今回の必要量ではない。
+  // 容量は増やすだけで運用するため、required_capacity より大きいことがある。
+  const size_t   slot_capacity = ring_buffer->getElementSize();
+  unsigned char *slot_ptr      = ring_buffer->getDataList();
+  if (slot_ptr == nullptr)
+  {
+    ring_buffer->releaseBuffer(slot);
+    return Result::PayloadRejected;
+  }
+  slot_ptr += static_cast<size_t>(slot) * slot_capacity;
+
+  const long long written = writer(slot_ptr, slot_capacity);
+  if (written < 0)
+  {
+    // 書けなかったスロットは必ず手放す。放置すると「書き込み中」のまま残り、
+    // リングが実質的に縮む（robust mutex はプロセスが死ぬまで回収されない）。
+    ring_buffer->releaseBuffer(slot);
+    return Result::PayloadRejected;
+  }
+
+  // 世代切替と publish の競合を、テストから決定論的に差し込めるようにする。
+  // 既定では ((void)0) に展開されるのでリリースビルドには何も残らない（R04-F24）。
+  SHM_FIRE_TEST_HOOK_BEFORE_COMMIT();
+
+  // 発行番号の採番とスロットの解放。番号はここで採るので
+  // 「番号が小さい＝先にコミットされた」が常に成り立つ。
+  ring_buffer->commitBuffer(slot, static_cast<size_t>(written), capture_monotonic_us);
+  ring_buffer->signal();
+
+  // コミットの間に世代が切り替わっていたら、このサンプルは新しい世代の
+  // 購読者には見えない。呼び出し側で発行し直す（R02-F05 / R04-F10）。
+  return topic_->isGeneration(generation_before) ? Result::Ok : Result::GenerationChanged;
+}
+
 }  // namespace shm
 
 }  // namespace irlab

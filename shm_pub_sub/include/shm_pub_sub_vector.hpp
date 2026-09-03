@@ -69,7 +69,6 @@ public:
 
 private:
   //! 1 回分の publish。世代が切り替わっていたら false（publish 側で再試行）
-  bool publishOnce(const std::vector<T> &data, uint64_t capture_monotonic_us);
 
 public:
 
@@ -86,12 +85,15 @@ private:
     return c;
   }
 
-  std::string               shm_name;
-  int                       shm_buf_num;
-  PERM                      shm_perm;
-  std::unique_ptr<ShmTopic> topic;
+  //! SlotWriter へ渡す文脈
+  struct WriteContext
+  {
+    const std::vector<T> *data;
+  };
 
-  size_t vector_size;
+  std::string shm_name;
+  //! 世代管理・容量確保・スロット確保・コミット・世代確認は全てここが持つ。
+  PublisherCore core_;
 };
 
 // ****************************************************************************
@@ -193,10 +195,7 @@ private:
 template <typename T>
 Publisher<std::vector<T>>::Publisher(std::string name, int buffer_num, PERM perm)
   : shm_name(name)
-  , shm_buf_num(buffer_num)
-  , shm_perm(perm)
-  , topic(nullptr)
-  , vector_size(0)
+  , core_(name, buffer_num, perm, "shm::Publisher")
 {
   if (!std::is_standard_layout<T>::value)
   {
@@ -212,24 +211,13 @@ Publisher<std::vector<T>>::Publisher(std::string name, int buffer_num, PERM perm
                              std::to_string(RingBuffer::MAX_PAYLOAD_ALIGNMENT) + ")");
   }
 
-  if (name.empty())
-  {
-    throw std::runtime_error("shm::Publisher: Please set name!");
-  }
-
-  // 負値・過大値は境界で弾く（R01-F06）
-  if (buffer_num <= 0 || static_cast<size_t>(buffer_num) > RingBuffer::MAX_BUFFER_NUM)
-  {
-    throw std::runtime_error("shm::Publisher: buffer_num must be in [1, " +
-                             std::to_string(RingBuffer::MAX_BUFFER_NUM) + "], but got " +
-                             std::to_string(buffer_num));
-  }
-
-  topic = std::make_unique<ShmTopic>(shm_name, shm_perm, true);
+  // 名前の検証、buffer_num の範囲検査（R01-F06）、ShmTopic の生成は
+  // PublisherCore が持つ。
+  //
   // 長さは最初の publish で決まる。ここでは容量 0 で世代を用意しておく。
-  if (!topic->ensureCapacity(0, shm_buf_num, alignof(T), contractOf()))
+  if (!core_.topic()->ensureCapacity(0, buffer_num, alignof(T), contractOf()))
   {
-    throw std::runtime_error("shm::Publisher: " + topic->lastError());
+    throw std::runtime_error("shm::Publisher: " + core_.topic()->lastError());
   }
 }
 
@@ -245,94 +233,32 @@ template <typename T>
 void
 Publisher<std::vector<T>>::publish(const std::vector<T> &data)
 {
-  // 世代切替と publish が競合した場合に備えて、コミット後に世代を確認し、
-  // 切り替わっていたら新しい世代へ発行し直す。スカラ版には R02-F05 で入れたが
-  // vector 版に入れ忘れており、切替の隙間に旧世代へ commit したサンプルが
-  // 「成功したのに誰にも読まれない」ままになっていた（R03-F01）。
-  // capture 時刻はここで 1 度だけ採り、再発行しても引き継ぐ。
-  // 発行し直すたびに採り直すと、**同じ測定が別時刻に起きたように見える**
-  // （R04-F12）。タイムマシンで時刻を合わせる用途では実害になる。
-  const uint64_t capture_monotonic_us = getCurrentTimeUSec();
+  WriteContext              ctx{ &data };
+  PublisherCore::SlotWriter writer{
+    [](void *context, unsigned char *slot_ptr, size_t slot_capacity) -> long long {
+      const std::vector<T> &v     = *static_cast<WriteContext *>(context)->data;
+      const size_t          bytes = sizeof(T) * v.size();
+      if (slot_capacity < bytes)
+      {
+        return -1;
+      }
+      if (bytes > 0)
+      {
+        std::memcpy(slot_ptr, v.data(), bytes);
+      }
+      return static_cast<long long>(bytes);
+    },
+    &ctx
+  };
 
-  constexpr int MAX_PUBLISH_ATTEMPTS = 4;
-  for (int attempt = 0; attempt < MAX_PUBLISH_ATTEMPTS; ++attempt)
+  const PublisherCore::Result result = core_.publish(sizeof(T) * data.size(), alignof(T), contractOf(), writer);
+  if (result != PublisherCore::Result::Ok)
   {
-    if (publishOnce(data, capture_monotonic_us))
-    {
-      return;
-    }
+    throw std::runtime_error(core_.describe(result));
   }
-  throw std::runtime_error("shm::Publisher: the layout generation kept changing while publishing");
 }
 
 //! @brief 1 回分の publish。世代が切り替わっていたら false を返す（呼び出し側で再試行）
-template <typename T>
-bool
-Publisher<std::vector<T>>::publishOnce(const std::vector<T> &data, uint64_t capture_monotonic_us)
-{
-  // 長さが変わっても、容量に収まる限り世代は作り直さない。
-  // 収まらないときだけ ShmTopic が新しい世代を作る（容量は増やすだけ）。
-  // 以前はベクタ長が変わるたびに稼働中のセグメントを作り直しており、
-  // それが R01-F01 の TOCTOU の原因だった。
-  vector_size = data.size();
-  if (!topic->ensureCapacity(sizeof(T) * vector_size, shm_buf_num, alignof(T), contractOf()))
-  {
-    throw std::runtime_error("shm::Publisher: " + topic->lastError());
-  }
-  RingBuffer *ring_buffer = topic->ring();
-
-  // コミット後にこの世代がまだ有効かを確かめるため、書く前に控えておく。
-  const uint64_t generation_before = topic->generationTag();
-
-  // 確保できないままの書き込みは、他の writer が書き込み途中のバッファを
-  // 破壊し購読可能にしてしまうため許されない。確保成功を必須とする。
-  // 書き込めるスロットを探す。古い順に**全スロット**を試すので、
-  // どこか 1 つが reader に押さえられていても他が空いていれば通る（R04-F08）。
-  // 1 巡目は待たないため、空きがあれば即座に決まる。
-  // 全部塞がっていた場合だけ短く待ち、それでも駄目なら少し置いて数回だけ試す。
-  // 最悪でも数 ms で決着する（100Hz の制御ループを止めないため）。
-  constexpr int ALLOCATE_ATTEMPTS = 3;
-  int           oldest_buffer     = -1;
-  for (int attempt = 0; attempt < ALLOCATE_ATTEMPTS; ++attempt)
-  {
-    oldest_buffer = ring_buffer->acquireWritableSlot();
-    if (oldest_buffer >= 0)
-    {
-      break;
-    }
-    usleep(1000);  // Wait for 1ms
-  }
-  const bool allocated = (oldest_buffer >= 0);
-  if (!allocated)
-  {
-    throw std::runtime_error(
-        "shm::Publisher: could not acquire a writable slot; every slot stayed busy. "
-        "Increase buffer_num, or check for a subscriber that holds a sample for too long.");
-  }
-
-  unsigned char *data_ptr      = ring_buffer->getDataList();
-  size_t         buffer_offset = static_cast<size_t>(oldest_buffer) * ring_buffer->getElementSize();
-
-  // 空の vector では data() が nullptr を返す。長さ 0 でも memcpy に
-  // ヌルポインタを渡すのは未定義動作なので、明示的に飛ばす（UBSan が検出）。
-  if (vector_size > 0)
-  {
-    std::memcpy(data_ptr + buffer_offset, data.data(), sizeof(T) * vector_size);
-  }
-
-  // 実際に書いた長さをスロットに記録する。容量は要求より大きいことがあるので、
-  // 読み手は容量ではなくこの値から要素数を求める。
-  // 世代切替との競合を決定的に再現するためのフック（既定では何もしない）
-  SHM_FIRE_TEST_HOOK_BEFORE_COMMIT();
-
-  ring_buffer->commitBuffer(oldest_buffer, sizeof(T) * vector_size, capture_monotonic_us);
-
-  ring_buffer->signal();
-
-  // コミットの間に世代が切り替わっていたら、このサンプルは新しい世代の
-  // 購読者には見えない。呼び出し側で発行し直す（R03-F01）。
-  return topic->isGeneration(generation_before);
-}
 
 //! @brief トピックの書き込み（値渡し）
 //! @param [in] data

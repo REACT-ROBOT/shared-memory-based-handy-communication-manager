@@ -1394,6 +1394,96 @@ private:
   uint64_t                  contention_failure_count_ = 0;
 };
 
+// ****************************************************************************
+//! @class PublisherCore
+//! @brief 全ての Publisher 特殊化が共有する、型に依存しない書き込み処理
+//!
+//! @details
+//! `SubscriberCore` と同じ理由でここに置く。5 つの特殊化に
+//! 「容量を確保 → 世代を控える → スロットを取る → 書く → コミット →
+//! 世代が変わっていないか確認」という並びがコピーされていた。
+//!
+//! 型に依存するのは **必要な容量の計算** と **スロットへ書く処理** だけである。
+//! 後者を SlotWriter として呼び戻す。
+//!
+//! @note **失敗時の方針は意図的にここへ持ち込まない。**
+//!       scalar / vector / cv::Mat は例外を投げ、Lidar2dScanData /
+//!       PointCloud2DScanData は `std::cerr` に出して続行する、という違いが
+//!       既にあり、後者を例外に変えると稼働中の daemon の挙動が変わる。
+//!       ここは `Result` を返すだけにして、方針は各特殊化に残す。
+// ****************************************************************************
+class PublisherCore
+{
+public:
+  //! publish の結果。**Ok 以外をどう扱うかは呼び出し側が決める**
+  enum class Result
+  {
+    Ok,                   //!< コミットできた
+    GenerationChanged,    //!< 再試行を使い切っても世代が動き続けた
+    CapacityUnavailable,  //!< 要求容量を満たす世代を用意できなかった
+    NoWritableSlot,       //!< 全スロットが塞がったままだった
+    PayloadRejected,      //!< SlotWriter が失敗を返した（シリアライズ失敗など）
+  };
+
+  //! ペイロードをスロットへ書く処理。型依存はここに閉じている。
+  struct SlotWriter
+  {
+    //! @param [in] slot_ptr      このスロットの先頭（書いてよい領域）
+    //! @param [in] slot_capacity このスロットに書ける最大バイト数
+    //! @return 実際に書いたバイト数。**負なら失敗**（PayloadRejected になる）
+    using Fn = long long (*)(void *context, unsigned char *slot_ptr, size_t slot_capacity);
+
+    Fn    fn      = nullptr;
+    void *context = nullptr;
+
+    long long operator()(unsigned char *slot_ptr, size_t slot_capacity) const
+    {
+      return fn(context, slot_ptr, slot_capacity);
+    }
+  };
+
+  //! @param [in] name       トピック名
+  //! @param [in] buffer_num スロット数
+  //! @param [in] perm       権限
+  //! @param [in] who        エラーメッセージに載せる呼び出し元（"shm::Publisher" など）
+  PublisherCore(const std::string &name, int buffer_num, PERM perm, const char *who);
+
+  PublisherCore(const PublisherCore &)            = delete;
+  PublisherCore &operator=(const PublisherCore &) = delete;
+  PublisherCore(PublisherCore &&)                 = default;
+  PublisherCore &operator=(PublisherCore &&)      = default;
+
+  //! @brief 1 サンプルを発行する（`publish()` の中身そのもの）
+  //!
+  //! @details capture 時刻はこの中で**一度だけ**採る。世代切替で発行し直しても
+  //!          採り直さないので、同じ測定が別時刻に起きたことにはならない（R04-F12）。
+  //!
+  //! @param [in] required_capacity  1 スロットに必要なバイト数
+  //! @param [in] payload_alignment  ペイロードに要求する境界
+  //! @param [in] contract           このトピックの取り決め
+  //! @param [in] writer             スロットへ書く処理（型依存）
+  Result publish(size_t required_capacity, size_t payload_alignment, const RingBuffer::TopicContract &contract,
+                 const SlotWriter &writer);
+
+  //! @brief Result に対応する説明。例外にも std::cerr にもそのまま使える
+  std::string describe(Result result) const;
+
+  ShmTopic *topic() { return topic_.get(); }
+
+private:
+  //! 世代が動き続けたときに諦めるまでの回数
+  static constexpr int MAX_PUBLISH_ATTEMPTS = 4;
+  //! 全スロットが塞がっていたときに待って試す回数
+  static constexpr int ALLOCATE_ATTEMPTS = 3;
+
+  Result publishOnce(size_t required_capacity, size_t payload_alignment, const RingBuffer::TopicContract &contract,
+                     const SlotWriter &writer, uint64_t capture_monotonic_us);
+
+  std::unique_ptr<ShmTopic> topic_;
+  std::string               who_;
+  int                       buf_num_ = 0;
+};
+
 }  // namespace shm
 
 }  // namespace irlab

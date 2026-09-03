@@ -137,11 +137,6 @@ public:
   void publish(const T &data);
 
 private:
-  bool publishOnce(const T &data, uint64_t capture_monotonic_us);
-
-public:
-
-private:
   //! このトピックに何を入れるかの取り決め（R02-F01）。
   //! 購読側が接続時にこれと照合し、食い違ったら payload に触れずに失敗する。
   static RingBuffer::TopicContract contractOf()
@@ -155,15 +150,16 @@ private:
     return c;
   }
 
-  std::string               shm_name;
-  int                       shm_buf_num;
-  PERM                      shm_perm;
-  //! 共有メモリの世代管理は ShmTopic が引き受ける。
-  //! connect / disconnect / RingBuffer の作り直しをここに書かないこと
-  //! （4 箇所に複製されて食い違う原因になっていた）。
-  std::unique_ptr<ShmTopic> topic;
+  //! SlotWriter へ渡す文脈。書く対象と、書くべきバイト数を持つ。
+  struct WriteContext
+  {
+    const T *data;
+  };
 
-  size_t data_size;
+  std::string shm_name;
+  //! 世代管理・容量確保・スロット確保・コミット・世代確認は全てここが持つ。
+  //! これらは以前 5 つの特殊化にコピーされており、片方だけ直す漏れが起きた。
+  PublisherCore core_;
 };
 
 // ****************************************************************************
@@ -343,18 +339,14 @@ private:
 template <typename T>
 Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm)
   : shm_name(name)
-  , shm_buf_num(buffer_num)
-  , shm_perm(perm)
-  , topic(nullptr)
-  , data_size(sizeof(T))
+  , core_(name, buffer_num, perm, "shm::Publisher")
 {
-  // Enhanced type checking for shared memory compatibility
+  // 型に関する検査だけがこの特殊化の仕事である。
+  // 名前と buffer_num の検証、ShmTopic の生成は PublisherCore が持つ。
   if (!std::is_standard_layout<T>::value)
   {
     throw std::runtime_error("shm::Publisher: Type must have standard layout for shared memory!");
   }
-
-  // Only enforce strict requirements on ARM platforms
   if constexpr (is_arm_platform())
   {
     if (!std::is_trivially_copyable<T>::value)
@@ -362,20 +354,6 @@ Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm)
       throw std::runtime_error("shm::Publisher: Type must be trivially copyable for ARM compatibility!");
     }
   }
-
-  // ペイロードのアライメント要求が、共有メモリのレイアウトで保証できる範囲に
-  // 収まっているかを確認する。
-  //
-  // 以前はここに「ARM では alignof(T) が最大アライメントを超えたら拒否」という
-  // 判定があった。v1 ではペイロード先頭を 8 バイト境界にしか揃えられず、
-  // over-aligned な型を安全に置けなかったための措置である。
-  // 形式 v2 以降は alignof(T) をヘッダに記録し、ペイロード先頭を
-  // max(payload_alignment, 64) 境界に載せ、スロット間隔も payload_alignment の
-  // 倍数に揃えるので、alignas(16/32/64) の型を正しく扱える。
-  // 古い判定を残していると、扱えるはずの型を ARM でだけ拒否することになり、
-  // x86 と ARM で受け付ける型が食い違う（実際 Raspberry Pi 4 で alignas(32) の
-  // 型が弾かれて発覚した）。実際の上限はレイアウト側の MAX_PAYLOAD_ALIGNMENT
-  // なので、プラットフォームによらずそれで判定する。
   if (alignof(T) > RingBuffer::MAX_PAYLOAD_ALIGNMENT)
   {
     throw std::runtime_error("shm::Publisher: Type requires alignment " + std::to_string(alignof(T)) +
@@ -383,31 +361,10 @@ Publisher<T>::Publisher(std::string name, int buffer_num, PERM perm)
                              std::to_string(RingBuffer::MAX_PAYLOAD_ALIGNMENT) + ")");
   }
 
-  if (name.empty())
+  // 最初の publish を待たずに確保しておく。固定長なので必要量が決まっている。
+  if (!core_.topic()->ensureCapacity(sizeof(T), buffer_num, alignof(T), contractOf()))
   {
-    throw std::runtime_error("shm::Publisher: Please set name!");
-  }
-
-  // 負値は size_t へ変換されて巨大なループ／オフセットになり、0 は未初期化の
-  // ヘッダを読む経路に落ちる。どちらも境界で弾く（R01-F06）。
-  if (buffer_num <= 0 || static_cast<size_t>(buffer_num) > RingBuffer::MAX_BUFFER_NUM)
-  {
-    throw std::runtime_error("shm::Publisher: buffer_num must be in [1, " +
-                             std::to_string(RingBuffer::MAX_BUFFER_NUM) + "], but got " +
-                             std::to_string(buffer_num));
-  }
-
-  try
-  {
-    topic = std::make_unique<ShmTopic>(shm_name, shm_perm, true);
-    if (!topic->ensureCapacity(sizeof(T), shm_buf_num, alignof(T), contractOf()))
-    {
-      throw std::runtime_error(topic->lastError());
-    }
-  }
-  catch (const std::runtime_error &e)
-  {
-    throw std::runtime_error("shm::Publisher: " + std::string(e.what()));
+    throw std::runtime_error("shm::Publisher: " + core_.topic()->lastError());
   }
 }
 
@@ -429,92 +386,30 @@ template <typename T>
 void
 Publisher<T>::publish(const T &data)
 {
-  // 世代の追随はここに集約されている。以前は「レイアウト変更を検知したら
-  // 自分で disconnect して作り直す」処理を publish の冒頭に書いていたが、
-  // 検知と実データアクセスの間に必ず窓が空いた（R01-F01 の TOCTOU）。
-  // 形式 v3 では稼働中のセグメントを作り直さず、新しい世代を別セグメントとして
-  // 作るので、古い世代を掴んだままでも範囲外アクセスにはならない。
-  // 世代切替と publish が競合した場合に備えて、コミット後に世代を確認し、
-  // 切り替わっていたら新しい世代へ発行し直す（R02-F05）。
-  // これをしないと、切替の隙間に旧世代へ commit したサンプルが
-  // 「成功したのに誰にも読まれない」ことになる。
-  // capture 時刻はここで 1 度だけ採り、再発行しても引き継ぐ。
-  // 発行し直すたびに採り直すと、**同じ測定が別時刻に起きたように見える**
-  // （R04-F12）。タイムマシンで時刻を合わせる用途では実害になる。
-  const uint64_t capture_monotonic_us = getCurrentTimeUSec();
-
-  constexpr int MAX_PUBLISH_ATTEMPTS = 4;
-  for (int attempt = 0; attempt < MAX_PUBLISH_ATTEMPTS; ++attempt)
-  {
-    if (publishOnce(data, capture_monotonic_us))
-    {
-      return;
-    }
-  }
-  throw std::runtime_error("shm::Publisher: the layout generation kept changing while publishing");
-}
-
-//! @brief 1 回分の publish。世代が切り替わっていたら false を返す（呼び出し側で再試行）
-template <typename T>
-bool
-Publisher<T>::publishOnce(const T &data, uint64_t capture_monotonic_us)
-{
-  if (!topic->ensureCapacity(sizeof(T), shm_buf_num, alignof(T), contractOf()))
-  {
-    throw std::runtime_error("shm::Publisher: " + topic->lastError());
-  }
-  RingBuffer *ring_buffer = topic->ring();
-  const uint64_t generation_before = topic->generationTag();
-
-  // 確保できないままの書き込みは、他の writer が書き込み途中のバッファを
-  // 破壊し購読可能にしてしまうため許されない。確保成功を必須とする。
-  // 書き込めるスロットを探す。古い順に**全スロット**を試すので、
-  // どこか 1 つが reader に押さえられていても他が空いていれば通る（R04-F08）。
-  // 1 巡目は待たないため、空きがあれば即座に決まる。
-  // 全部塞がっていた場合だけ短く待ち、それでも駄目なら少し置いて数回だけ試す。
-  // 最悪でも数 ms で決着する（100Hz の制御ループを止めないため）。
-  constexpr int ALLOCATE_ATTEMPTS = 3;
-  int           oldest_buffer     = -1;
-  for (int attempt = 0; attempt < ALLOCATE_ATTEMPTS; ++attempt)
-  {
-    oldest_buffer = ring_buffer->acquireWritableSlot();
-    if (oldest_buffer >= 0)
-    {
-      break;
-    }
-    usleep(1000);  // Wait for 1ms
-  }
-  const bool allocated = (oldest_buffer >= 0);
-  if (!allocated)
-  {
-    throw std::runtime_error(
-        "shm::Publisher: could not acquire a writable slot; every slot stayed busy. "
-        "Increase buffer_num, or check for a subscriber that holds a sample for too long.");
-  }
-
-  // 書き込みは memcpy に統一する。
-  // 以前は x86 で *reinterpret_cast<T*>(ptr) = data としていたが、これは
-  // T が構築されていない領域に対して代入演算子を走らせる未定義動作であり、
+  // 書き込みは memcpy に統一する。以前は x86 で *reinterpret_cast<T*>(ptr) = data
+  // としていたが、これは T が構築されていない領域に代入演算子を走らせる未定義動作で、
   // かつコンパイラが aligned 命令を選ぶと alignas(16) 以上の型で SIGSEGV し得た。
-  // trivially copyable な型に対しては memcpy が正しい操作で、アライメント要求も
-  // 無い。結果として ARM/x86 の分岐そのものが不要になる（R01-F07-a）。
-  unsigned char *data_ptr      = ring_buffer->getDataList();
-  size_t         buffer_offset = static_cast<size_t>(oldest_buffer) * ring_buffer->getElementSize();
-  std::memcpy(data_ptr + buffer_offset, &data, sizeof(T));
+  // trivially copyable な型には memcpy が正しく、アライメント要求も無い（R01-F07-a）。
+  WriteContext             ctx{ &data };
+  PublisherCore::SlotWriter writer{
+    [](void *context, unsigned char *slot_ptr, size_t slot_capacity) -> long long {
+      if (slot_capacity < sizeof(T))
+      {
+        return -1;
+      }
+      std::memcpy(slot_ptr, static_cast<WriteContext *>(context)->data, sizeof(T));
+      return static_cast<long long>(sizeof(T));
+    },
+    &ctx
+  };
 
-  // 発行番号の採番とスロットの解放。番号はここで採るので、
-  // 「番号が小さい＝先にコミットされた」が常に成り立つ。
-  // 世代切替との競合を決定的に再現するためのフック（既定では何もしない）
-  SHM_FIRE_TEST_HOOK_BEFORE_COMMIT();
-
-  ring_buffer->commitBuffer(oldest_buffer, sizeof(T), capture_monotonic_us);
-
-  ring_buffer->signal();
-
-  // コミットの間に世代が切り替わっていたら、このサンプルは新しい世代の
-  // 購読者には見えない。呼び出し側で発行し直す。
-  return topic->isGeneration(generation_before);
+  const PublisherCore::Result result = core_.publish(sizeof(T), alignof(T), contractOf(), writer);
+  if (result != PublisherCore::Result::Ok)
+  {
+    throw std::runtime_error(core_.describe(result));
+  }
 }
+
 
 //! @brief \~english     Constructor
 //!        \~japanese-en コンストラクタ
