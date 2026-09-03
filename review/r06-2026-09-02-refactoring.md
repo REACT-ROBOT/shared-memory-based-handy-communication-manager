@@ -215,14 +215,65 @@ SIGSEGV する（R04 で記録された挙動）。
 実行したときだけ起きる**ため見過ごされていた。shm 本体の同名テストは
 `releaseOwnedSlots()` を呼んでいる。
 
+## 共通化 — PublisherCore
+
+Publisher 側にも同じ並びが 5 箇所にあった。「容量を確保 → 世代を控える →
+スロットを取る → 書く → コミット → 世代が変わっていないか確認」と、
+その外側の再試行ループである。
+
+型に依存するのは **必要な容量の計算** と **スロットへ書く処理** だけなので、
+後者を `SlotWriter` として呼び戻す。
+
+`PublisherCore` が持つもの:
+
+- `ShmTopic` の生成と所有、名前と `buffer_num` の検証
+- `ensureCapacity()` による世代の用意
+- 世代タグの控えと、コミット後の世代確認
+- `acquireWritableSlot()` の再試行（全スロット走査 + 1ms 待ち × 3）
+- `SHM_FIRE_TEST_HOOK_BEFORE_COMMIT()` → `commitBuffer()` → `signal()`
+- **capture 時刻を publish の入口で一度だけ採ること（R04-F12）**
+- 書き込み失敗時に `releaseBuffer()` すること
+
+| 特殊化 | 削減 |
+|---|---|
+| scalar | 175 行 |
+| vector | 144 行 |
+| cv::Mat / Lidar2dScanData / PointCloud2DScanData | 同様に委譲のみ |
+
+### 失敗時の方針は意図的に core へ持ち込まない
+
+scalar / vector / cv::Mat は例外を投げ、Lidar2dScanData / PointCloud2DScanData は
+`std::cerr` に出して続行する、という違いが既にある。後者を例外へ変えると
+稼働中の daemon の挙動が変わるので、core は `Result` を返すだけにした。
+
+```
+Ok / GenerationChanged / CapacityUnavailable / NoWritableSlot / PayloadRejected
+```
+
+`describe()` が例外にも `std::cerr` にもそのまま使える文言を作る。
+**方針の違いは残したまま、機構だけを共有した。**
+
+### 効くことの確認
+
+`PublisherCore` の capture 時刻の受け渡しを 1 行壊すと、本体（vector の適合性 +
+既存の cutover 回帰）と外部（lidar の適合性）が**同時に**落ちる。
+以前は 5 箇所を個別に直す必要があった。
+
+### 副次的に良くなったこと
+
+- lidar / pc の `publish_mutex_` が再試行ループ全体を覆うようになった（以前は 1 回ぶん）
+- `serialize()` が失敗したときにスロットを解放するようになった（放置するとリングが縮む）
+- 「再試行させないために true を返す」という分かりにくい書き方が無くなった
+- cv のスロット内訳（metadata + padding + 画像）に名前が付き、`publishOnce` と
+  `readSlotInto` が同じ式を別々に書いている状態が解消された
+
 ---
 
 ## 未着手
 
 | 項目 | 内容 |
 |---|---|
-| Publisher 側の共通化 | Subscriber ほど重複していないが、`ensureCapacity` → `acquireWritableSlot` → `commitBuffer` の並びは 5 箇所にある |
-| lidar / pc の publish 失敗 | 戻り値 void・例外なし・`std::cerr` のみで、呼び出し側から検知できない。cv は同条件で例外を投げるので型によって挙動が違う |
+| lidar / pc の publish 失敗 | 戻り値 void・例外なし・`std::cerr` のみで、呼び出し側から検知できない。cv は同条件で例外を投げるので型によって挙動が違う。**共通化で機構は揃ったので、方針を揃えるかは別途の判断**（`bool publish()` を足すのが移行コスト最小） |
 | R05 の Low 5 件 | `r05-remediation.md` に判断理由つきで記録済み |
 
 そのほか、特殊化間に残っているずれ:
