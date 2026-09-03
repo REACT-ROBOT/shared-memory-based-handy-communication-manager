@@ -14,6 +14,7 @@
 - [8. Python には時刻合わせ API が無い](#8-python-には時刻合わせ-api-が無い)
 - [9. `shm_tool` の入手と PATH](#9-shm_tool-の入手と-path)
 - [10. 古い `shm_base.so` を掴む](#10-古い-shm_baseso-を掴む)
+- [11. publish の失敗の知り方が型で違う](#11-publish-の失敗の知り方が型で違う)
 
 ---
 
@@ -282,3 +283,38 @@ ldd ./your_program    | grep shm
 同じ理由で、`.so` を差し替えただけでは**動いているプロセスは古い実装のまま**である。
 ABI を上げたときは、そのトピックを使う全プロセスを起動し直すこと。
 古い ABI のセグメントが残っているかどうかは `shm_tool doctor` が指摘する。
+
+---
+
+## 11. publish の失敗の知り方が型で違う
+
+`publish()` は失敗し得る。**全スロットが購読側に押さえられていると 1 つも
+書けない**（サンプルを長く抱えている subscriber がいる、`buffer_num` が足りない）。
+
+失敗の伝え方が特殊化で 2 通りある。**どちらも黙って成功することはないが、
+受け方が違う。**
+
+| 型 | 失敗の伝え方 |
+|---|---|
+| POD / `std::vector<T>` / `cv::Mat` | **例外**（`std::runtime_error`） |
+| `Lidar2dScanData` / `PointCloud2DScanData` | **戻り値 `false`** と `std::cerr` |
+
+```cpp
+// 例外を投げる側
+try {
+  pose_pub.publish(pose);
+} catch (const std::runtime_error &e) {
+  // 取りこぼした
+}
+
+// 戻り値で伝える側
+if (!scan_pub.publish(scan)) {
+  // 取りこぼした（std::cerr にも理由が出ている）
+}
+```
+
+センサ daemon で取りこぼしを数えたい場合は、後者の戻り値を**必ず見ること**。
+無視しても動くので、書き忘れても気付かない。
+
+失敗が続くようなら `buffer_num` を増やすか、`shm_tool doctor` で
+そのトピックの履歴と競合を確認する。

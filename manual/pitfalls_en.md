@@ -14,6 +14,7 @@ reproduced before it was written down.
 - [8. Python has no time-machine API](#8-python-has-no-time-machine-api)
 - [9. Getting `shm_tool` onto your PATH](#9-getting-shm_tool-onto-your-path)
 - [10. Picking up a stale `shm_base.so`](#10-picking-up-a-stale-shm_baseso)
+- [11. How a failed publish is reported depends on the type](#11-how-a-failed-publish-is-reported-depends-on-the-type)
 
 ---
 
@@ -286,3 +287,38 @@ ldd ./your_program    | grep shm
 For the same reason, replacing the `.so` does **not** update processes that are already
 running. After an ABI bump, restart every process that uses the topic; `shm_tool doctor`
 points out segments still on the old ABI.
+
+---
+
+## 11. How a failed publish is reported depends on the type
+
+`publish()` can fail. **If every slot is held by a subscriber, nothing can be written**
+(a subscriber holds a sample too long, or `buffer_num` is too small).
+
+Two specializations report that differently. **Neither fails silently, but you catch them
+in different ways.**
+
+| Type | How failure is reported |
+|---|---|
+| POD / `std::vector<T>` / `cv::Mat` | **an exception** (`std::runtime_error`) |
+| `Lidar2dScanData` / `PointCloud2DScanData` | **`false`** plus a line on `std::cerr` |
+
+```cpp
+// the throwing side
+try {
+  pose_pub.publish(pose);
+} catch (const std::runtime_error &e) {
+  // the sample was dropped
+}
+
+// the return-value side
+if (!scan_pub.publish(scan)) {
+  // the sample was dropped (the reason is on std::cerr)
+}
+```
+
+In a sensor daemon that counts dropped samples, **always check that return value** —
+ignoring it still compiles and runs, so a missing check goes unnoticed.
+
+If failures persist, raise `buffer_num`, or inspect the topic's retention and contention
+with `shm_tool doctor`.

@@ -273,8 +273,48 @@ Ok / GenerationChanged / CapacityUnavailable / NoWritableSlot / PayloadRejected
 
 | 項目 | 内容 |
 |---|---|
-| lidar / pc の publish 失敗 | 戻り値 void・例外なし・`std::cerr` のみで、呼び出し側から検知できない。cv は同条件で例外を投げるので型によって挙動が違う。**共通化で機構は揃ったので、方針を揃えるかは別途の判断**（`bool publish()` を足すのが移行コスト最小） |
 | R05 の Low 5 件 | `r05-remediation.md` に判断理由つきで記録済み |
+| `SHM_REQUIRE_LAYOUT` の既定 ON 化 | 90 種類以上の型を一斉に必須化する必要があるため未着手 |
+
+---
+
+## publish の失敗を呼び出し側から検知できるようにした
+
+lidar / point_cloud の `publish()` が `void` を返していたため、失敗しても
+**呼び出し側から取りこぼしを知る手段が無かった**。全スロットが reader に
+押さえられて 1 スキャンも書けなくても、daemon はログを吐きながら
+「publish 成功」として回り続ける。
+
+当初これを「方針の違いなので別途の判断」と書いたが、これは**2 つの別の話を
+混同していた**。
+
+| 変更 | daemon への影響 |
+|---|---|
+| 例外を投げるようにする | **変わる**（未捕捉例外で terminate する） |
+| `bool` を返すようにする | **変わらない**（戻り値を無視すれば従来どおり） |
+
+警戒すべきは前者だけで、後者は安全である。ワークスペース全体で確認した。
+
+```
+publish() の呼び出し                   200 箇所
+`return pub.publish(...)` の形           0 件   ← void 関数内だとこの形で壊れる
+メンバ関数ポインタを取っている箇所       0 件
+-Werror を使っているビルド               無し
+```
+
+`std::cerr` の出力も残した。消すと従来ログを見ていた運用の挙動が変わる。
+`[[nodiscard]]` は付けない（既存 200 箇所で警告が出る）。
+
+結果として、5 つとも失敗を検知できる状態になった。ただし**受け方は 2 通り**
+残るので、`manual/pitfalls_*.md` に明記した。
+
+| 型 | 失敗の伝え方 |
+|---|---|
+| POD / `std::vector<T>` / `cv::Mat` | 例外 |
+| `Lidar2dScanData` / `PointCloud2DScanData` | 戻り値 `false` と `std::cerr` |
+
+回帰テスト `PublishFailureIsVisibleToTheCaller` を両方に追加し、
+失敗時に `true` を返す注入で落ちることを確認した。
 
 そのほか、特殊化間に残っているずれ:
 
