@@ -269,62 +269,70 @@ Ok / GenerationChanged / CapacityUnavailable / NoWritableSlot / PayloadRejected
 
 ---
 
-## 未着手
-
-| 項目 | 内容 |
-|---|---|
-| R05 の Low 5 件 | `r05-remediation.md` に判断理由つきで記録済み |
-| `SHM_REQUIRE_LAYOUT` の既定 ON 化 | 90 種類以上の型を一斉に必須化する必要があるため未着手 |
-
----
-
-## publish の失敗を呼び出し側から検知できるようにした
+## publish の失敗の伝え方を 5 つで揃えた
 
 lidar / point_cloud の `publish()` が `void` を返していたため、失敗しても
 **呼び出し側から取りこぼしを知る手段が無かった**。全スロットが reader に
 押さえられて 1 スキャンも書けなくても、daemon はログを吐きながら
 「publish 成功」として回り続ける。
 
-当初これを「方針の違いなので別途の判断」と書いたが、これは**2 つの別の話を
-混同していた**。
+ここで 2 度、判断を誤った。
 
-| 変更 | daemon への影響 |
+### 1 度目 — 「方針の違いなので別途の判断」と先送りした
+
+例外化（daemon の挙動が変わる）と `bool` 化（変わらない）を混同していた。
+指摘を受けて `bool publish()` に変更した。
+
+### 2 度目 — `bool` で止めたため受け方が 2 通り残った
+
+`bool` 化は安全だが、POD / `std::vector` / `cv::Mat` は例外を投げるので、
+**利用者は型ごとに受け方を書き分ける必要が残った**。片方しか書いていない箇所が
+そのまま事故になる。
+
+指摘のとおり、例外化は**コンパイルを壊さない**。`pub.publish(x);` は戻り値の
+有無に関わらず通り、変わるのは実行時の挙動だけである。shm_pub_sub には既に
+破壊的変更が入っており daemon 側の見直しは必要なので、**ライブラリ側の API を
+先に揃え、daemon の改善は後段で行う**のが筋が通る。
+
+### 最終的な形
+
+5 つとも `std::runtime_error` を投げる。方針は `PublisherCore::publishOrThrow()`
+の 1 箇所にあり、次に変えるときも 5 箇所を追う必要がない。
+`Result` を返す `publish()` も残してあるので、no-throw で扱いたい場合や
+テストからは従来どおり使える。
+
+失敗するのは次のいずれかで、どれも例外的な事象である。
+
+- 全スロットが reader に押さえられたまま数 ms 空かない
+- 要求容量を満たすセグメントを用意できない（`/dev/shm` 枯渇など）
+- シリアライズに失敗した
+- 世代が 4 回続けて切り替わった
+
+黙って取りこぼすより落ちて気付いた方がよいので、例外を既定にした。
+
+### daemon 側に残る作業
+
+`try/catch` が無い箇所は publish 失敗時に `terminate` するようになる。
+ワークスペースを走査した結果、該当は次の 2 ファイルだけで、いずれもツール類である
+（実センサ daemon の発行ループには該当が無い）。
+
+| ファイル | 箇所 |
 |---|---|
-| 例外を投げるようにする | **変わる**（未捕捉例外で terminate する） |
-| `bool` を返すようにする | **変わらない**（戻り値を無視すれば従来どおり） |
+| `marker_localization/local_control_task_icp/src/sim_test.cpp` | 4 |
+| `sensor_daemons/point_cloud_2D_related/tools/synthetic_line_publisher/src/synthetic_line_publisher.cpp` | 1 |
 
-警戒すべきは前者だけで、後者は安全である。ワークスペース全体で確認した。
+`build_log_replay` は 3 箇所とも `try` で覆われているため影響しない。
 
-```
-publish() の呼び出し                   200 箇所
-`return pub.publish(...)` の形           0 件   ← void 関数内だとこの形で壊れる
-メンバ関数ポインタを取っている箇所       0 件
--Werror を使っているビルド               無し
-```
+回帰テスト `PublishFailureIsVisibleToTheCaller` を `EXPECT_THROW` に書き換えた。
+core の `publishOrThrow` を「失敗を握り潰す」形に注入すると、外部 2 つの
+回帰テストと本体の `ExhaustedSlotsFailLoudlyInsteadOfCorrupting` が落ちる。
 
-`std::cerr` の出力も残した。消すと従来ログを見ていた運用の挙動が変わる。
-`[[nodiscard]]` は付けない（既存 200 箇所で警告が出る）。
+---
 
-結果として、5 つとも失敗を検知できる状態になった。ただし**受け方は 2 通り**
-残るので、`manual/pitfalls_*.md` に明記した。
+## 未着手
 
-| 型 | 失敗の伝え方 |
+| 項目 | 内容 |
 |---|---|
-| POD / `std::vector<T>` / `cv::Mat` | 例外 |
-| `Lidar2dScanData` / `PointCloud2DScanData` | 戻り値 `false` と `std::cerr` |
-
-回帰テスト `PublishFailureIsVisibleToTheCaller` を両方に追加し、
-失敗時に `true` を返す注入で落ちることを確認した。
-
-そのほか、特殊化間に残っているずれ:
-
-| 項目 | 本体 | cv | lidar / pc |
-|---|---|---|---|
-| `existsPublisherMemory()` | あり | 無し | 無し |
-| 競合カウンタ | あり | 無し | 無し |
-| publish 失敗の通知 | 例外 | 例外 | **`std::cerr` で戻り値 void** |
-| ムーブ可能性 | 可 | 不可 | `= default` と書いてあるが実際は不可 |
-
-3 行目は実害がある。lidar / pc の `publish()` は**失敗しても呼び出し側から
-検知できない**。全スロットが reader に押さえられて 1 スキャンも書けなくても、
-daemon はログを吐きながら「publish 成功」として回り続ける。
+| R05 の Low 5 件 | `r05-remediation.md` に判断理由つきで記録済み |
+| `SHM_REQUIRE_LAYOUT` の既定 ON 化 | 90 種類以上の型を一斉に必須化する必要があるため未着手 |
+| daemon 側の try/catch | publish が例外を投げるようになったので、覆われていない 2 ファイル 5 箇所を見直す（上記） |
