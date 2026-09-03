@@ -14,7 +14,7 @@
 - [8. Python には時刻合わせ API が無い](#8-python-には時刻合わせ-api-が無い)
 - [9. `shm_tool` の入手と PATH](#9-shm_tool-の入手と-path)
 - [10. 古い `shm_base.so` を掴む](#10-古い-shm_baseso-を掴む)
-- [11. publish の失敗の知り方が型で違う](#11-publish-の失敗の知り方が型で違う)
+- [11. `publish()` は失敗すると例外を投げる](#11-publish-は失敗すると例外を投げる)
 
 ---
 
@@ -286,35 +286,46 @@ ABI を上げたときは、そのトピックを使う全プロセスを起動�
 
 ---
 
-## 11. publish の失敗の知り方が型で違う
+## 11. `publish()` は失敗すると例外を投げる
 
-`publish()` は失敗し得る。**全スロットが購読側に押さえられていると 1 つも
-書けない**（サンプルを長く抱えている subscriber がいる、`buffer_num` が足りない）。
-
-失敗の伝え方が特殊化で 2 通りある。**どちらも黙って成功することはないが、
-受け方が違う。**
-
-| 型 | 失敗の伝え方 |
-|---|---|
-| POD / `std::vector<T>` / `cv::Mat` | **例外**（`std::runtime_error`） |
-| `Lidar2dScanData` / `PointCloud2DScanData` | **戻り値 `false`** と `std::cerr` |
+`publish()` は失敗し得る。**5 つの特殊化すべてで `std::runtime_error` を投げる。**
 
 ```cpp
-// 例外を投げる側
 try {
-  pose_pub.publish(pose);
+  scan_pub.publish(scan);
 } catch (const std::runtime_error &e) {
-  // 取りこぼした
-}
-
-// 戻り値で伝える側
-if (!scan_pub.publish(scan)) {
-  // 取りこぼした（std::cerr にも理由が出ている）
+  // 取りこぼした。e.what() に理由が入っている
 }
 ```
 
-センサ daemon で取りこぼしを数えたい場合は、後者の戻り値を**必ず見ること**。
-無視しても動くので、書き忘れても気付かない。
+失敗するのは次のいずれかで、どれも例外的な事象である。
+
+| 理由 | よくある原因 |
+|---|---|
+| 全スロットが reader に押さえられたまま数 ms 空かない | サンプルを長く抱えている subscriber、`buffer_num` 不足 |
+| 要求容量を満たすセグメントを用意できない | `/dev/shm` の枯渇、`MAX_ELEMENT_SIZE` 超過 |
+| シリアライズに失敗した | 呼び出し側のデータが壊れている |
+| 世代が 4 回続けて切り替わった | 複数の publisher が長さを激しく変えている |
+
+**捕まえないと `std::terminate` でプロセスが落ちる。** 黙って取りこぼすより
+落ちて気付いた方がよい種類の失敗なので、それを既定にしてある。センサ daemon の
+発行ループでは、取りこぼしを数えて動き続けるか、意図して落とすかを決めて書くこと。
+
+```cpp
+while (running) {
+  try {
+    scan_pub.publish(scan);
+  } catch (const std::runtime_error &e) {
+    ++dropped;                       // 数えて続行する場合
+    std::cerr << e.what() << std::endl;
+  }
+}
+```
+
+> `Lidar2dScanData` / `PointCloud2DScanData` は以前 `std::cerr` に出して続行し、
+> 呼び出し側からは失敗が見えなかった。その後 `bool` を返す形を経て、
+> 現在は他の型と同じく例外に統一されている。**古い呼び出し側は
+> try/catch が無いと落ちるようになる**ので、移行時に確認すること。
 
 失敗が続くようなら `buffer_num` を増やすか、`shm_tool doctor` で
 そのトピックの履歴と競合を確認する。

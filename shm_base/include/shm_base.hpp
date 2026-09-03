@@ -1465,7 +1465,24 @@ public:
   Result publish(size_t required_capacity, size_t payload_alignment, const RingBuffer::TopicContract &contract,
                  const SlotWriter &writer);
 
-  //! @brief Result に対応する説明。例外にも std::cerr にもそのまま使える
+  //! @brief `publish()` と同じだが、失敗を `std::runtime_error` で投げる
+  //!
+  //! @details **5 つの特殊化はすべてこちらを使う。** 失敗の伝え方が型によって
+  //!          違うと、利用者は型ごとに受け方を変えなければならず、
+  //!          しかもどちらか一方しか書いていない箇所が事故になる。
+  //!
+  //!          publish が失敗するのは次のいずれかで、どれも**例外的な事象**である。
+  //!            - 要求容量を満たすセグメントを用意できない（/dev/shm 枯渇など）
+  //!            - 全スロットが reader に押さえられたまま数 ms 空かない
+  //!            - シリアライズに失敗した
+  //!            - 世代が 4 回続けて切り替わった
+  //!          いずれも「黙って取りこぼす」よりは落ちて気付いた方がよい種類の
+  //!          失敗なので、既定を例外にしてある。取りこぼしを数えて動き続けたい
+  //!          場合は `publish()` の Result を直接見ること。
+  void publishOrThrow(size_t required_capacity, size_t payload_alignment, const RingBuffer::TopicContract &contract,
+                      const SlotWriter &writer);
+
+  //! @brief Result に対応する説明
   std::string describe(Result result) const;
 
   ShmTopic *topic() { return topic_.get(); }

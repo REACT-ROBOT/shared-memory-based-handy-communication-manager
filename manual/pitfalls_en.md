@@ -14,7 +14,7 @@ reproduced before it was written down.
 - [8. Python has no time-machine API](#8-python-has-no-time-machine-api)
 - [9. Getting `shm_tool` onto your PATH](#9-getting-shm_tool-onto-your-path)
 - [10. Picking up a stale `shm_base.so`](#10-picking-up-a-stale-shm_baseso)
-- [11. How a failed publish is reported depends on the type](#11-how-a-failed-publish-is-reported-depends-on-the-type)
+- [11. `publish()` throws when it fails](#11-publish-throws-when-it-fails)
 
 ---
 
@@ -290,35 +290,48 @@ points out segments still on the old ABI.
 
 ---
 
-## 11. How a failed publish is reported depends on the type
+## 11. `publish()` throws when it fails
 
-`publish()` can fail. **If every slot is held by a subscriber, nothing can be written**
-(a subscriber holds a sample too long, or `buffer_num` is too small).
-
-Two specializations report that differently. **Neither fails silently, but you catch them
-in different ways.**
-
-| Type | How failure is reported |
-|---|---|
-| POD / `std::vector<T>` / `cv::Mat` | **an exception** (`std::runtime_error`) |
-| `Lidar2dScanData` / `PointCloud2DScanData` | **`false`** plus a line on `std::cerr` |
+`publish()` can fail. **All five specializations report it the same way: by throwing
+`std::runtime_error`.**
 
 ```cpp
-// the throwing side
 try {
-  pose_pub.publish(pose);
+  scan_pub.publish(scan);
 } catch (const std::runtime_error &e) {
-  // the sample was dropped
-}
-
-// the return-value side
-if (!scan_pub.publish(scan)) {
-  // the sample was dropped (the reason is on std::cerr)
+  // the sample was dropped; e.what() says why
 }
 ```
 
-In a sensor daemon that counts dropped samples, **always check that return value** —
-ignoring it still compiles and runs, so a missing check goes unnoticed.
+It fails for one of these reasons, all of them exceptional:
+
+| Reason | Usual cause |
+|---|---|
+| every slot stays held by a reader for several ms | a subscriber holding a sample too long, or `buffer_num` too small |
+| no segment can be prepared for the requested size | `/dev/shm` exhausted, or over `MAX_ELEMENT_SIZE` |
+| serialization failed | the caller's data is corrupt |
+| the generation changed four times in a row | several publishers changing the length aggressively |
+
+**An uncaught throw ends the process via `std::terminate`.** That is the deliberate
+default: dropping data silently is worse than stopping and being noticed. In a sensor
+daemon's publish loop, decide explicitly whether to count drops and continue, or to let
+it die.
+
+```cpp
+while (running) {
+  try {
+    scan_pub.publish(scan);
+  } catch (const std::runtime_error &e) {
+    ++dropped;                       // count and carry on
+    std::cerr << e.what() << std::endl;
+  }
+}
+```
+
+> `Lidar2dScanData` and `PointCloud2DScanData` used to print to `std::cerr` and carry on,
+> so the caller could not see the failure at all. They then briefly returned `bool`, and
+> now throw like every other type. **Existing call sites without a try/catch will start
+> dying**, so check them when you migrate.
 
 If failures persist, raise `buffer_num`, or inspect the topic's retention and contention
 with `shm_tool doctor`.

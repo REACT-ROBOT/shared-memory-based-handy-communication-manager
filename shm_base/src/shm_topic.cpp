@@ -1086,6 +1086,17 @@ PublisherCore::publish(size_t required_capacity, size_t payload_alignment, const
   return Result::GenerationChanged;
 }
 
+void
+PublisherCore::publishOrThrow(size_t required_capacity, size_t payload_alignment,
+                              const RingBuffer::TopicContract &contract, const SlotWriter &writer)
+{
+  const Result result = publish(required_capacity, payload_alignment, contract, writer);
+  if (result != Result::Ok)
+  {
+    throw std::runtime_error(describe(result));
+  }
+}
+
 PublisherCore::Result
 PublisherCore::publishOnce(size_t required_capacity, size_t payload_alignment,
                            const RingBuffer::TopicContract &contract, const SlotWriter &writer,

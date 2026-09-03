@@ -251,11 +251,7 @@ Publisher<std::vector<T>>::publish(const std::vector<T> &data)
     &ctx
   };
 
-  const PublisherCore::Result result = core_.publish(sizeof(T) * data.size(), alignof(T), contractOf(), writer);
-  if (result != PublisherCore::Result::Ok)
-  {
-    throw std::runtime_error(core_.describe(result));
-  }
+  core_.publishOrThrow(sizeof(T) * data.size(), alignof(T), contractOf(), writer);
 }
 
 //! @brief 1 回分の publish。世代が切り替わっていたら false を返す（呼び出し側で再試行）

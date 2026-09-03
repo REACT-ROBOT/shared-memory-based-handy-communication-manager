@@ -403,11 +403,7 @@ Publisher<T>::publish(const T &data)
     &ctx
   };
 
-  const PublisherCore::Result result = core_.publish(sizeof(T), alignof(T), contractOf(), writer);
-  if (result != PublisherCore::Result::Ok)
-  {
-    throw std::runtime_error(core_.describe(result));
-  }
+  core_.publishOrThrow(sizeof(T), alignof(T), contractOf(), writer);
 }
 
 
