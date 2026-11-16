@@ -261,6 +261,8 @@ public:
   RetentionWindow getRetentionWindow();
 
   bool     waitFor(uint64_t timeout_usec);
+  //! @brief 更新を待つ（publish の通知で寝て待つ。待っている間 CPU を使わない）。読んだことにはしない
+  bool     waitForNotify(uint64_t timeout_usec);
   void     setDataExpiryTime_us(uint64_t time_us);
   // 共有メモリが存在し、初期化済みかを確認。未接続なら接続を試み、初期化を待つ。ring_bufferは作らない。
   bool existsPublisherMemory();
@@ -578,6 +580,13 @@ bool
 Subscriber<T>::waitFor(uint64_t timeout_usec)
 {
   return core_.waitFor(contractOf(), timeout_usec);
+}
+
+template <typename T>
+bool
+Subscriber<T>::waitForNotify(uint64_t timeout_usec)
+{
+  return core_.waitForNotify(contractOf(), timeout_usec);
 }
 
 template <typename T>

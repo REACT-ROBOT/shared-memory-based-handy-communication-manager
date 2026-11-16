@@ -853,7 +853,19 @@ struct ShmHeader
   //! このセグメント自身のノンス。名前に含まれる値と一致することを接続時に確認する。
   //! 世代 1（root）は 0。
   uint64_t segment_nonce;
-  uint64_t reserved[7];
+
+  // ------------------------------------------------------------------------
+  // publish の通知（ABI 4.1 で追加。予約領域から割り当てたので大きさは変わらない）
+  //
+  // 購読側は、新しいデータが無ければ notify_seq が変わるまで futex で寝る。
+  // publish 側は commit のたびに notify_seq を 1 進め、待っている者がいれば起こす。
+  // 一定間隔で待ちをやめて確認し直すので、publish 側が落ちても購読側は止まらない。
+  // **世代 1（root）のセグメントのものだけを使う**（世代が変わっても同じ場所を待てるように）。
+  // 4.0 のセグメント（abi_minor 0）ではここは常に 0 なので、購読側は従来の確認に戻る。
+  // ------------------------------------------------------------------------
+  std::atomic<uint32_t> notify_seq;      //!< commit ごとに 1 進む。futex の待ち先
+  std::atomic<uint32_t> notify_waiters;  //!< 今 futex で待っているスレッドの数（0 なら起こす処理を省く）
+  uint64_t              reserved[6];
 };
 
 //! @brief 世代番号とノンスを 1 語に詰める
@@ -912,7 +924,9 @@ public:
   //! 新しいコードが v1 の領域を読んでも必ず不一致になる。
   static constexpr uint32_t SHM_MAGIC = 0x324D4853;
   static constexpr uint16_t ABI_MAJOR = 4;
-  static constexpr uint16_t ABI_MINOR = 0;
+  static constexpr uint16_t ABI_MINOR = 1;
+  //! publish の通知（ShmHeader::notify_seq）が使える最小の ABI_MINOR
+  static constexpr uint16_t NOTIFY_ABI_MINOR = 1;
 
   //! ShmHeader::state が取り得る値。
   //! 共有メモリ上に書かれるので、これはプロセス間の合意の一部である。
@@ -1119,6 +1133,25 @@ public:
   std::atomic<uint64_t> *sequenceCounter();
 
   /*!
+   * \~japanese-en publish の通知に使うヘッダ（root）を指定する．
+   * \~japanese-en 通知は世代をまたいで同じ場所で待てるよう、root のヘッダの notify_seq を使う。
+   * @param [in] root root セグメントのヘッダ。nullptr で自分のヘッダを使う
+   */
+  void       setNotifySource(ShmHeader *root);
+  //! @brief このリングのヘッダ（root の正本を取り出す用）
+  ShmHeader *notifyHeader() { return header; }
+  //! @brief 通知の数の現在値。waitNotify() に渡す
+  uint32_t   notifyValue() const;
+  //! @brief このトピックで通知が使えるか（root が ABI 4.1 以降で作られたか）
+  bool       supportsNotify() const;
+  /*!
+   * \~japanese-en 通知の数が expected から変わるまで寝る（futex）．
+   * \~japanese-en 変わっていればすぐ戻る。時間切れ・割り込みでも戻るので、戻ったら必ず状態を確認し直すこと。
+   * @return 起こされたら true（データが来たとは限らない）
+   */
+  bool       waitNotify(uint32_t expected, uint64_t timeout_usec);
+
+  /*!
    * \~japanese-en スロットを排他して、payload と素性を 1 つのスナップショットとして読む．
    *
    * \~japanese-en 発行番号の前後比較だけでは、writer と reader が同じ通常メモリへ
@@ -1160,6 +1193,12 @@ private:
   //! 発行番号の採番元。nullptr なら自分のヘッダのカウンタを使う。
   //! 世代をまたいで一意にするため、通常は root のカウンタを指す（R03-F01）。
   std::atomic<uint64_t> *sequence_source = nullptr;
+
+  //! publish の通知に使うヘッダ。nullptr なら自分のヘッダを使う。通常は root を指す
+  ShmHeader *notify_header = nullptr;
+  //! commit したことを待っている購読側に知らせる
+  void       notifyCommitted();
+  ShmHeader *notifyTarget() const { return (notify_header != nullptr) ? notify_header : header; }
 
   //! このインスタンスが robust mutex を保持しているスロット。
   //! allocateBuffer() を通さずに commitBuffer() / setTimestamp_us() を呼ぶ
@@ -1396,6 +1435,15 @@ public:
   //! @brief 更新を待つ
   bool waitFor(const RingBuffer::TopicContract &contract, uint64_t timeout_usec);
 
+  /*!
+   * \~japanese-en 更新を待つ（通知版）．
+   * \~japanese-en waitFor() は 100 us ごとに確認するが、こちらは publish の通知（futex）で寝て待つので、
+   *               待っている間 CPU を使わない。通知に対応していない（ABI 4.0 で作られた）トピックでは
+   *               1 ms ごとの確認に戻る。戻り値の意味は waitFor() と同じで、読んだことにはしない。
+   * @return timeout_usec 以内に更新されたら true
+   */
+  bool waitForNotify(const RingBuffer::TopicContract &contract, uint64_t timeout_usec);
+
   //! @brief 現在保持している範囲
   RetentionWindow getRetentionWindow(const RingBuffer::TopicContract &contract);
 
@@ -1428,6 +1476,32 @@ private:
   uint64_t                  data_expiry_time_us_      = 2000000;  //!< 既定 2 秒
   uint64_t                  contention_retry_count_   = 0;
   uint64_t                  contention_failure_count_ = 0;
+};
+
+// ****************************************************************************
+//! @class TopicWatcher
+//! @brief 型に依存せず、トピックが publish されたかだけを待つ
+//! @details 中身は読まない。合図として使うトピック（例：TM23 の request）の型を、
+//!          待つ側が知らなくてよいようにするためのもの。publish の通知（futex）で寝て待つ。
+// ****************************************************************************
+class TopicWatcher
+{
+public:
+  explicit TopicWatcher(const std::string &name);
+  ~TopicWatcher();
+
+  TopicWatcher(const TopicWatcher &)            = delete;
+  TopicWatcher &operator=(const TopicWatcher &) = delete;
+
+  /*!
+   * \~japanese-en 前回の確認から publish されるまで待つ．
+   * \~japanese-en publish されていたら、その最新を読んだことにして true を返す。
+   * @param [in] timeout_usec 待つ上限。0 なら待たずに確認だけする
+   */
+  bool waitForUpdate(uint64_t timeout_usec);
+
+private:
+  std::unique_ptr<ShmTopic> topic_;
 };
 
 // ****************************************************************************

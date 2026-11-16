@@ -181,11 +181,15 @@ TEST_F(SHMGenerationTest, GrowingVectorCreatesANewGenerationWithoutTouchingTheOl
   EXPECT_EQ(root_header->element_capacity, root_capacity_before)
       << "既存セグメントのレイアウトが書き換えられた（破壊的な再レイアウト）";
 
-  // 進んでよいのは次の 2 つだけ:
+  // 進んでよいのは次の 4 つだけ:
   //   latest_generation … 世代タグ（世代 + ノンス）の公開
   //   sequence          … 発行番号はトピック全体で root のカウンタから採る（R03-F01）
-  const size_t latest_gen_offset = offsetof(ShmHeader, latest_generation);
-  const size_t sequence_offset   = offsetof(ShmHeader, sequence);
+  //   notify_seq        … publish の通知も世代をまたいで root で行う（ABI 4.1）
+  //   notify_waiters    … 同上。通知を待っているスレッドの数
+  const size_t latest_gen_offset     = offsetof(ShmHeader, latest_generation);
+  const size_t sequence_offset       = offsetof(ShmHeader, sequence);
+  const size_t notify_seq_offset     = offsetof(ShmHeader, notify_seq);
+  const size_t notify_waiters_offset = offsetof(ShmHeader, notify_waiters);
   for (size_t i = 0; i < sizeof(ShmHeader); ++i)
   {
     if (i >= latest_gen_offset && i < latest_gen_offset + sizeof(uint64_t))
@@ -193,6 +197,11 @@ TEST_F(SHMGenerationTest, GrowingVectorCreatesANewGenerationWithoutTouchingTheOl
       continue;
     }
     if (i >= sequence_offset && i < sequence_offset + sizeof(uint64_t))
+    {
+      continue;
+    }
+    if ((i >= notify_seq_offset && i < notify_seq_offset + sizeof(uint32_t)) ||
+        (i >= notify_waiters_offset && i < notify_waiters_offset + sizeof(uint32_t)))
     {
       continue;
     }

@@ -135,6 +135,8 @@ public:
   bool existsPublisherMemory();
 
   bool                  waitFor(uint64_t timeout_usec);
+  //! @brief 更新を待つ（publish の通知で寝て待つ）。読んだことにはしない
+  bool                  waitForNotify(uint64_t timeout_usec);
   void                  setDataExpiryTime_us(uint64_t time_us);
 
   // 競合カウンタ（詳細は Subscriber<T> 本体のコメントを参照）
@@ -403,6 +405,13 @@ bool
 Subscriber<std::vector<T>>::waitFor(uint64_t timeout_usec)
 {
   return core_.waitFor(contractOf(), timeout_usec);
+}
+
+template <typename T>
+bool
+Subscriber<std::vector<T>>::waitForNotify(uint64_t timeout_usec)
+{
+  return core_.waitForNotify(contractOf(), timeout_usec);
 }
 
 template <typename T>

@@ -419,6 +419,7 @@ ShmTopic::attachGeneration(uint64_t tag, const RingBuffer::TopicContract *expect
     if (root_ring_ != nullptr)
     {
       rb.setSequenceSource(root_ring_->sequenceCounter());
+      rb.setNotifySource(root_ring_->notifyHeader());  // 通知も世代をまたいで root で行う
     }
   };
 
@@ -599,6 +600,7 @@ ShmTopic::createNextGeneration(uint64_t from_tag, size_t capacity, int buf_num, 
     if (root_ring_ != nullptr)
     {
       initializer.setSequenceSource(root_ring_->sequenceCounter());
+      initializer.setNotifySource(root_ring_->notifyHeader());
     }
 
     // 旧世代の履歴を引き継ぐ。
@@ -1056,6 +1058,98 @@ SubscriberCore::waitFor(const RingBuffer::TopicContract &contract, uint64_t time
   RingBuffer *ring_buffer = topic_->ring();
   ring_buffer->setDataExpiryTime_us(data_expiry_time_us_);
   return ring_buffer->waitFor(timeout_usec);
+}
+
+namespace
+{
+//! 通知で待っていても、この間隔ごとに起きて世代の変化や publish 側の異常を確認し直す
+constexpr uint64_t NOTIFY_RECHECK_US = 100000;
+//! 通知に対応していないトピック（ABI 4.0 で作られた）を確認する間隔
+constexpr uint64_t NOTIFY_FALLBACK_POLL_US = 1000;
+//! トピックがまだ無いときに確認し直す間隔
+constexpr uint64_t NOTIFY_ABSENT_POLL_US = 10000;
+
+/*!
+ * @brief 更新されるまで、publish の通知（futex）で寝て待つ
+ * @return timeout_usec 以内に更新されたら、そのリングを返す（読んだことにはしない）。時間切れは nullptr
+ */
+RingBuffer *
+waitForUpdateNotified(ShmTopic &topic, const RingBuffer::TopicContract *expected, uint64_t timeout_usec,
+                      uint64_t data_expiry_time_us)
+{
+  const uint64_t deadline = getCurrentTimeUSec() + timeout_usec;
+  for (;;)
+  {
+    const uint64_t now = getCurrentTimeUSec();
+    if (!topic.follow(expected))
+    {
+      if (now >= deadline)
+      {
+        return nullptr;
+      }
+      std::this_thread::sleep_for(std::chrono::microseconds(std::min(deadline - now, NOTIFY_ABSENT_POLL_US)));
+      continue;
+    }
+    RingBuffer *ring = topic.ring();
+    ring->setDataExpiryTime_us(data_expiry_time_us);
+    // 先に通知の値を読んでから更新を確認する。確認の後に publish されても、
+    // 値が変わっているので waitNotify() は寝ずに戻る
+    const uint32_t seen = ring->notifyValue();
+    if (ring->isUpdated())
+    {
+      return ring;
+    }
+    if (now >= deadline)
+    {
+      return nullptr;
+    }
+    const uint64_t remaining = deadline - now;
+    if (!ring->supportsNotify())
+    {
+      std::this_thread::sleep_for(std::chrono::microseconds(std::min(remaining, NOTIFY_FALLBACK_POLL_US)));
+      continue;
+    }
+    ring->waitNotify(seen, std::min(remaining, NOTIFY_RECHECK_US));
+  }
+}
+}  // namespace
+
+bool
+SubscriberCore::waitForNotify(const RingBuffer::TopicContract &contract, uint64_t timeout_usec)
+{
+  if (topic_ == nullptr)
+  {
+    return false;
+  }
+  RingBuffer::TopicContract expected = contract;
+  return waitForUpdateNotified(*topic_, &expected, timeout_usec, data_expiry_time_us_) != nullptr;
+}
+
+// ============================================================================
+// TopicWatcher
+// ============================================================================
+
+TopicWatcher::TopicWatcher(const std::string &name)
+  : topic_(new ShmTopic(name, static_cast<PERM>(0), false))
+{
+}
+
+TopicWatcher::~TopicWatcher() = default;
+
+bool
+TopicWatcher::waitForUpdate(uint64_t timeout_usec)
+{
+  RingBuffer *ring = waitForUpdateNotified(*topic_, nullptr, timeout_usec, 0);
+  if (ring == nullptr)
+  {
+    return false;
+  }
+  const int newest = ring->getNewestBufferNum();
+  if (newest >= 0)
+  {
+    ring->markAsRead(ring->getSequence(newest));
+  }
+  return true;
 }
 
 RetentionWindow

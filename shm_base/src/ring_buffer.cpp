@@ -11,6 +11,11 @@
 #include <limits>
 #include <thread>
 
+#include <climits>
+#include <linux/futex.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
 namespace irlab
 {
 
@@ -856,6 +861,8 @@ RingBuffer::initializeContents(size_t element_size_arg, int buffer_num, size_t p
   header->generation        = generation;
   header->segment_nonce     = own_nonce;
   header->sequence.store(0, std::memory_order_relaxed);
+  header->notify_seq.store(0, std::memory_order_relaxed);
+  header->notify_waiters.store(0, std::memory_order_relaxed);
   std::memset(header->reserved, 0, sizeof(header->reserved));
 
   // トピックの取り決め（R02-F01）
@@ -1473,6 +1480,64 @@ RingBuffer::commitBuffer(int buffer_num, size_t payload_size, uint64_t capture_m
     setSlotOwned(buffer_num, false);
     pthread_mutex_unlock(&s->owner);
   }
+
+  notifyCommitted();
+}
+
+// ----------------------------------------------------------------------------
+// publish の通知（futex）
+//
+// 待つ側：notifyValue() で値 v を読む → 更新を確認 → 無ければ waitNotify(v)。
+// 起こす側：commit の後に notify_seq を進め、待っている者がいれば FUTEX_WAKE。
+// futex の FUTEX_WAIT は「値がまだ v なら寝る」をカーネルが不可分に行うので、
+// 確認と寝るまでの間に publish されても、寝ずに戻る（起こし損ねない）。
+// notify_seq の加算と notify_waiters の読み出し、notify_waiters の加算と寝る前の
+// 値の比較は、どちらも seq_cst なので、「待つ側がいるのに起こさない」組み合わせは起きない。
+// 共有メモリ上の futex なので FUTEX_PRIVATE_FLAG は付けない（プロセスをまたぐ）。
+// ----------------------------------------------------------------------------
+static_assert(sizeof(std::atomic<uint32_t>) == sizeof(uint32_t), "futex needs a plain 32-bit word");
+static_assert(std::atomic<uint32_t>::is_always_lock_free, "futex needs a lock-free 32-bit atomic");
+
+void
+RingBuffer::setNotifySource(ShmHeader *root)
+{
+  notify_header = root;
+}
+
+uint32_t
+RingBuffer::notifyValue() const
+{
+  return notifyTarget()->notify_seq.load(std::memory_order_seq_cst);
+}
+
+bool
+RingBuffer::supportsNotify() const
+{
+  return notifyTarget()->abi_minor >= NOTIFY_ABI_MINOR;
+}
+
+void
+RingBuffer::notifyCommitted()
+{
+  ShmHeader *h = notifyTarget();
+  h->notify_seq.fetch_add(1, std::memory_order_seq_cst);
+  if (h->notify_waiters.load(std::memory_order_seq_cst) > 0)
+  {
+    syscall(SYS_futex, reinterpret_cast<uint32_t *>(&h->notify_seq), FUTEX_WAKE, INT_MAX, nullptr, nullptr, 0);
+  }
+}
+
+bool
+RingBuffer::waitNotify(uint32_t expected, uint64_t timeout_usec)
+{
+  ShmHeader *h = notifyTarget();
+  timespec   timeout{ static_cast<time_t>(timeout_usec / 1000000ULL),
+                    static_cast<long>((timeout_usec % 1000000ULL) * 1000ULL) };
+  h->notify_waiters.fetch_add(1, std::memory_order_seq_cst);
+  const long result =
+      syscall(SYS_futex, reinterpret_cast<uint32_t *>(&h->notify_seq), FUTEX_WAIT, expected, &timeout, nullptr, 0);
+  h->notify_waiters.fetch_sub(1, std::memory_order_seq_cst);
+  return result == 0;
 }
 
 uint64_t
