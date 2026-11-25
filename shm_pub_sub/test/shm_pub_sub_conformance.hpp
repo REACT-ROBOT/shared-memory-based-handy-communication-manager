@@ -71,9 +71,12 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "shm_base.hpp"
 #include "shm_pub_sub.hpp"
@@ -88,6 +91,17 @@ namespace conformance
 //! capture 時刻の検査が意味を持つために必要な publish() の所要時間[usec]。
 //! これを下回ると「入口で打った」と「commit で打った」の差がノイズに埋もれる。
 constexpr uint64_t DISCRIMINATION_THRESHOLD_US = 30;
+
+//! capture 時刻の検査で publish() を計測する回数。判定は中央値で行うので奇数にする。
+constexpr int CAPTURE_TIME_ATTEMPTS = 9;
+
+//! 中央値（要素数は奇数を想定）
+inline uint64_t
+median(std::vector<uint64_t> values)
+{
+  std::nth_element(values.begin(), values.begin() + values.size() / 2, values.end());
+  return values[values.size() / 2];
+}
 
 }  // namespace conformance
 
@@ -183,9 +197,9 @@ TYPED_TEST_P(SHMSpecializationConformance, CaptureTimeIsStampedAtPublishEntry)
     sub.subscribe(&warmup_ok);
   }
 
-  uint64_t best_elapsed = 0;
-  uint64_t lag_at_best  = 0;
-  for (int attempt = 0; attempt < 5; ++attempt)
+  std::vector<uint64_t> elapsed_us;  // publish() の所要時間
+  std::vector<uint64_t> lag_us;      // 入口から capture までの遅れ
+  for (int attempt = 0; attempt < conformance::CAPTURE_TIME_ATTEMPTS; ++attempt)
   {
     const uint64_t before = getCurrentTimeUSec();
     pub.publish(large);
@@ -200,29 +214,33 @@ TYPED_TEST_P(SHMSpecializationConformance, CaptureTimeIsStampedAtPublishEntry)
     ASSERT_LE(info.capture_monotonic_us, after)
         << Traits::name() << ": capture 時刻が publish() から戻った後を指している";
 
-    // 所要時間が長い回ほど、入口と commit の差がはっきり出る
-    const uint64_t elapsed = after - before;
-    if (elapsed >= best_elapsed)
-    {
-      best_elapsed = elapsed;
-      lag_at_best  = info.capture_monotonic_us - before;
-    }
+    elapsed_us.push_back(after - before);
+    lag_us.push_back(info.capture_monotonic_us - before);
   }
 
-  if (best_elapsed < conformance::DISCRIMINATION_THRESHOLD_US)
+  // 最長の 1 回ではなく中央値で判定する。
+  // 以前は「所要時間が最も長い回」を採っていたが、それは定義上いちばん外れた回である。
+  // QEMU 上では普段 3〜4us の publish がまれに 40us 前後に伸び、その遅れの半分以上が
+  // capture の採取より前に入ることがあった（入口で正しく打っていても 4 割ほど失敗した）。
+  // 入口で打っていれば遅れはどの回もほぼ 0、commit で打っていればどの回も
+  // 所要時間のほぼ全部になるので、中央値にしても判別力は落ちない。
+  const uint64_t elapsed = conformance::median(elapsed_us);
+  const uint64_t lag     = conformance::median(lag_us);
+
+  if (elapsed < conformance::DISCRIMINATION_THRESHOLD_US)
   {
     // publish が速すぎて「入口」と「commit」を区別できない。
     // 固定長の小さな型では正常な状況なので、失敗にはしない。
-    GTEST_SKIP() << Traits::name() << ": publish が " << best_elapsed
-                 << "us しかかからず、capture 時刻の位置を判定できない"
+    GTEST_SKIP() << Traits::name() << ": publish が " << elapsed
+                 << "us（中央値）しかかからず、capture 時刻の位置を判定できない"
                     "（makeLarge() をより大きくすると検査が効くようになる）";
   }
 
-  EXPECT_LE(lag_at_best, best_elapsed / 2)
-      << Traits::name() << ": capture 時刻が publish() の終了側に寄っている。"
-      << "commitBuffer() に capture 時刻を渡さず、commit 時点で打っている疑いがある"
-         "（R04-F12）。publish 所要 "
-      << best_elapsed << "us に対し、入口からの遅れ " << lag_at_best << "us";
+  EXPECT_LE(lag, elapsed / 2) << Traits::name() << ": capture 時刻が publish() の終了側に寄っている。"
+                              << "commitBuffer() に capture 時刻を渡さず、commit 時点で打っている疑いがある"
+                                 "（R04-F12）。publish 所要 "
+                              << elapsed << "us に対し、入口からの遅れ " << lag << "us（いずれも "
+                              << conformance::CAPTURE_TIME_ATTEMPTS << " 回の中央値）";
 }
 
 // ---------------------------------------------------------------------------
