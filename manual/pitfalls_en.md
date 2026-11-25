@@ -16,6 +16,7 @@ reproduced before it was written down.
 - [10. Picking up a stale `shm_base.so`](#10-picking-up-a-stale-shm_baseso)
 - [11. `publish()` throws when it fails](#11-publish-throws-when-it-fails)
 - [12. With more than one publisher, growing the topic can drop one sample](#12-with-more-than-one-publisher-growing-the-topic-can-drop-one-sample)
+- [13. Running out of `/dev/shm` kills the process with SIGBUS](#13-running-out-of-devshm-kills-the-process-with-sigbus)
 
 ---
 
@@ -404,3 +405,33 @@ It is not closed because every way of removing the window creates a different pr
 draining again after the switch makes the same measurement appear twice, and re-taking
 the snapshot cannot help because the new generation's slots are already full.
 
+## 13. Running out of `/dev/shm` kills the process with SIGBUS
+
+Segments are created on `/dev/shm` (tmpfs) with `shm_open()` + `ftruncate()`.
+`ftruncate()` on tmpfs **does not reserve space**, so it succeeds even when there is not
+enough room. The shortage only shows up when publish first writes to a page, and at that
+point the process **receives SIGBUS and dies**. It is not the exception described in
+item 11, and no `catch` can stop it.
+
+A segment is roughly "capacity of one sample x `buffer_num`", plus headroom added when the
+capacity grows. Publishing a 64MB `std::vector` with `buffer_num = 4`, for example, gives
+about 320MB (buffering a few Full HD images lands in the same range).
+
+The easiest place to hit this is a **Docker container**, where `/dev/shm` is only 64MB by
+default.
+
+```bash
+$ docker run --shm-size=1g ...      # enlarge it as needed
+$ df -h /dev/shm                    # check the free space
+```
+
+The segment of the crashed process is not removed, so `/dev/shm` stays full and **other
+topics sharing that `/dev/shm`** then die with SIGBUS the moment they write. This is why, in CI,
+every test after one failing test ended in a bus error. To recover, remove the leftover
+segments or recreate the container.
+
+> **Open issue**: calling `posix_fallocate()` after `ftruncate()` would reserve the space up
+> front, so a shortage could be detected at creation time as `ENOSPC` and reported as an
+> ordinary failure (an exception). Because that commits real memory when the segment is
+> created, the effect on start-up time and resident memory has to be evaluated first
+> (not implemented yet).

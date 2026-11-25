@@ -164,6 +164,18 @@ GitHub Actions automatically:
 - Generates coverage reports and uploads as artifacts
 - Comments coverage results on Pull Requests
 - Validates cross-platform compatibility
+- Runs the test suite on aarch64 (QEMU, inside Docker with `--shm-size=1g`)
+
+### Known Issues / Future Work
+
+- **Running out of `/dev/shm` kills the process with SIGBUS instead of failing.**
+  Segments are sized with `ftruncate()`, which does not reserve space on tmpfs, so a shortage
+  is only noticed when a page is first written. Docker's default `/dev/shm` is 64MB, which a
+  large vector or image topic (e.g. 64MB x 4 slots ≈ 320MB) easily exceeds; run containers
+  with `--shm-size`. Reserving the space with `posix_fallocate()` so that the shortage is
+  reported as an ordinary error is under consideration.
+  See [Common Pitfalls #13](manual/pitfalls_en.md#13-running-out-of-devshm-kills-the-process-with-sigbus)
+  ([日本語](manual/pitfalls_jp.md#13-devshm-の容量が足りないと-sigbus-でプロセスが落ちる)).
 
 ## Documentation Generation
 
