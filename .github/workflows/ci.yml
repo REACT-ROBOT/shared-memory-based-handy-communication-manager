@@ -62,6 +62,13 @@ jobs:
   # 不具合は x86 では動いてしまうため CI で検出できていなかった
   # （実際 getSize() の非8バイト倍数バグは Pi4 実機でしか出なかった）。
   # QEMU エミュレーションで aarch64 のテストを回す。
+  #
+  # NOTE: Docker の /dev/shm は既定で 64MB しかない。conformance テストは
+  #       64MB のペイロード（FullHD 画像の数枚分に相当）を 4 スロットで扱うため
+  #       約 320MB のセグメントを作る。tmpfs への ftruncate は容量不足でも成功し、
+  #       書き込んだ時点で SIGBUS になる。さらにクラッシュでセグメントが残るので
+  #       /dev/shm が埋まったままになり、後続のテストが全て Bus error で連鎖的に落ちる。
+  #       ホスト上で直接動く他のジョブと条件を揃えるため --shm-size を広げる。
   # ---------------------------------------------------------------------------
   arm64:
     runs-on: ubuntu-latest
@@ -75,7 +82,7 @@ jobs:
 
     - name: Build and test on aarch64
       run: |
-        docker run --rm --platform linux/arm64 \
+        docker run --rm --platform linux/arm64 --shm-size=1g \
           -v "$PWD":/src -w /src arm64v8/ubuntu:22.04 \
           bash -c '
             set -e
