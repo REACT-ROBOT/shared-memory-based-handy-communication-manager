@@ -111,7 +111,10 @@ endif()
 # Coverage options
 if(ENABLE_COVERAGE)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        set(COVERAGE_FLAGS "--coverage -g -O0")
+        # -fprofile-update=atomic: テストは複数スレッドから同じ経路を通る（race / cutover）。
+        # 既定の非アトミックなカウンタ加算だと値が壊れ、lcov が
+        # "Unexpected negative hit count" で集計を止める。
+        set(COVERAGE_FLAGS "--coverage -fprofile-update=atomic -g -O0")
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${COVERAGE_FLAGS}")
         set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${COVERAGE_FLAGS}")
         set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} --coverage")

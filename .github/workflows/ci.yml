@@ -227,7 +227,10 @@ jobs:
         # CI環境（GCC 13.3.0）とローカル環境（GCC 11.4.0）の違いに対応
         
         # CI環境で実際にサポートされているエラータイプのみを使用
-        CI_ERROR_FLAGS="--ignore-errors mismatch,gcov,source,negative"
+        # inconsistent: GCC 15 では gtest の TEST マクロ等で関数の終了行が食い違い、
+        #               lcov 2.x がエラーとして止まる（ランナーが GCC 15 になって顕在化）。
+        #               lcov 1.x は inconsistent を知らないので LOCAL 側には入れない。
+        CI_ERROR_FLAGS="--ignore-errors mismatch,gcov,source,negative,inconsistent"
         LOCAL_ERROR_FLAGS="--ignore-errors gcov,source"
         
         # 新しいlcov構文を試す（CI環境向けエラー無視付き）
