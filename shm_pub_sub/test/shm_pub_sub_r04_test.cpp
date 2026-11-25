@@ -14,6 +14,7 @@
 
 #include "shm_pub_sub.hpp"
 #include "shm_pub_sub_vector.hpp"
+#include "robust_futex_support.hpp"
 
 using namespace irlab::shm;
 
@@ -171,6 +172,7 @@ TEST_F(SHMR04Test, PublishingBeyondTheMaximumElementSizeFailsInsteadOfOverflowin
 // -----------------------------------------------------------------------------
 TEST_F(SHMR04Test, SampleSurvivesAReaderThatDiesHoldingTheSlotLock)
 {
+  SHM_SKIP_WITHOUT_ROBUST_FUTEX();
   const std::string topic = "r04_deadreader";
 
   Publisher<Msg> pub(topic, 1);

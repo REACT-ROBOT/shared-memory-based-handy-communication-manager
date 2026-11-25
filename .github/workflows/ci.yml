@@ -69,6 +69,11 @@ jobs:
   #       書き込んだ時点で SIGBUS になる。さらにクラッシュでセグメントが残るので
   #       /dev/shm が埋まったままになり、後続のテストが全て Bus error で連鎖的に落ちる。
   #       ホスト上で直接動く他のジョブと条件を揃えるため --shm-size を広げる。
+  #
+  # NOTE: QEMU ユーザモードは robust futex（set_robust_list）を実装しておらず、
+  #       ロックを持ったまま死んだプロセスの EOWNERDEAD 回収を検査するテストは
+  #       ここでは SKIP される（shm_pub_sub/test/robust_futex_support.hpp）。
+  #       その経路は x86 のジョブと実機でのみ検査される。
   # ---------------------------------------------------------------------------
   arm64:
     runs-on: ubuntu-latest

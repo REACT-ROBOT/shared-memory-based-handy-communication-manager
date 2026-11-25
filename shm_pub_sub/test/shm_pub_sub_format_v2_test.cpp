@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include "shm_pub_sub.hpp"
+#include "robust_futex_support.hpp"
 
 using namespace irlab::shm;
 
@@ -283,6 +284,7 @@ TEST_F(SHMFormatV2Test, StoppedWriterSlotIsNotStolen)
 
 TEST_F(SHMFormatV2Test, KilledWriterSlotIsReclaimed)
 {
+  SHM_SKIP_WITHOUT_ROBUST_FUTEX();
   // 確保したまま SIGKILL された writer のスロットは、
   // robust mutex の EOWNERDEAD 経由で回収できること。
   const char *topic = "v2_kill";
