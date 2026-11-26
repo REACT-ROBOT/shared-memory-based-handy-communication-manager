@@ -625,10 +625,41 @@ fireBeforeCommit()
     before_commit();
   }
 }
+
+//! waitForNotify() / TopicWatcher の待ちループの中で、どこで呼ばれたか
+enum class NotifyWaitPoint : int
+{
+  BeforeFollow = 0,  //!< 通知の値を読んだ後、follow() の直前
+  AfterFollow  = 1,  //!< follow() の直後、更新を確認する前
+  BeforeSleep  = 2,  //!< 更新なしと判定した後、futex で寝る直前
+};
+
+//! 待ちループの各点で呼ばれる。ここで publish すれば「確認と寝る間の publish」を確実に作れる。
+extern std::function<void(NotifyWaitPoint)> notify_wait_point;
+
+//! 通知の値を follow() の前に読むか（既定 true＝修正後の順序）。
+//! false にすると修正前の順序（follow() の後に読む）に戻る。
+//! テストが本当に窓を突けているかを確かめる（修正を取り消すと落ちることを示す）ためだけに使う。
+extern bool notify_read_before_follow;
+
+//! @brief フックが設定されていれば呼ぶ
+inline void
+fireNotifyWaitPoint(NotifyWaitPoint point)
+{
+  if (notify_wait_point)
+  {
+    notify_wait_point(point);
+  }
+}
 }  // namespace test_hooks
 #define SHM_FIRE_TEST_HOOK_BEFORE_COMMIT() ::irlab::shm::test_hooks::fireBeforeCommit()
+#define SHM_FIRE_TEST_HOOK_NOTIFY_WAIT(point) \
+  ::irlab::shm::test_hooks::fireNotifyWaitPoint(::irlab::shm::test_hooks::NotifyWaitPoint::point)
+#define SHM_NOTIFY_READ_BEFORE_FOLLOW() (::irlab::shm::test_hooks::notify_read_before_follow)
 #else
 #define SHM_FIRE_TEST_HOOK_BEFORE_COMMIT() ((void)0)
+#define SHM_FIRE_TEST_HOOK_NOTIFY_WAIT(point) ((void)0)
+#define SHM_NOTIFY_READ_BEFORE_FOLLOW() (true)
 #endif
 
 //! @brief この boot を識別する値。読めない環境では 0

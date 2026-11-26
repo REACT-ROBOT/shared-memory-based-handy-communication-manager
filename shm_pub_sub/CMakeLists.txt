@@ -466,6 +466,20 @@ if(BUILD_TESTS)
     gtest_add_tests(TARGET shm_pub_sub_notify_test TEST_LIST shm_pub_sub_notify_test_cases)
   set_tests_properties(${shm_pub_sub_notify_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT} RESOURCE_LOCK dev_shm)
 
+    # publish の通知（futex）の起こし損ねの回帰テスト。
+    # 待ちループの途中に publish を差し込むので SHM_ENABLE_TEST_HOOKS が必要
+    # （BUILD_TESTS=ON なら上位の CMakeLists.txt で常に ON になる）
+    add_executable(shm_pub_sub_notify_race_test
+        test/shm_pub_sub_notify_race_test.cpp
+      )
+    target_link_libraries(shm_pub_sub_notify_race_test
+        PRIVATE
+        shm_pub_sub
+        ${GTEST_LDFLAGS}
+      )
+    gtest_add_tests(TARGET shm_pub_sub_notify_race_test TEST_LIST shm_pub_sub_notify_race_test_cases)
+  set_tests_properties(${shm_pub_sub_notify_race_test_cases} PROPERTIES TIMEOUT ${SHM_TEST_TIMEOUT} RESOURCE_LOCK dev_shm)
+
     # レイアウト変更・共有メモリ作り直しの回帰テスト
     add_executable(shm_pub_sub_layout_test
         test/shm_pub_sub_layout_test.cpp

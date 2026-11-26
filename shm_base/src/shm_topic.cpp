@@ -1081,6 +1081,21 @@ waitForUpdateNotified(ShmTopic &topic, const RingBuffer::TopicContract *expected
   for (;;)
   {
     const uint64_t now = getCurrentTimeUSec();
+    // 通知の値は follow() より **前に** 読む。確認の後に publish されても、
+    // 値が変わっているので waitNotify() は寝ずに戻る。
+    // follow() の後に読むと、その間に「世代切替＋新世代への commit」が起きたとき、
+    // 旧世代のリングで更新なしと判定したうえ、進んだ後の値で寝てしまう
+    // （次の publish か NOTIFY_RECHECK_US 後まで起きない）。
+    // 初回でまだリングが無ければ値を読めないので、寝ずにもう一周する。
+    RingBuffer *const before    = topic.ring();
+    bool              have_seen = false;
+    uint32_t          seen      = 0;
+    if (SHM_NOTIFY_READ_BEFORE_FOLLOW() && before != nullptr)
+    {
+      seen      = before->notifyValue();
+      have_seen = true;
+    }
+    SHM_FIRE_TEST_HOOK_NOTIFY_WAIT(BeforeFollow);
     if (!topic.follow(expected))
     {
       if (now >= deadline)
@@ -1090,11 +1105,15 @@ waitForUpdateNotified(ShmTopic &topic, const RingBuffer::TopicContract *expected
       std::this_thread::sleep_for(std::chrono::microseconds(std::min(deadline - now, NOTIFY_ABSENT_POLL_US)));
       continue;
     }
+    SHM_FIRE_TEST_HOOK_NOTIFY_WAIT(AfterFollow);
     RingBuffer *ring = topic.ring();
     ring->setDataExpiryTime_us(data_expiry_time_us);
-    // 先に通知の値を読んでから更新を確認する。確認の後に publish されても、
-    // 値が変わっているので waitNotify() は寝ずに戻る
-    const uint32_t seen = ring->notifyValue();
+    if (!SHM_NOTIFY_READ_BEFORE_FOLLOW())
+    {
+      // テスト専用：修正前の順序（follow の後に読む）。既定のビルドではここは消える
+      seen      = ring->notifyValue();
+      have_seen = true;
+    }
     if (ring->isUpdated())
     {
       return ring;
@@ -1103,12 +1122,17 @@ waitForUpdateNotified(ShmTopic &topic, const RingBuffer::TopicContract *expected
     {
       return nullptr;
     }
+    if (!have_seen)
+    {
+      continue;
+    }
     const uint64_t remaining = deadline - now;
     if (!ring->supportsNotify())
     {
       std::this_thread::sleep_for(std::chrono::microseconds(std::min(remaining, NOTIFY_FALLBACK_POLL_US)));
       continue;
     }
+    SHM_FIRE_TEST_HOOK_NOTIFY_WAIT(BeforeSleep);
     ring->waitNotify(seen, std::min(remaining, NOTIFY_RECHECK_US));
   }
 }

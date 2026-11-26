@@ -27,6 +27,8 @@ namespace test_hooks
 {
 //! 定義はここに 1 つだけ置く。既定では何も設定されていない。
 std::function<void()> before_commit;
+std::function<void(NotifyWaitPoint)> notify_wait_point;
+bool notify_read_before_follow = true;
 }  // namespace test_hooks
 #endif
 
